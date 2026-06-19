@@ -9,6 +9,7 @@ CODEX_BRANCH="${2:-main}"
 CONFIRM="${3:-}"
 UPSTREAM_REMOTE="upstream-codex"
 PREFIX="codex-rs"
+SPLIT_BRANCH="sync/codex-rs-reset"
 
 SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
@@ -40,10 +41,13 @@ git remote set-url --push "$UPSTREAM_REMOTE" DISABLED
 git switch "$CODEZ_BRANCH"
 git fetch "$UPSTREAM_REMOTE" "$CODEX_BRANCH"
 
+git branch -D "$SPLIT_BRANCH" >/dev/null 2>&1 || true
+git subtree split --prefix="$PREFIX" "$UPSTREAM_REMOTE/$CODEX_BRANCH" -b "$SPLIT_BRANCH"
+
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
-git archive "$UPSTREAM_REMOTE/$CODEX_BRANCH:$PREFIX" | tar -x -C "$tmp_dir"
+git archive "$SPLIT_BRANCH" | tar -x -C "$tmp_dir"
 
 rm -rf "$PREFIX"
 mkdir -p "$PREFIX"
@@ -51,6 +55,8 @@ cp -R "$tmp_dir"/. "$PREFIX"/
 
 git add "$PREFIX"
 git commit -m "Reset codez/$PREFIX from openai/codex $PREFIX"
+
+git branch -D "$SPLIT_BRANCH" >/dev/null 2>&1 || true
 
 echo
 echo "Reset complete. Review the commit, then push with:"

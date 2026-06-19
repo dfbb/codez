@@ -8,6 +8,7 @@ CODEZ_BRANCH="${1:-main}"
 CODEX_BRANCH="${2:-main}"
 UPSTREAM_REMOTE="upstream-codex"
 PREFIX="codex-rs"
+SPLIT_BRANCH="sync/codex-rs-latest"
 
 SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
@@ -39,27 +40,22 @@ git remote set-url --push "$UPSTREAM_REMOTE" DISABLED
 echo "Switching to $CODEZ_BRANCH..."
 git switch "$CODEZ_BRANCH"
 
-echo "Fetching origin and $UPSTREAM_REMOTE..."
+echo "Fetching origin..."
 git fetch origin "$CODEZ_BRANCH" || true
+
+echo "Fetching $UPSTREAM_REMOTE..."
 git fetch "$UPSTREAM_REMOTE" "$CODEX_BRANCH"
 
-echo "Replacing codez/$PREFIX with latest $UPSTREAM_REMOTE/$CODEX_BRANCH:$PREFIX snapshot..."
-tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$tmp_dir"' EXIT
+echo "Splitting latest $UPSTREAM_REMOTE/$CODEX_BRANCH:$PREFIX..."
+git branch -D "$SPLIT_BRANCH" >/dev/null 2>&1 || true
+git subtree split --prefix="$PREFIX" "$UPSTREAM_REMOTE/$CODEX_BRANCH" -b "$SPLIT_BRANCH"
 
-git archive "$UPSTREAM_REMOTE/$CODEX_BRANCH:$PREFIX" | tar -x -C "$tmp_dir"
+echo "Merging latest upstream $PREFIX into codez/$PREFIX with subtree squash..."
+git subtree merge --prefix="$PREFIX" "$SPLIT_BRANCH" \
+  --squash \
+  -m "Sync openai/codex $PREFIX into codez"
 
-rm -rf "$PREFIX"
-mkdir -p "$PREFIX"
-cp -R "$tmp_dir"/. "$PREFIX"/
-
-git add "$PREFIX"
-
-if git diff --cached --quiet; then
-  echo "No changes in $PREFIX."
-else
-  git commit -m "Sync openai/codex $PREFIX snapshot"
-fi
+git branch -D "$SPLIT_BRANCH" >/dev/null 2>&1 || true
 
 echo
 echo "Sync complete. Resolve conflicts if any, run checks, then push with:"

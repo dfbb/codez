@@ -21,7 +21,7 @@ upstream-codex  = https://github.com/openai/codex.git，只 fetch，push URL 固
 
 这不是 GitHub Fork，不会给 `openai/codex` 自动产生 Pull Request。所有 codez 的提交都推到 `origin`。
 
-默认同步策略是快照同步。脚本用 `git archive upstream-codex/main:codex-rs` 取出 `openai/codex` 里的 `codex-rs` 目录内容，然后作为普通 codez 提交写入 `codez/codex-rs`。这样不会把 `openai/codex` 的原始 Git 历史一起提交到 `dfbb/codez`。
+默认同步策略是 `git subtree --squash`。脚本会先 fetch `openai/codex`，再从 upstream 的 `codex-rs` 子目录 split 出临时分支，最后 merge 到 `codez/codex-rs`。这样可以让 Git 尝试合并你在 `codez/codex-rs` 里已经提交的本地改动，但代价是同步时需要下载 upstream 仓库对象，网络慢时会更耗时。
 
 如果你之前已经用旧的 subtree 历史导入方式创建过提交，并且 push 时看到类似 `Enumerating objects: 121763`，建议丢弃那条本地导入历史后重新用本 README 的快照脚本导入。否则旧提交仍然会要求 GitHub 接收大量 upstream 历史对象。
 
@@ -110,9 +110,9 @@ scripts/git/03-import-codex-rs.zsh
 
 作用：
 
-- 从 `upstream-codex/main:codex-rs` 导出目录快照
-- 把快照导入到当前仓库的 `codex-rs/`
-- 不把 `openai/codex` 的原始历史写进 codez 主线
+- 从 `upstream-codex/main` split 出 `codex-rs` 子目录历史
+- 用 `git subtree add --squash` 导入到当前仓库的 `codex-rs/`
+- codez 主线只保存 squash 同步提交，不直接展开 `openai/codex` 的完整历史
 - 只修改本地 codez 仓库，不会 push 到 GitHub
 
 执行：
@@ -152,9 +152,10 @@ scripts/git/04-sync-codex-rs.zsh
 作用：
 
 - 拉取 `openai/codex`
-- 重新导出 `openai/codex/codex-rs` 快照
-- 用最新快照替换 `codez/codex-rs`
-- 如果内容有变化，创建一个 codez 自己的同步提交
+- fetch `openai/codex`
+- 从 upstream 的 `codex-rs` 子目录 split 出临时分支
+- 用 `git subtree merge --squash` 合并到 `codez/codex-rs`
+- 如果 `codez/codex-rs` 有已提交的本地改动，Git 会尝试三方合并；冲突需要手动处理
 - 不自动 push，方便先运行检查
 
 执行：
@@ -163,10 +164,13 @@ scripts/git/04-sync-codex-rs.zsh
 scripts/git/04-sync-codex-rs.zsh main main
 ```
 
-这个脚本采用目录快照替换，不做三方合并。如果你在 `codez/codex-rs` 里维护了本地修改，同步前应先提交或迁移到 `zmod`，否则同步会以 upstream 快照覆盖 `codex-rs`。
+这个脚本采用 subtree squash merge。未提交的改动仍然会被脚本拒绝；已经提交到 `codez/codex-rs` 的本地改动会参与 merge，发生冲突时按正常 Git 冲突流程处理：
 
 ```bash
 git status
+# 编辑冲突文件
+git add codex-rs
+git commit
 ```
 
 确认无误后推送到 codez：
@@ -195,7 +199,7 @@ scripts/git/06-push-origin-slow-network.zsh
 scripts/git/06-push-origin-slow-network.zsh main
 ```
 
-这个脚本不能修复所有网络问题，但配合默认的快照同步，初次 push 的对象数量会明显少于保留完整 codex 历史的方案。
+这个脚本不能修复所有网络问题。当前 subtree squash 同步方案会下载 upstream 仓库对象以支持 merge，但 push 到 `dfbb/codez` 时 codez 主线只包含 squash 同步提交。
 
 ## 6. 危险操作：用 upstream 强制重置 codez/codex-rs
 

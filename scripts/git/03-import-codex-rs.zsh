@@ -8,6 +8,7 @@ CODEZ_BRANCH="${1:-main}"
 CODEX_BRANCH="${2:-main}"
 UPSTREAM_REMOTE="upstream-codex"
 PREFIX="codex-rs"
+SPLIT_BRANCH="sync/codex-rs-import"
 
 SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
@@ -47,12 +48,16 @@ else
   git switch -c "$CODEZ_BRANCH"
 fi
 
-echo "Importing $UPSTREAM_REMOTE/$CODEX_BRANCH:$PREFIX as a snapshot..."
-mkdir -p "$PREFIX"
-git archive "$UPSTREAM_REMOTE/$CODEX_BRANCH:$PREFIX" | tar -x -C "$PREFIX"
+echo "Splitting $UPSTREAM_REMOTE/$CODEX_BRANCH:$PREFIX..."
+git branch -D "$SPLIT_BRANCH" >/dev/null 2>&1 || true
+git subtree split --prefix="$PREFIX" "$UPSTREAM_REMOTE/$CODEX_BRANCH" -b "$SPLIT_BRANCH"
 
-git add "$PREFIX"
-git commit -m "Import openai/codex $PREFIX snapshot"
+echo "Importing into codez/$PREFIX with subtree squash..."
+git subtree add --prefix="$PREFIX" "$SPLIT_BRANCH" \
+  --squash \
+  -m "Import openai/codex $PREFIX into codez"
+
+git branch -D "$SPLIT_BRANCH" >/dev/null 2>&1 || true
 
 echo
 echo "Import complete. Review the result, then push with:"
