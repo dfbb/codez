@@ -50,6 +50,16 @@ pub mod testing {
     ) -> Result<serde_json::Value, ConnError> {
         crate::connector::chat::build_chat_request(req, ctx)
     }
+
+    /// 把整段 SSE chunk 序列跑完，返回所有 `ResponseEvent`。
+    /// `done = true` 时自动调用 `finish()`（模拟 `[DONE]`）。
+    /// 供集成测试使用（集成测试访问不到 `#[cfg(test)]` 内的函数）。
+    pub fn translate_chat_sse_for_test(
+        chunks: &[serde_json::Value],
+        done: bool,
+    ) -> Result<Vec<codex_api::ResponseEvent>, ConnError> {
+        crate::connector::chat_sse::translate_chat_sse(chunks, done)
+    }
 }
 
 pub use config::{

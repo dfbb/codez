@@ -1,5 +1,6 @@
 mod anthropic;
 pub(crate) mod chat;
+pub(crate) mod chat_sse;
 mod chat_req;
 
 use async_trait::async_trait;
