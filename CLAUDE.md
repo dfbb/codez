@@ -47,6 +47,22 @@ codez 是基于 [openai/codex](https://github.com/openai/codex) 仓库 `codex-rs
   - patch 在**需要它的那个 codex-rs crate**（如 `codex-rs/core/Cargo.toml`）里加一条外部 path 依赖：`codez-<feature> = { path = "../../zmod/<feature>" }`，它作为普通 path 依赖被一起编译，不进 member 列表。
   - 注意避免依赖环：zmod crate 只应依赖被它接管的下层 crate（api/protocol 等），不要依赖会反过来依赖它的上层 crate（如 core）。
 
+**情况 B 的开发期测试（软链成为 workspace member）**：
+
+情况 B 的 crate 反向依赖 codex-api 且**不进 members**，由此带来一个 cargo 硬约束——它作为「非 member 的 path 依赖」时，**不能声明 `[dev-dependencies]`、不能跑 `tests/*.rs` 集成测试**（`cargo test -p` 报 `cannot be tested because it requires dev-dependencies and is not a member of the workspace`）；而 cargo 又**拒绝 codex-rs 之外的 member**（`not hierarchically below the workspace root`，因为 zmod crate 故意在 codex-rs 外）。两者夹击使其开发期无法用 wiremock 等 dev-dep、无法写集成测试。
+
+**解法：开发期用软链把 zmod crate 接进 codex-rs workspace 成为真 member**（仅供本地测试，不进 patch、不提交进 codex-rs 子树）：
+
+```bash
+ln -s ../zmod/<feature> codex-rs/<feature>     # 软链;cargo 视其为根下 member,绕过跨根限制
+# 在 codex-rs/Cargo.toml 的 members 末尾加一行(软链名,非 ../ 路径):
+#     "<feature>",
+```
+
+- 软链就位后，crate 是 workspace 正式 member：`cd codex-rs && cargo test -p codez-<feature>` 完整支持 `[dev-dependencies]` 与 `tests/*.rs` 集成测试，且**共享 codex-rs 的 `Cargo.lock` 与 `target`**（无版本漂移、复用已编译的 codex-api 树，快）。
+- **纪律**：软链 `codex-rs/<feature>` 必须写进根 `.gitignore`（如 `/codex-rs/llm-switch`），**绝不提交进 codex-rs 子树**；`codex-rs/Cargo.toml` 的 members 那一行与构建产生的 `codex-rs/Cargo.lock` 改动是 dev-only 脚手架，保持 uncommitted dirty，**不进 `patches/<feature>.patch`**。
+- 软链 + members 仅为「跑该 crate 自己的测试」；**生产接入仍是上面情况 B 的 core path 依赖 + 调用点**（patch 内容不变，core 要调用 `run()` 必须 Cargo 依赖它，与 member 身份无关）。`git reset --hard` 会撤掉 members 那行（软链因被 ignore 而留存）；按本约定两条命令即可重建。
+
 **对应关系示例**：
 
 ```text

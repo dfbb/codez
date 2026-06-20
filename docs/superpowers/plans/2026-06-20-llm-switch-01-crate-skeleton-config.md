@@ -4,7 +4,7 @@
 
 **Goal:** 建出 `zmod/llm-switch` crate(path 反指 codex-rs),实现 `config.rs` 读取 `~/.codex/config-zmod.toml` 的 `[llm-switch]` 段、`lib.rs` 的 `enabled()` / `route()` 路由判定与 `Route` 类型。本任务结束时:crate 在 codex-rs workspace 内 `cargo test -p codez-llm-switch` 通过,配置解析与 `auth_key` 拒绝规则有测试覆盖。
 
-> **构建方式见索引「开发期构建与测试」决策段(2026-06-20)**:本 crate 反向依赖 codex-api,**不独立编译**,而是通过 Task 09 patch 第①部分(`core/Cargo.toml` 加 path 依赖)**提前应用到 codex-rs 工作树**,被拉进 workspace 图统一编译。codex-rs 工作树因此在 Task 01–08 期间故意 dirty,**不提交进 codex-rs、不还原**。
+> **构建方式见索引「开发期构建与测试」决策段(2026-06-20)+ CLAUDE.md 情况 B「开发期测试」**:本 crate 反向依赖 codex-api,**不独立编译**;开发期用软链 `codex-rs/llm-switch -> ../zmod/llm-switch` + `codex-rs/Cargo.toml` members 加 `"llm-switch"`,使本 crate 成为 codex-rs workspace 真 member,在其中 `cargo test -p codez-llm-switch`(完整支持 dev-deps + 集成测试)。软链与 members 改动是 dev-only 脚手架,**不提交进 codex-rs、不进 patch**。
 
 **覆盖 spec:** §3(模块布局)、§5.2 / §5.3(config-zmod schema、密钥来源、`auth_key` 拒绝)、§6.1(构建集成情况 B)、§1(命名)。
 
@@ -13,8 +13,8 @@
 - Create: `zmod/llm-switch/src/lib.rs`
 - Create: `zmod/llm-switch/src/config.rs`
 - Create: `zmod/llm-switch/tests/config_test.rs`
-- 临时改(dev-build 使能,不提交进 codex-rs、不还原):`codex-rs/core/Cargo.toml`(加一行 path 依赖)
-- Modify: 仓库根 `.gitignore`(忽略 `zmod/llm-switch/Cargo.lock`)
+- Modify: 仓库根 `.gitignore`(已加 `/codex-rs/llm-switch`,忽略 dev 软链)
+- dev-only 脚手架(已由控制方就位,不提交、不进 patch):软链 `codex-rs/llm-switch`、`codex-rs/Cargo.toml` members 的 `"llm-switch"` 行
 
 **Interfaces:**
 - Produces(后续任务依赖):
@@ -52,7 +52,7 @@ tokio = { version = "1", features = ["rt", "macros", "sync"] }
 reqwest = { version = "0.12", features = ["stream", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+toml = "0.9"
 thiserror = "2"
 tracing = "0.1"
 
@@ -60,21 +60,24 @@ tracing = "0.1"
 tokio = { version = "1", features = ["rt", "macros", "sync", "test-util"] }
 ```
 
-> 注:`codex-api` / `codex-protocol` 的具体 crate 名以 `codex-rs/codex-api/Cargo.toml`、`codex-rs/protocol/Cargo.toml` 的 `[package] name` 为准(已核实:`codex-api`、`codex-protocol`;路径 `../../codex-rs/codex-api`、`../../codex-rs/protocol`)。reqwest / tokio 版本对齐 codex-rs workspace(`grep -E 'reqwest|^tokio' codex-rs/Cargo.toml`),避免重复编译。两条 codex-* path 依赖**保持激活,不注释**。
+> 注:`codex-api` / `codex-protocol` 的 crate 名已核实为 `codex-api`、`codex-protocol`,路径 `../../codex-rs/codex-api`、`../../codex-rs/protocol`。reqwest / tokio / toml 版本对齐 codex-rs workspace(`grep -E 'reqwest|^tokio|^toml' codex-rs/Cargo.toml`,如 toml 实为 `0.9`),避免重复编译。两条 codex-* path 依赖**保持激活,不注释**。`[dev-dependencies]` 正常声明——软链 member 模式下可用(见下)。
 
-并在仓库根 `.gitignore` 加一行忽略本 crate 独立产物锁:`zmod/llm-switch/Cargo.lock`(本 crate 在 workspace 内编译,不携带自己的 lock)。
+- [ ] **Step 1b: 确认 dev 软链脚手架已就位(控制方已配,勿改 codex-rs 源码)**
 
-- [ ] **Step 1b: 应用 dev-build 构建接线(让 crate 进 workspace 图)**
+开发期把本 crate 接进 codex-rs workspace 跑测试的软链脚手架**已由控制方就位**(见索引「开发期构建与测试」/ CLAUDE.md 情况 B「开发期测试」):
 
-把 Task 09 patch 第①部分提前应用到 codex-rs 工作树——在 `codex-rs/core/Cargo.toml` 的 `[dependencies]` 末尾加一行:
-
-```toml
-codez-llm-switch = { path = "../../zmod/llm-switch" }
+```bash
+codex-rs/llm-switch -> ../zmod/llm-switch      # 软链(已建,已 gitignore)
+codex-rs/Cargo.toml  members 含 "llm-switch"   # 已加(uncommitted dirty)
 ```
 
-这让本 crate 作为 core 的 path 依赖被拉进 codex-rs workspace 图,从而可用 `cargo test -p codez-llm-switch`(crate 不入 `members`,情况 B)。
+你只需**确认**它在位即可,不要重复创建或改 codex-rs 源码:
+```bash
+ls -l codex-rs/llm-switch && grep -n '"llm-switch"' codex-rs/Cargo.toml
+```
+若缺失(如刚 `git reset --hard` 撤掉了 members 行),按上面两条重建:`ln -s ../zmod/llm-switch codex-rs/llm-switch`(若软链不在)+ 在 members 末尾加 `"llm-switch",`。
 
-> **纪律**:此改动是 dev-build 使能器,**仅留在 codex-rs 工作树(uncommitted)**,本任务提交**不含** `codex-rs/**`。`codex-rs/core/Cargo.toml`(及构建生成的 `codex-rs/Cargo.lock`)在 Task 01–08 全程保持 dirty,**不得 `git checkout` 还原**——Task 09 才连同 client.rs 调用点一起导出进 `patches/llm-switch.patch` 并还原 codex-rs。core 此时只多一个未被引用的依赖(无 warning),不影响 `-p codez-llm-switch` 编译。
+> **纪律**:软链与 members 行是 dev-only 脚手架,**本任务提交不含 `codex-rs/**`**;`codex-rs/Cargo.toml`(members 行)与构建生成的 `codex-rs/Cargo.lock` 在 Task 01–08 全程保持 dirty,**不得 `git checkout` 还原**,**不进 patch**。生产接入由 Task 09 patch(core path 依赖 + client.rs)负责,与软链无关。
 
 - [ ] **Step 2: 写失败测试(配置解析)**
 
@@ -381,13 +384,15 @@ mod tests {
 Run: `cd codex-rs && cargo test -p codez-llm-switch`
 Expected: `config_test` 4 个 + lib 内 2 个全 PASS。
 
-> 因 Step 1b 已把 path 依赖接进 workspace 图,本命令在 codex-rs workspace 内编译本 crate,codex-api/codex-protocol 共享 workspace 锁与版本。**首次编译会拉起 codex-api 依赖树,可能数分钟**,这是已知且可接受的;用足够长的超时耐心等待,不要因为慢就注释依赖。若真因依赖冲突失败(非单纯慢),停下并报告精确 cargo 错误。
+> 因 Step 1b 的软链使本 crate 成为 workspace member,本命令在 codex-rs workspace 内编译它(集成测试 + dev-deps 完整可用),codex-api/codex-protocol 共享 workspace 锁/target。`config_test.rs` 是真正的集成测试(`tests/` 下),不是 lib 内单元测试。**若是全新 target,首次编译会拉起 codex-api 依赖树,可能数分钟**;用足够长超时耐心等(可先 `cargo build -p codez-llm-switch` 预热)。若真因依赖冲突失败(非单纯慢),停下并报告精确 cargo 错误,不要变通注释依赖。
 
 - [ ] **Step 8: 提交(只提交 crate 与 codez 自有文件)**
 
 ```bash
-git add zmod/llm-switch/Cargo.toml zmod/llm-switch/src/lib.rs zmod/llm-switch/src/config.rs zmod/llm-switch/tests/config_test.rs .gitignore
+git add zmod/llm-switch/Cargo.toml zmod/llm-switch/src/lib.rs zmod/llm-switch/src/config.rs zmod/llm-switch/tests/config_test.rs
 git commit -m "feat(llm-switch): crate skeleton + config-zmod parsing and routing"
 ```
 
-> **不要** `git add codex-rs/`。`codex-rs/core/Cargo.toml` 与 `codex-rs/Cargo.lock` 的 dirty 改动是 dev-build 使能器,留在工作树、不进任何提交(Task 09 才导出 patch)。提交后 `git status` 应仍显示 codex-rs 下这两个文件为 modified——这是预期状态。
+>(`.gitignore` 的软链忽略行已由控制方先行提交,本任务不再含。)
+
+> **不要** `git add codex-rs/`。`codex-rs/Cargo.toml`(members 多了 `"llm-switch"` 行)与构建生成的 `codex-rs/Cargo.lock` 的 dirty 改动是 dev-only 脚手架,留在工作树、不进任何提交。软链 `codex-rs/llm-switch` 已被 `.gitignore` 忽略。提交后 `git status` 应仍显示 `codex-rs/Cargo.toml`、`codex-rs/Cargo.lock` 为 modified——预期状态。
