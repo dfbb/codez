@@ -288,7 +288,9 @@ codex 上下文压缩会破坏请求结构(孤儿 tool_call/result、有 `tool_c
 - **孤儿 tool_call / tool_use**(有调用、无对应结果)→ **注入合成占位结果**(content 如 `[No output available yet]`),不硬失败。
 - **孤儿 tool_result / tool_output**(有结果、无前序调用)→ **删除该孤儿结果**,不硬失败。
 - **有 `tool_choice`/`tool_config` 但 `tools` 为空**(压缩删光工具定义)→ **strip 掉 `tool_choice`/`tool_config`** + warn(否则上游报 "tool_choice is set but no tools are provided")。
-- 三者都只作用于发往上游的请求**副本**,不动 codex 本地历史;各记 warning。
+- **chat 专属:tool 消息重排**(复刻 llm-rosetta `_reorder_tool_messages`,`converters/openai_chat/message_ops.py`)。Chat Completions 要求 `role:"tool"` 消息**紧跟**产生对应 `tool_calls` 的 `role:"assistant"` 消息;codex 在 Responses 格式里把 `function_call_output` 与其它 item 交错排布(见 openai/codex PR #7038),转成 chat 扁平消息序列后 tool 消息会与其 assistant 分离 → 上游 400。**仅 id 配对(§4.8)不够,必须重排**:出站到 chat 前,把 tool 消息按各自 `tool_call_id` 归组,遍历非 tool 消息,在每条带 `tool_calls` 的 assistant 后**按 `tool_calls` 顺序**插回匹配的 tool 消息;未匹配上的 tool 消息**追加到末尾**(不静默丢弃)+ warn。重排发生即记一条 warning。
+  - **anthropic 不需要**:其 `tool_result` 是 user 回合内的 content block、按回合归组(§4.3),不是扁平消息序列,无此扁平排序问题。
+- 以上各项都只作用于发往上游的请求**副本**,不动 codex 本地历史;各记 warning。
 
 > 注:这与 §4.0 的"不支持变体硬失败"不冲突——§4.0 处理的是**v1 不支持的项类型**(native/custom 工具),§4.10 处理的是**支持的标准 function 工具因压缩产生的结构破损**,后者修复、前者拒绝。
 
