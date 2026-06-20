@@ -198,7 +198,7 @@ trait Connector {
 
 - **请求**:`instructions` → 顶层 `system`;`input[Message]` → `messages`(role 仅 user/assistant);`input[FunctionCall]` → assistant `content[{type:"tool_use", id, name, input}]`(**`arguments` 字符串 → parse 成对象**);`input[FunctionCallOutput]` → user `content[{type:"tool_result", tool_use_id, content}]`;`tools` → `tools[{name, description, input_schema}]`;**`max_tokens` 必填** —— 缺省由 config-zmod 的 `default_max_tokens` 填充(兜底常量 4096)。
 - **响应 SSE → ResponseEvent**:`content_block_delta`/`text_delta` → `OutputTextDelta`(仅展示)**并累计文本**;`tool_use` block + `input_json_delta` 聚合(**对象 → stringify 回 `arguments` 字符串**) → `OutputItemDone(FunctionCall)`;**完成前按 §4.5 合成 assistant message 的 `OutputItemDone`**;`message_delta`(usage) + `message_stop` → `Completed{…}`(§4.5,`response_id` 用 `message_start.message.id` 或合成,`end_turn` 由 `stop_reason` 映射);`error` → 失败。
-- **硬约束**:tool_use ↔ tool_result 配对完整;Reasoning 出站处置见 §4.4。
+- **硬约束**:tool_use ↔ tool_result 配对完整——**不完整时按 §4.10 修复**(注入合成结果 / 删孤儿结果 / strip 空 tools 的 tool_choice),不硬失败;Reasoning 出站处置见 §4.4。
 
 ### 4.5 响应完成契约(修正:必须合成 assistant message 完成项 + 补全 Completed)
 
@@ -280,6 +280,29 @@ OutputItemDone(ResponseItem::Message {
 | `InputImage` | **v1 硬失败**(§4.6 同理,无能力判定) | **v1 硬失败** |
 
 > v1 文本(InputText/OutputText)正常映射,**图片硬失败**;role 由所在 `Message.role` 决定(anthropic 仅 user/assistant,system 走顶层 `system`)。
+
+### 4.10 工具配对 / 配置完整性(修正:复刻 llm-rosetta,不硬失败)
+
+codex 上下文压缩会破坏请求结构(孤儿 tool_call/result、有 `tool_choice` 但无 tools)——llm-rosetta 的 `fix_orphaned_tool_calls` / `strip_orphaned_tool_config`(`converters/anthropic/`、`converters/base/tools.py`)正是为此而生。**这正是本项目场景,应复刻其修复行为,不硬失败**(硬失败会让压缩后的正常会话直接挂掉):
+
+- **孤儿 tool_call / tool_use**(有调用、无对应结果)→ **注入合成占位结果**(content 如 `[No output available yet]`),不硬失败。
+- **孤儿 tool_result / tool_output**(有结果、无前序调用)→ **删除该孤儿结果**,不硬失败。
+- **有 `tool_choice`/`tool_config` 但 `tools` 为空**(压缩删光工具定义)→ **strip 掉 `tool_choice`/`tool_config`** + warn(否则上游报 "tool_choice is set but no tools are provided")。
+- 三者都只作用于发往上游的请求**副本**,不动 codex 本地历史;各记 warning。
+
+> 注:这与 §4.0 的"不支持变体硬失败"不冲突——§4.0 处理的是**v1 不支持的项类型**(native/custom 工具),§4.10 处理的是**支持的标准 function 工具因压缩产生的结构破损**,后者修复、前者拒绝。
+
+### 4.11 `tool_choice` / `parallel_tool_calls` 映射(修正:统一规则)
+
+`ResponsesApiRequest` 顶层的工具控制字段(非工具定义本身):
+
+- **`parallel_tool_calls`**(修正:anthropic 有对应,不能丢):
+  - chat → 透传 `parallel_tool_calls`。
+  - anthropic → 映射到 `tool_choice.disable_parallel_tool_use`(llm-rosetta `anthropic/tool_ops.py`):codex `parallel_tool_calls == false` → `disable_parallel_tool_use = true`;`true`/未设 → 不设(anthropic 默认并行)。
+- **`tool_choice`**(修正:统一为"会改变工具链语义的强制选择不可降级 → 硬失败"):
+  - `auto` / `none` → 映射到目标对应档(chat `"auto"`/`"none"`;anthropic `{type:"auto"}` / `{type:"none"}`)。
+  - **强制调用特定工具 / 强制必调(`required` / 指定函数)**:这会改变工具链语义。目标能等价表达则映射(chat `{type:"function", function:{name}}` / `"required"`;anthropic `{type:"tool", name}` / `{type:"any"}`);**目标无法等价表达该强制语义时 → 硬失败**(不降级、不 warn 放行——降级会让模型行为偏离 codex 预期)。
+  - 即:**可表达就映射,不可表达的强制档一律硬失败**(取代此前"warn 放行"与"硬失败"并存的矛盾写法)。
 
 ## 5. 配置与路由(config-zmod)
 
@@ -383,8 +406,9 @@ default_max_tokens = 8192
 | 级别 | 字段(示例) | 处置 |
 |---|---|---|
 | **可安全忽略**(纯传输/缓存元数据,不影响模型输出) | `store`、`include`、`prompt_cache_key`、`service_tier`、`client_metadata` | 静默丢弃 |
-| **降级转换**(目标有近似表达,尽力映射,丢真实语义时记 warning) | **请求级 `reasoning` 配置**(`ResponsesApiRequest.reasoning`,即 effort/summary,**非**历史里的加密 `Reasoning` item——后者按 §4.4 出站丢弃)→ anthropic→`thinking` / chat→`reasoning_effort`,无则丢+warn;`parallel_tool_calls`(chat 透传 / anthropic 无直接对应→丢+warn)、`tool_choice`(映射到目标 tool_choice;无法表达的强制档→warn)、`text.format` 结构化输出 schema(chat→`response_format` json_schema;anthropic 无→降级为指令或 warn) | 尽力映射 + 必要时 warn |
-| **必须硬失败**(静默丢会破坏模型可见语义/工具链,且无法降级) | 图片/多模态输入而目标模型无视觉能力;承载工具调用/结果的不支持 `ResponseItem` 变体(§4.0 标"硬失败"者);`tool_choice` 指定了目标完全无法表达的必调工具 | 返回 `ApiError`,不发请求 |
+| **降级转换**(目标有近似表达,尽力映射,丢真实语义时记 warning) | **请求级 `reasoning` 配置**(`ResponsesApiRequest.reasoning`,即 effort/summary,**非**历史里的加密 `Reasoning` item——后者按 §4.4 出站丢弃)→ anthropic→`thinking` / chat→`reasoning_effort`,无则丢+warn;`text.format` 结构化输出 schema(chat→`response_format` json_schema;anthropic 无→降级为指令或 warn) | 尽力映射 + 必要时 warn |
+| **专项规则**(见对应小节,不在此泛化) | `parallel_tool_calls`、`tool_choice` → §4.11;孤儿 tool_call/result、空 tools 的 tool_choice → §4.10 | 见 §4.10 / §4.11 |
+| **必须硬失败**(静默丢会破坏模型可见语义/工具链,且无法降级) | 图片/多模态输入(§4.9/§4.6,v1 一律);承载工具调用/结果的不支持 `ResponseItem` 变体(§4.0 标"硬失败"者);目标无法等价表达的强制 `tool_choice`(§4.11) | 返回 `ApiError`,不发请求 |
 
 > 实现期:每个连接器对上表逐项落实,黄金测试覆盖"降级"与"硬失败"两类断言。
 
