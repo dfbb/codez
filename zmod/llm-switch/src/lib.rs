@@ -51,6 +51,28 @@ pub mod testing {
         crate::connector::chat::build_chat_request(req, ctx)
     }
 
+    /// 构造针对 anthropic connector 的最小 `EgressCtx`。
+    pub fn dummy_ctx_anthropic(model: &str, default_max_tokens: Option<u32>) -> EgressCtx {
+        EgressCtx {
+            base_url: "https://api.anthropic.com".into(),
+            model: model.to_string(),
+            auth: crate::AuthKind::XApiKey,
+            key: Some("test-key".into()),
+            anthropic_version: Some("2023-06-01".into()),
+            path_override: None,
+            default_max_tokens,
+            http: reqwest::Client::new(),
+        }
+    }
+
+    /// 转发 `build_anthropic_request`，供集成测试调用内部逻辑。
+    pub fn build_anthropic_request_for_test(
+        req: &codex_api::ResponsesApiRequest,
+        ctx: &EgressCtx,
+    ) -> Result<serde_json::Value, ConnError> {
+        crate::connector::anthropic::build_anthropic_request(req, ctx)
+    }
+
     /// 把整段 SSE chunk 序列跑完，返回所有 `ResponseEvent`。
     /// `done = true` 时自动调用 `finish()`（模拟 `[DONE]`）。
     /// 供集成测试使用（集成测试访问不到 `#[cfg(test)]` 内的函数）。

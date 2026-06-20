@@ -1,4 +1,5 @@
-mod anthropic;
+pub(crate) mod anthropic;
+mod anthropic_req;
 pub(crate) mod chat;
 pub(crate) mod chat_sse;
 mod chat_req;

@@ -1,3 +1,5 @@
+pub(crate) use super::anthropic_req::build_anthropic_request;
+
 use async_trait::async_trait;
 
 use super::{Connector, EgressCtx};
