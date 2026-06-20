@@ -82,6 +82,16 @@ pub mod testing {
     ) -> Result<Vec<codex_api::ResponseEvent>, ConnError> {
         crate::connector::chat_sse::translate_chat_sse(chunks, done)
     }
+
+    /// 把整段 Anthropic Messages SSE 事件序列跑完，返回所有 `ResponseEvent`。
+    /// `done = true` 时自动调用 `finish()`（模拟 `message_stop`）。
+    /// 供集成测试使用（集成测试访问不到 `#[cfg(test)]` 内的函数）。
+    pub fn translate_anthropic_sse_for_test(
+        events: &[serde_json::Value],
+        done: bool,
+    ) -> Result<Vec<codex_api::ResponseEvent>, ConnError> {
+        crate::connector::anthropic_sse::translate_anthropic_sse(events, done)
+    }
 }
 
 pub use config::{
