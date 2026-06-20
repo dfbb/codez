@@ -155,55 +155,20 @@ pub(crate) fn build_anthropic_request(
             }
 
             // ── v1 硬失败变体（§4.0）─────────────────────────────────
-            ResponseItem::LocalShellCall { .. } => {
-                return Err(ConnError::HardFail(
-                    "LocalShellCall 在 v1 anthropic connector 中不支持".into(),
-                ));
-            }
-            ResponseItem::ToolSearchCall { .. } => {
-                return Err(ConnError::HardFail(
-                    "ToolSearchCall 在 v1 anthropic connector 中不支持".into(),
-                ));
-            }
-            ResponseItem::ToolSearchOutput { .. } => {
-                return Err(ConnError::HardFail(
-                    "ToolSearchOutput 在 v1 anthropic connector 中不支持".into(),
-                ));
-            }
-            ResponseItem::WebSearchCall { .. } => {
-                return Err(ConnError::HardFail(
-                    "WebSearchCall 在 v1 anthropic connector 中不支持".into(),
-                ));
-            }
-            ResponseItem::ImageGenerationCall { .. } => {
-                return Err(ConnError::HardFail(
-                    "ImageGenerationCall 在 v1 anthropic connector 中不支持".into(),
-                ));
-            }
-            ResponseItem::CustomToolCall { .. } => {
-                return Err(ConnError::HardFail(
-                    "CustomToolCall 在 v1 anthropic connector 中不支持".into(),
-                ));
-            }
-            ResponseItem::CustomToolCallOutput { .. } => {
-                return Err(ConnError::HardFail(
-                    "CustomToolCallOutput 在 v1 anthropic connector 中不支持".into(),
-                ));
-            }
-            ResponseItem::Compaction { .. } => {
-                return Err(ConnError::HardFail(
-                    "Compaction（加密内容）在 v1 anthropic connector 中不支持".into(),
-                ));
-            }
-            ResponseItem::ContextCompaction { .. } => {
-                return Err(ConnError::HardFail(
-                    "ContextCompaction（加密内容）在 v1 anthropic connector 中不支持".into(),
-                ));
-            }
-            ResponseItem::Other => {
-                return Err(ConnError::HardFail(
-                    "未知 ResponseItem 变体（Other）在 v1 anthropic connector 中不支持".into(),
-                ));
+            ResponseItem::LocalShellCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::ToolSearchOutput { .. }
+            | ResponseItem::WebSearchCall { .. }
+            | ResponseItem::ImageGenerationCall { .. }
+            | ResponseItem::CustomToolCall { .. }
+            | ResponseItem::CustomToolCallOutput { .. }
+            | ResponseItem::Compaction { .. }
+            | ResponseItem::ContextCompaction { .. }
+            | ResponseItem::Other => {
+                return Err(ConnError::HardFail(format!(
+                    "{} 在 v1 anthropic connector 中不支持",
+                    crate::connector::variant_name(item)
+                )));
             }
         }
     }

@@ -13,6 +13,7 @@
 /// - ResponseItem 变体（16个）：Message/AgentMessage/Reasoning/LocalShellCall/FunctionCall/
 ///   ToolSearchCall/FunctionCallOutput/CustomToolCall/CustomToolCallOutput/ToolSearchOutput/
 ///   WebSearchCall/ImageGenerationCall/Compaction/CompactionTrigger/ContextCompaction/Other
+use codex_protocol::config_types::Verbosity;
 use codex_protocol::models::{
     AgentMessageInputContent, ContentItem, FunctionCallOutputBody, FunctionCallOutputContentItem,
     FunctionCallOutputPayload, ResponseItem,
@@ -783,4 +784,35 @@ fn multiple_orphan_calls_injected_in_order() {
         .map(|b| b["tool_use_id"].as_str().unwrap())
         .collect();
     assert_eq!(ids, vec!["orphan_a", "orphan_b"], "多孤儿应按出现顺序注入");
+}
+
+// ============================================================
+// §7.1 text.format → 系统指令追加（json_schema 专项测试）
+// ============================================================
+
+/// 验证 text.format 为 json_schema 时，顶层 system 追加 JSON schema 指令。
+/// TextFormatType 当前只有 JsonSchema 一个变体（见 codex-api/src/common.rs），
+/// 通过 create_text_param_for_request 构造带 format 的 TextControls。
+#[test]
+fn text_format_json_schema_appends_system_instruction() {
+    let schema = json!({"type": "object", "properties": {"answer": {"type": "string"}}});
+    let text_controls =
+        codex_api::create_text_param_for_request(None::<Verbosity>, &Some(schema), false);
+    assert!(text_controls.is_some(), "schema 非空时应返回 TextControls");
+
+    let mut req = base_req();
+    req.instructions = "You are a helpful assistant.".into();
+    req.text = text_controls;
+
+    let v = build(&req, &ctx()).unwrap();
+    let system = v["system"].as_str().expect("system 字段应为字符串");
+    assert!(
+        system.contains("You must respond with valid JSON matching this schema:"),
+        "text.format=json_schema 应在 system 中追加 schema 指令，实际 system: {system:?}"
+    );
+    // 原始 instructions 也应保留（追加而非替换）
+    assert!(
+        system.contains("You are a helpful assistant."),
+        "system 应保留原始 instructions，实际: {system:?}"
+    );
 }
