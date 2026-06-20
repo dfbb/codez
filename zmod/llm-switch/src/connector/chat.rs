@@ -10,12 +10,17 @@ pub struct ChatConnector;
 impl Connector for ChatConnector {
     async fn run(
         &self,
-        _req: codex_api::ResponsesApiRequest,
-        _ctx: &EgressCtx,
+        req: codex_api::ResponsesApiRequest,
+        ctx: &EgressCtx,
     ) -> Result<codex_api::ResponseStream, codex_api::ApiError> {
-        // 实体逻辑见 Task 04（请求）+ Task 05（SSE）+ Task 08（接线）。
-        Err(codex_api::ApiError::InvalidRequest {
-            message: "chat connector not implemented yet".into(),
-        })
+        let body = build_chat_request(&req, ctx).map_err(codex_api::ApiError::from)?;
+        let url = crate::http::egress_url(
+            &ctx.base_url,
+            crate::config::Connector::Chat,
+            ctx.path_override.as_deref(),
+        );
+        let headers = super::egress_headers(ctx, None)?;
+        let translator = Box::new(super::chat_sse::ChatSseState::default());
+        super::run_egress(url, headers, body, ctx.http.clone(), translator).await
     }
 }

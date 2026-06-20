@@ -224,6 +224,17 @@ fn map_usage(u: &Value) -> TokenUsage {
     }
 }
 
+// ─── SseTranslator impl ──────────────────────────────────────────────────────
+
+impl crate::connector::SseTranslator for ChatSseState {
+    fn push(&mut self, data: &serde_json::Value) -> Result<Vec<codex_api::ResponseEvent>, crate::connector::ConnError> {
+        self.push_chunk(data)
+    }
+    fn finish(&mut self) -> Vec<codex_api::ResponseEvent> {
+        self.finish()
+    }
+}
+
 // ─── 便利函数（供 testing 模块和直接调用） ────────────────────────────────────
 
 /// 把整段 SSE chunk 序列跑完，返回所有事件。

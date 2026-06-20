@@ -10,12 +10,17 @@ pub struct AnthropicConnector;
 impl Connector for AnthropicConnector {
     async fn run(
         &self,
-        _req: codex_api::ResponsesApiRequest,
-        _ctx: &EgressCtx,
+        req: codex_api::ResponsesApiRequest,
+        ctx: &EgressCtx,
     ) -> Result<codex_api::ResponseStream, codex_api::ApiError> {
-        // 实体逻辑见 Task 06（请求）+ Task 07（SSE）+ Task 08（接线）。
-        Err(codex_api::ApiError::InvalidRequest {
-            message: "anthropic connector not implemented yet".into(),
-        })
+        let body = build_anthropic_request(&req, ctx).map_err(codex_api::ApiError::from)?;
+        let url = crate::http::egress_url(
+            &ctx.base_url,
+            crate::config::Connector::Anthropic,
+            ctx.path_override.as_deref(),
+        );
+        let headers = super::egress_headers(ctx, ctx.anthropic_version.as_deref())?;
+        let translator = Box::new(super::anthropic_sse::AnthropicSseState::default());
+        super::run_egress(url, headers, body, ctx.http.clone(), translator).await
     }
 }

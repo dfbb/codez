@@ -3,6 +3,7 @@ mod http;
 mod pipeline;
 mod transform;
 mod connector;
+mod sse;
 
 /// 测试辅助模块（集成测试入口；不进入正式公共 API）。
 #[doc(hidden)]
@@ -40,6 +41,7 @@ pub mod testing {
             path_override: None,
             default_max_tokens: None,
             http: reqwest::Client::new(),
+            auth_fallback: None,
         }
     }
 
@@ -62,6 +64,7 @@ pub mod testing {
             path_override: None,
             default_max_tokens,
             http: reqwest::Client::new(),
+            auth_fallback: None,
         }
     }
 
@@ -92,6 +95,27 @@ pub mod testing {
     ) -> Result<Vec<codex_api::ResponseEvent>, ConnError> {
         crate::connector::anthropic_sse::translate_anthropic_sse(events, done)
     }
+
+    /// 返回 chat 连接器的 `SseTranslator` 实例（供 `run_egress_for_test` 使用）。
+    pub fn chat_translator() -> Box<dyn crate::SseTranslator> {
+        Box::new(crate::connector::chat_sse::ChatSseState::default())
+    }
+
+    /// 构造最小合法鉴权头（Bearer + 测试密钥）。
+    pub fn dummy_headers() -> reqwest::header::HeaderMap {
+        crate::http::build_headers(crate::AuthKind::Bearer, Some("testkey"), None)
+            .expect("dummy_headers should not fail")
+    }
+
+    /// 转发 `sse::run_egress`，供 `run_test.rs` 集成测试使用。
+    pub async fn run_egress_for_test(
+        url: String,
+        headers: reqwest::header::HeaderMap,
+        body: serde_json::Value,
+        translator: Box<dyn crate::SseTranslator>,
+    ) -> Result<codex_api::ResponseStream, codex_api::ApiError> {
+        crate::sse::run_egress(url, headers, body, reqwest::Client::new(), translator).await
+    }
 }
 
 pub use config::{
@@ -99,7 +123,7 @@ pub use config::{
 };
 pub use http::{build_headers, default_path, egress_url, resolve_key, HttpError};
 pub use pipeline::{default_plugins, run_transforms, TransformPlugin};
-pub use connector::{make_connector, ConnError, Connector as ConnectorTrait, EgressCtx};
+pub use connector::{make_connector, ConnError, Connector as ConnectorTrait, EgressCtx, SseTranslator};
 
 use std::sync::OnceLock;
 
@@ -108,6 +132,54 @@ use std::sync::OnceLock;
 pub struct Route {
     pub provider_id: String,
     pub cfg: ProviderCfg,
+}
+
+/// 主入口（Task 09 patch 调用契约，签名逐字固定）。
+///
+/// 流水线：变换层 → 组装 `EgressCtx`（含密钥退路）→ 派发连接器。
+/// `base_url` 必填；缺失时早返回 `ApiError::InvalidRequest`。
+pub async fn run(
+    rt: Route,
+    mut request: codex_api::ResponsesApiRequest,
+    api_auth: codex_api::SharedAuthProvider,
+) -> Result<codex_api::ResponseStream, codex_api::ApiError> {
+    // ① 变换层（v1 直通）
+    let plugins = pipeline::default_plugins();
+    pipeline::run_transforms(&plugins, &mut request)
+        .map_err(codex_api::ApiError::from)?;
+
+    // ② base_url 必填校验（§ plan Step 6 注）
+    let base_url = rt.cfg.base_url.clone().ok_or_else(|| {
+        codex_api::ApiError::InvalidRequest {
+            message: format!("provider {} missing base_url", rt.provider_id),
+        }
+    })?;
+
+    // ③ 密钥解析
+    let key = http::resolve_key(&rt.cfg)
+        .map_err(|e| codex_api::ApiError::InvalidRequest { message: e.to_string() })?;
+
+    // ④ 出口模型：config 覆盖 > 请求里的 model
+    let model = rt.cfg.model.clone().unwrap_or_else(|| request.model.clone());
+
+    let ctx = connector::EgressCtx {
+        base_url,
+        model,
+        auth: rt.cfg.auth,
+        key,
+        anthropic_version: rt.cfg.anthropic_version.clone(),
+        path_override: rt.cfg.path.clone(),
+        default_max_tokens: rt.cfg.default_max_tokens,
+        http: shared_http_client(),
+        auth_fallback: Some(api_auth),
+    };
+    let connector = connector::make_connector(rt.cfg.connector);
+    connector.run(request, &ctx).await
+}
+
+fn shared_http_client() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new).clone()
 }
 
 /// 进程级配置缓存。运行时从 ~/.codex/config-zmod.toml 读一次。
