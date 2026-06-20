@@ -22,6 +22,10 @@ require_clean_worktree() {
   fi
 }
 
+has_subtree_metadata() {
+  git log --grep="git-subtree-dir: $PREFIX" --format=%H -1 -- "$PREFIX" | grep -q .
+}
+
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "Error: not inside a git repository."
   exit 1
@@ -51,9 +55,22 @@ git branch -D "$SPLIT_BRANCH" >/dev/null 2>&1 || true
 git subtree split --prefix="$PREFIX" "$UPSTREAM_REMOTE/$CODEX_BRANCH" -b "$SPLIT_BRANCH"
 
 echo "Merging latest upstream $PREFIX into codez/$PREFIX with subtree squash..."
-git subtree merge --prefix="$PREFIX" "$SPLIT_BRANCH" \
-  --squash \
-  -m "Sync openai/codex $PREFIX into codez"
+if has_subtree_metadata; then
+  git subtree merge --prefix="$PREFIX" "$SPLIT_BRANCH" \
+    --squash \
+    -m "Sync openai/codex $PREFIX into codez"
+else
+  echo "No subtree metadata found for $PREFIX; bootstrapping subtree merge metadata."
+  split_commit="$(git rev-parse "$SPLIT_BRANCH")"
+  git merge --squash --allow-unrelated-histories \
+    -s recursive \
+    -Xsubtree="$PREFIX" \
+    "$SPLIT_BRANCH"
+  git commit \
+    -m "Sync openai/codex $PREFIX into codez" \
+    -m "git-subtree-dir: $PREFIX
+git-subtree-split: $split_commit"
+fi
 
 git branch -D "$SPLIT_BRANCH" >/dev/null 2>&1 || true
 
