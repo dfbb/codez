@@ -136,8 +136,8 @@ trait Connector {
 |---|---|---|---|
 | `Message` | 翻译 | 翻译 | 文本/多模态 content;图片输入见 §7 字段分级 |
 | `AgentMessage` | 纯 `InputText` 降级为 assistant 文本;含 `EncryptedContent` → **硬失败** | 同 | `AgentMessageInputContent` 有 `InputText`/`EncryptedContent` 两变体(`protocol/src/models.rs`)。后者非 Responses 上游读不了,硬失败而非静默丢(丢了改变模型可见的助手历史) |
-| `FunctionCall` | 翻译(`tool_calls`) | 翻译(`tool_use`,arguments 字符串→对象) | 标准函数工具调用,**v1 唯一支持的工具调用形态** |
-| `FunctionCallOutput` | 见 §4.6 分内容处置 | 见 §4.6 | payload 可为文本或 `ContentItems`(含 `InputImage`/`EncryptedContent`),不能一律当文本/输入图片处理 |
+| `FunctionCall` | 翻译(`tool_calls`);**`namespace.is_some()` → 硬失败** | 翻译(`tool_use`,arguments 字符串→对象);**`namespace.is_some()` → 硬失败** | 标准函数工具调用,**v1 唯一支持的工具调用形态**;`FunctionCall.namespace: Option<String>` 是 codex 命名空间工具,目标协议无可逆表达,v1 硬失败(与 §4.0b namespace 工具定义硬失败一致) |
+| `FunctionCallOutput` | 见 §4.6(含 `success` 状态) | 见 §4.6 | payload = `body`(文本或 `ContentItems`,含 `InputImage`/`EncryptedContent`)+ `success: Option<bool>`,不能只映射 body |
 | `CustomToolCall` / `CustomToolCallOutput` | **硬失败** | **硬失败** | freeform/custom 工具序列化为 `type:"custom"`、无标准 JSON schema 参数,Chat/Anthropic function tool 未必能表达;**v1 不支持,硬失败**(见 §4.0b) |
 | `LocalShellCall` | **硬失败** | **硬失败** | provider/native 工具历史项,**不等同**普通 function call;译成函数会让模型继续引用目标 provider 并不存在的工具。v1 硬失败 |
 | `ToolSearchCall` / `ToolSearchOutput` | **硬失败** | **硬失败** | 同上,provider/native 工具,v1 硬失败 |
@@ -226,11 +226,14 @@ OutputItemDone(ResponseItem::Message {
 
 `FunctionCallOutputPayload` 的 body 可是纯文本,也可是 `ContentItems(Vec<...>)`,其中可含 `InputImage`、`EncryptedContent`(`protocol/src/models.rs`)。连接器按内容分级,**不得**把图片当"输入图片"规则硬塞、也不得静默发错加密内容:
 
-| 输出内容 | chat | anthropic |
+| 输出内容 / 字段 | chat | anthropic |
 |---|---|---|
-| 文本 / `ContentItems` 纯文本 | `role:"tool"` 的 `content` 文本 | `tool_result.content` 文本 |
-| `InputImage` | **v1 硬失败** | **v1 硬失败** |
-| `EncryptedContent` | **硬失败** | **硬失败** |
+| `body` 文本 / `ContentItems` 纯文本 | `role:"tool"` 的 `content` 文本 | `tool_result.content` 文本 |
+| `body` `InputImage` | **v1 硬失败** | **v1 硬失败** |
+| `body` `EncryptedContent` | **硬失败** | **硬失败** |
+| `success: Option<bool>`(工具成败状态) | 无等价字段:`success == Some(false)` 时在 `content` 文本**前置**简短失败标记(如 `[tool error] ` 前缀)+ warn;`Some(true)`/`None` 不加 | 映射到 `tool_result.is_error = (success == Some(false))`(anthropic 原生支持);`None` → 不设 |
+
+> `success` 处理理由:Chat 的 `role:"tool"` 没有成败字段,**静默丢失败状态会误导模型**,故前置文本标记 + warn;Anthropic 有原生 `is_error`,直接映射。
 
 > **图片 v1 一律硬失败(修正)**:config / `ModelProviderInfo` 都没有 `supports_images`/视觉能力字段(已核对),连接器无从判定 DeepSeek/Claude 当前模型是否支持图片。因此 **v1 把一切图片(输入图片、工具图片输出)都硬失败**,不做能力猜测。将来要支持时,先在 config-zmod 增 `supports_images = true` 之类显式能力字段再放行。
 > 与 §4.4 一致:加密内容只在 responses 直通透传;chat/anthropic 出口遇到 `EncryptedContent`(无论在 message、AgentMessage 还是 tool output 里)一律硬失败。
