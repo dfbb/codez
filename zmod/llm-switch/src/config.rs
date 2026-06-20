@@ -76,16 +76,18 @@ pub fn load_config_from_str(toml_text: &str, allow_inline_key: bool) -> Result<C
     };
     let mut providers = HashMap::new();
     for (id, raw) in sw.providers {
+        // 任何 provider(含 responses)出现内联 auth_key 且 allow_inline_key=false 时,
+        // 都在解析期报错——必须在 connector match 之前检测,避免 responses 的 continue 绕过。
+        if raw.auth_key.is_some() && !allow_inline_key {
+            return Err(ConfigError::InlineAuthKeyForbidden(id.clone()));
+        }
         // responses / 未知 connector 不进可路由表(走原生分支,spec §4.1)
         let connector = match raw.connector.as_str() {
             "chat" => Connector::Chat,
             "anthropic" => Connector::Anthropic,
             "responses" => continue,
-            other => return Err(ConfigError::UnknownConnector(id.clone(), other.to_string())),
+            other => return Err(ConfigError::UnknownConnector(id, other.to_string())),
         };
-        if raw.auth_key.is_some() && !allow_inline_key {
-            return Err(ConfigError::InlineAuthKeyForbidden(id.clone()));
-        }
         let auth = match raw.auth.as_str() {
             "bearer" => AuthKind::Bearer,
             "x-api-key" => AuthKind::XApiKey,

@@ -75,3 +75,17 @@ fn missing_section_means_disabled() {
     assert!(!cfg.enabled);
     assert!(cfg.providers.is_empty());
 }
+
+#[test]
+fn unknown_connector_is_rejected() {
+    let toml = "[llm-switch]\nenabled=true\n[llm-switch.providers.x]\nconnector=\"anthropics\"\nauth=\"bearer\"\n";
+    let err = load_config_from_str(toml, false).unwrap_err();
+    assert!(matches!(err, codez_llm_switch::ConfigError::UnknownConnector(_, _)), "应为 UnknownConnector: {err:?}");
+}
+
+#[test]
+fn responses_provider_with_auth_key_is_rejected() {
+    let toml = "[llm-switch]\nenabled=true\n[llm-switch.providers.openai]\nconnector=\"responses\"\nauth=\"bearer\"\nauth_key=\"sk-secret\"\n";
+    let err = load_config_from_str(toml, false).unwrap_err();
+    assert!(format!("{err}").contains("auth_key"), "应提到 auth_key: {err}");
+}
