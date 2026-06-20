@@ -8,7 +8,7 @@ use serde_json::json;
 #[test]
 fn text_stream_synthesizes_message_and_completed() {
     let events = vec![
-        json!({"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":3}}}),
+        json!({"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":3,"cache_read_input_tokens":7}}}),
         json!({"type":"content_block_start","index":0,"content_block":{"type":"text"}}),
         json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}}),
         json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}),
@@ -58,6 +58,7 @@ fn text_stream_synthesizes_message_and_completed() {
     assert_eq!(*end, Some(true)); // end_turn → true
     let u = usage.as_ref().unwrap();
     assert_eq!(u.input_tokens, 3);
+    assert_eq!(u.cached_input_tokens, 7); // cache_read_input_tokens 正确上报
     assert_eq!(u.output_tokens, 2);
     assert_eq!(u.total_tokens, 5);
 }
@@ -168,8 +169,8 @@ fn no_arg_tool_use_gets_empty_object() {
 
 /// 从 JSONL fixture 文件逐行解析 JSON 事件。
 fn load_jsonl(name: &str) -> Vec<serde_json::Value> {
-    // 黄金 fixture 必须用 include_str! 加载，确保文件内容在编译时嵌入并 assert_eq! 完整对比。
-    // 此处用运行时路径读取（集成测试的 fixtures 路径约定），与 chat_sse_test.rs 保持一致。
+    // fixture 经 include_str! 做编译期存在性校验，运行时由 fs::read_to_string 解析驱动状态机，
+    // 输出经 assert_eq! 断言。此处用运行时路径读取（集成测试的 fixtures 路径约定），与 chat_sse_test.rs 保持一致。
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(name);

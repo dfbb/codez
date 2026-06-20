@@ -48,6 +48,8 @@ pub(crate) struct AnthropicSseState {
     stop_reason: Option<String>,
     /// message_start.message.usage.input_tokens。
     input_tokens: i64,
+    /// message_start.message.usage.cache_read_input_tokens。
+    cached_input_tokens: i64,
     /// message_delta.usage.output_tokens。
     output_tokens: i64,
     /// content block 按 index 聚合。BTreeMap 保证有序输出。
@@ -82,12 +84,16 @@ impl AnthropicSseState {
                             self.response_id.get_or_insert_with(|| id.to_string());
                         }
                     }
-                    if let Some(it) = message
-                        .get("usage")
-                        .and_then(|u| u.get("input_tokens"))
-                        .and_then(Value::as_i64)
-                    {
-                        self.input_tokens = it;
+                    if let Some(usage) = message.get("usage") {
+                        if let Some(it) = usage.get("input_tokens").and_then(Value::as_i64) {
+                            self.input_tokens = it;
+                        }
+                        if let Some(ct) = usage
+                            .get("cache_read_input_tokens")
+                            .and_then(Value::as_i64)
+                        {
+                            self.cached_input_tokens = ct;
+                        }
                     }
                 }
             }
@@ -208,7 +214,7 @@ impl AnthropicSseState {
             response_id,
             token_usage: Some(TokenUsage {
                 input_tokens: self.input_tokens,
-                cached_input_tokens: 0,
+                cached_input_tokens: self.cached_input_tokens,
                 output_tokens: self.output_tokens,
                 reasoning_output_tokens: 0,
                 total_tokens: self.input_tokens + self.output_tokens,
