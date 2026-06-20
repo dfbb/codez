@@ -1,0 +1,27 @@
+[package]
+name = "codez-llm-switch"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "codez_llm_switch"
+path = "src/lib.rs"
+
+[dependencies]
+codex-api = { path = "../../codex-rs/codex-api" }
+codex-protocol = { path = "../../codex-rs/protocol" }
+tokio = { version = "1", features = ["rt", "macros", "sync"] }
+reqwest = { version = "0.12", features = ["stream", "json"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+thiserror = "2"
+tracing = "0.1"
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "sync", "test-util"] }
+wiremock = "0.6"
+futures = "0.3"

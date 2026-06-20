@@ -42,6 +42,22 @@
 - `SharedAuthProvider = Arc<dyn AuthProvider>`,`AuthProvider::add_auth_headers(&self, &mut HeaderMap)`(`codex-api/src/auth.rs`)。
 - core 接入点:`ApiResponsesClient::new(transport, api_provider, api_auth).with_telemetry(...).stream_request(request, options)`(`core/src/client.rs:1324`);`map_response_stream(api_stream, session_telemetry, inference_trace_attempt)`(`client.rs:1758`)。
 
+## 开发期构建与测试(架构决策,2026-06-20 定;详见 CLAUDE.md 情况 B「开发期测试」)
+
+`zmod/llm-switch` 反向依赖 codex-api/codex-protocol(其依赖全 `{ workspace = true }`,版本由 codex-rs workspace 钉死)。两条 cargo 硬约束已实测确认:① 它作为「非 member 的 path 依赖」时**不能用 `[dev-dependencies]`、不能跑 `tests/*.rs` 集成测试**;② cargo **拒绝 codex-rs 之外的 member**。而 Task 08 需 `wiremock`(dev-dep)、多个任务用 `tests/*.rs` 黄金测试。
+
+**决策:开发期(Task 01–08)用软链把本 crate 接进 codex-rs workspace 成为真 member**,从而完整支持 dev-deps + 集成测试,且共享 codex-rs 的 `Cargo.lock`/`target`(无漂移、复用已编译 codex-api 树)。落地:
+
+- **软链 + members(dev-only 脚手架)**:
+  ```bash
+  ln -s ../zmod/llm-switch codex-rs/llm-switch    # 已建;cargo 视其为根下 member
+  # codex-rs/Cargo.toml 的 members 末尾加一行: "llm-switch",
+  ```
+  软链 `codex-rs/llm-switch` 写进根 `.gitignore`(`/codex-rs/llm-switch`);members 那行与构建生成的 `codex-rs/Cargo.lock` 改动保持 uncommitted dirty。**这些都不进 `patches/llm-switch.patch`、不提交进 codex-rs 子树。**
+- **测试命令统一**:各任务 brief 里 `cd zmod/llm-switch && cargo test --test X` 一律读作 **`cd codex-rs && cargo test -p codez-llm-switch`**(或 `--test X`)。集成测试与 dev-deps 因 member 身份而完整可用。
+- **crate 自身**:`zmod/llm-switch/Cargo.toml` 的 codex-api/codex-protocol 为**激活** path 依赖(不注释);其余版本对齐 workspace;不声明自己的 `[workspace]`;`[dev-dependencies]` 正常声明(member 下可用);不提交自己的 `Cargo.lock`。
+- **生产接入不变**:Task 09 patch 仍是 core path 依赖 + client.rs 调用点(情况 B);软链/members 仅为 dev 测试,与 patch 无关。`git reset --hard` 会撤 members 行(软链被 ignore 而留存),按上面两条命令重建。
+
 ## 任务依赖图
 
 ```

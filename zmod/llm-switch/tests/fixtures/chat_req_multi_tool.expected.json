@@ -1,0 +1,64 @@
+{
+  "model": "deepseek-v4-pro",
+  "stream": true,
+  "stream_options": { "include_usage": true },
+  "parallel_tool_calls": true,
+  "messages": [
+    { "role": "user", "content": "Run two tools." },
+    {
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "id": "call_a",
+          "type": "function",
+          "function": {
+            "name": "tool_a",
+            "arguments": "{\"x\":1}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_a",
+      "content": "result_a"
+    },
+    {
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "id": "call_b",
+          "type": "function",
+          "function": {
+            "name": "tool_b",
+            "arguments": "{\"y\":2}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_b",
+      "content": "result_b"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_a",
+        "description": null,
+        "parameters": { "type": "object" }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "tool_b",
+        "description": null,
+        "parameters": { "type": "object" }
+      }
+    }
+  ],
+  "tool_choice": "auto"
+}
