@@ -96,8 +96,7 @@ zmod/llm-switch/
     transform/
       mod.rs                 # 将来 compressor 落这里;v1 空
     connector/
-      mod.rs                 # Connector trait + 工厂(按路由选)
-      responses.rs           # 直通:委托 codex 原生 client + SSE 透传
+      mod.rs                 # Connector trait + 工厂(仅 chat / anthropic);responses 不在此(走原生分支,§4.1)
       chat.rs                # Responses ⇄ Chat Completions(deepseek / OpenAI 兼容)
       anthropic.rs           # Responses ⇄ Anthropic Messages
     sse.rs                   # 上游 SSE 读取 + 逐事件喂给连接器的流式翻译
@@ -123,9 +122,11 @@ trait Connector {
 }
 ```
 
-`EgressCtx` 带 base_url、鉴权、reqwest transport、目标 model、config-zmod 覆盖项。连接器内部起一个 task 读上游 SSE → 翻译 → `tx.send(Ok(ResponseEvent))`,失败时 `tx.send(Err(ApiError…))`。
+`EgressCtx` 带 base_url、鉴权、reqwest transport、目标 model、config-zmod 覆盖项。
 
-三者的字段映射逐条对照 `../3rd/proxy/llm-rosetta` 对应 converter(`tests/converters/anthropic`、`openai_chat`)作为正确性基准。
+**`run` 的错误/spawn 边界(修正,见 §4.7)**:`run` 必须**同步**完成 HTTP 请求 + 状态码校验 + SSE 响应建立;**非 2xx(建连/鉴权失败)直接 `return Err(ApiError)`**(落到外层 `match stream_result`,走 `map_api_error` + `record_failed`);**只有拿到 2xx SSE 后才 `spawn` 读取任务**,task 内的流中错误才 `tx.send(Err(ApiError…))`(走 `map_response_events` 的流错误处理)。
+
+字段映射的正确性基准见 §8(chat 用 rust-llm-proxy;anthropic 用 llm-rosetta Python converter 或自建 fixture),**不要**笼统按"对应 converter"找。
 
 ### 4.0 `ResponseItem` 变体处置策略(修正:覆盖全集,杜绝静默丢弃)
 
@@ -148,9 +149,11 @@ trait Connector {
 
 > 原则:**v1 工具能力只支持标准 `FunctionCall`/`FunctionCallOutput`**;一切 provider/native/custom/freeform 工具项(及未知变体)一律**硬失败**返回 `ApiError`,绝不"warning 丢弃"、也绝不强行译成函数调用(那会让模型引用上游不存在的工具)。仅 codex 纯内部记账项可出站丢弃,且实现期须核实。
 
-### 4.1 responses(直通)
+### 4.1 responses(直通 = 不进 zmod 路由)
 
-不翻译,直接委托 codex 原生 `ApiResponsesClient`。存在意义:让管线 ① 变换层(将来的压缩)也能作用于原生 Responses 上游。零协议风险。
+修正(消除与 §2.4 遥测的矛盾):**v1 没有 zmod 内的 responses 连接器**。`connector = "responses"`(或 provider 未在 config-zmod 列出)→ `route()` 返回 **`None`** → 直接走 `stream_responses_api` 的**原生分支**(`ApiResponsesClient` + 完整 `.with_telemetry(...)`)。这样 responses 上游既零协议翻译、又**完整保留** codex-api 请求/SSE 遥测。
+
+> 取舍:本来想"让 ① 变换层也作用于原生 Responses 上游",但那要求 responses 也进 zmod、从而丢掉 codex-api 遥测(§2.4)。v1 选择**遥测优先**:responses 不进 zmod。将来要在 responses 直通上做压缩时,再决定是把 telemetry 传进 zmod、还是在原生分支前插一个只改 `ResponsesApiRequest` 的 hook(不接管流)。
 
 ### 4.0b `tools` 定义级分级(修正:不可表达工具在请求构造期就拦截)
 
@@ -173,7 +176,7 @@ trait Connector {
 |---|---|
 | chat | `/chat/completions` |
 | anthropic | `/v1/messages` |
-| responses | `/responses`(直通,实际走原生 client) |
+| responses | 不进 zmod(`route()` 返回 None,走原生分支,§4.1) |
 
 约定:**`base_url` 只写到 API 根、不含上面这段 `path`**;版本前缀(如 deepseek 的 `/v1`)算 `base_url` 的一部分。于是:
 
@@ -225,9 +228,10 @@ OutputItemDone(ResponseItem::Message {
 | 输出内容 | chat | anthropic |
 |---|---|---|
 | 文本 / `ContentItems` 纯文本 | `role:"tool"` 的 `content` 文本 | `tool_result.content` 文本 |
-| `InputImage` | 目标模型有视觉能力 → 译为对应图片内容块;**无视觉 → 硬失败** | 同(anthropic `tool_result` 支持 image content block,模型须支持视觉) |
-| `EncryptedContent` | **硬失败** | **硬失败** | 非 Responses 上游读不了,绝不静默发错 |
+| `InputImage` | **v1 硬失败** | **v1 硬失败** |
+| `EncryptedContent` | **硬失败** | **硬失败** |
 
+> **图片 v1 一律硬失败(修正)**:config / `ModelProviderInfo` 都没有 `supports_images`/视觉能力字段(已核对),连接器无从判定 DeepSeek/Claude 当前模型是否支持图片。因此 **v1 把一切图片(输入图片、工具图片输出)都硬失败**,不做能力猜测。将来要支持时,先在 config-zmod 增 `supports_images = true` 之类显式能力字段再放行。
 > 与 §4.4 一致:加密内容只在 responses 直通透传;chat/anthropic 出口遇到 `EncryptedContent`(无论在 message、AgentMessage 还是 tool output 里)一律硬失败。
 
 ### 4.4 Reasoning / encrypted_content 的出站处置(修正:"透传"无落点)
@@ -237,6 +241,38 @@ OpenAI Responses 的 `Reasoning`(含 `encrypted_content`)是 OpenAI 专有的加
 - **chat / anthropic 出站**:`Reasoning` item **不写入**发往上游的请求体(出站丢弃)。连接器只构造请求**副本**,codex 的本地会话历史(原始 `ResponseItem` 列表)**不受影响**,后续轮次仍完整保留 reasoning。
 - **responses 直通**:`encrypted_content` 原样透传不变(走原生 client,本就如此)。
 - 这样既不向不懂它的上游发无效字段,也不破坏 codex 本地对 reasoning 的保真。
+
+### 4.7 `run` 的错误与 spawn 边界(修正:建连错误必须同步返回)
+
+为了让外层 `match stream_result` 能正确分流错误,`run` 内部分两阶段:
+
+1. **同步阶段**(在 `run` 返回前完成):构造出口请求 → 发 HTTP → **校验状态码** → 建立 SSE 响应读取器。任何此阶段的失败(建连失败、DNS、非 2xx 状态、鉴权 4xx)**直接 `return Err(ApiError)`**,落到外层 `match`(`map_api_error` + `inference_trace_attempt.record_failed`)。
+2. **异步阶段**(`spawn`):**仅当**第 1 阶段成功拿到 2xx SSE 才 `spawn` 读取 task;task 内的流中错误(SSE 中断、坏帧)走 `tx.send(Err(ApiError…))` → `map_response_events` 流错误处理。
+
+**401 注意**:外层那条 `TransportError::Http{status==UNAUTHORIZED}` 臂会触发 **OpenAI 专属**的 `handle_unauthorized` recovery,对第三方上游无意义。为免无谓 recovery 循环,连接器对第三方的 **401/403 等鉴权失败映射成普通 `ApiError`(非 `UNAUTHORIZED` transport 变体)**,使其落到通用失败臂直接上报。
+
+### 4.8 工具调用 id 映射(修正:配对字段写全)
+
+`ResponseItem::FunctionCall.call_id: String`(`protocol/src/models.rs`,稳定 id)是配对锚点。出站构造请求历史时:
+
+| 方向 | chat | anthropic |
+|---|---|---|
+| FunctionCall(assistant 调用) | `messages[assistant].tool_calls[].id = call_id`,`function.name/arguments` 同填 | `content[{type:"tool_use", id: call_id, name, input}]` |
+| FunctionCallOutput(工具结果) | `messages[tool].tool_call_id = call_id` | `content[{type:"tool_result", tool_use_id: call_id, content}]` |
+
+入站(上游 SSE → `OutputItemDone(FunctionCall)`)反向:chat `tool_calls[].id` / anthropic `tool_use.id` → 回填 `call_id`,保证下一轮历史里 call ↔ output 仍按 `call_id` 配对。**全程用同一个 `call_id` 串起 assistant 调用与 tool 结果**,不另造 id(除非上游完全不给 id,则连接器合成并在 call/result 间保持一致)。
+
+### 4.9 `Message.content` 逐项映射(修正:ContentItem 三变体)
+
+`ContentItem` 有 `InputText`/`InputImage`/`OutputText`(`protocol/src/models.rs`)。user/assistant 历史里都可能出现。映射:
+
+| ContentItem | chat | anthropic |
+|---|---|---|
+| `InputText` | message `content` 文本(user/system) | message `content[{type:"text"}]` |
+| `OutputText` | assistant message `content` 文本 | assistant `content[{type:"text"}]` |
+| `InputImage` | **v1 硬失败**(§4.6 同理,无能力判定) | **v1 硬失败** |
+
+> v1 文本(InputText/OutputText)正常映射,**图片硬失败**;role 由所在 `Message.role` 决定(anthropic 仅 user/assistant,system 走顶层 `system`)。
 
 ## 5. 配置与路由(config-zmod)
 
