@@ -458,17 +458,26 @@ fn apply_field_downgrade(body: &mut Value, req: &codex_api::ResponsesApiRequest)
     }
 
     // text.format → response_format（仅 json_schema）
+    // TextFormat 序列化为 {"type":"json_schema","strict":bool,"schema":{...},"name":"..."}
+    // Chat API 期望 {"type":"json_schema","json_schema":{"name":"...","schema":{...},"strict":true}}
     if let Some(text_controls) = &req.text {
         if let Some(format) = &text_controls.format {
-            // TextFormat 需要检查是否含 json_schema；序列化后检查
             if let Ok(fmt_val) = serde_json::to_value(format) {
-                // 若是 json_schema 格式，包装成 response_format
                 if fmt_val.get("type").and_then(|t| t.as_str()) == Some("json_schema") {
-                    body["response_format"] = fmt_val;
-                } else if fmt_val.get("json_schema").is_some() {
+                    // 从 TextFormat 字段重组 Chat API 所需形状
+                    let mut json_schema = serde_json::Map::new();
+                    if let Some(name) = fmt_val.get("name") {
+                        json_schema.insert("name".into(), name.clone());
+                    }
+                    if let Some(schema) = fmt_val.get("schema") {
+                        json_schema.insert("schema".into(), schema.clone());
+                    }
+                    if let Some(strict) = fmt_val.get("strict") {
+                        json_schema.insert("strict".into(), strict.clone());
+                    }
                     body["response_format"] = json!({
                         "type": "json_schema",
-                        "json_schema": fmt_val.get("json_schema").unwrap()
+                        "json_schema": Value::Object(json_schema)
                     });
                 } else {
                     tracing::warn!(

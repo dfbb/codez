@@ -1,6 +1,6 @@
 mod anthropic;
 pub(crate) mod chat;
-pub(crate) mod chat_req;
+mod chat_req;
 
 use async_trait::async_trait;
 use thiserror::Error;

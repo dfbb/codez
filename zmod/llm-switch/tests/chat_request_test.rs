@@ -627,3 +627,217 @@ fn tool_choice_empty_no_key() {
     let v = build(&req, &ctx()).unwrap();
     assert!(v.get("tool_choice").is_none(), "空 tool_choice 不应写入 JSON");
 }
+
+// ============================================================
+// C1: 黄金 fixture 对比测试
+// ============================================================
+
+/// system+user+function call+tool result+assistant 完整往返，对比 fixture
+#[test]
+fn fixture_system_user_tool_roundtrip() {
+    let expected: serde_json::Value = serde_json::from_str(
+        include_str!("fixtures/chat_req_system_user_tool_roundtrip.expected.json"),
+    )
+    .expect("fixture JSON 解析失败");
+
+    let mut req = base_req();
+    req.instructions = "You are a helpful assistant.".into();
+    req.tools = vec![json!({
+        "type": "function",
+        "name": "get_weather",
+        "description": "Get current weather for a city",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "city": { "type": "string" }
+            },
+            "required": ["city"]
+        }
+    })];
+    req.tool_choice = "auto".into();
+    req.input = vec![
+        ResponseItem::Message {
+            id: None,
+            role: "user".into(),
+            content: vec![ContentItem::InputText {
+                text: "What is the weather in SF?".into(),
+            }],
+            phase: None,
+            metadata: None,
+        },
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "get_weather".into(),
+            namespace: None,
+            arguments: "{\"city\":\"SF\"}".into(),
+            call_id: "call_weather_1".into(),
+            metadata: None,
+        },
+        ResponseItem::FunctionCallOutput {
+            id: None,
+            call_id: "call_weather_1".into(),
+            output: FunctionCallOutputPayload {
+                body: FunctionCallOutputBody::Text("Sunny, 72°F".into()),
+                success: Some(true),
+            },
+            metadata: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "assistant".into(),
+            content: vec![ContentItem::OutputText {
+                text: "It's sunny and 72°F in SF.".into(),
+            }],
+            phase: None,
+            metadata: None,
+        },
+    ];
+
+    let actual = build(&req, &ctx()).unwrap();
+    assert_eq!(actual, expected);
+}
+
+/// 两个顺序工具往返（§4.10 重排），对比 fixture
+#[test]
+fn fixture_multi_tool_sequential() {
+    let expected: serde_json::Value = serde_json::from_str(
+        include_str!("fixtures/chat_req_multi_tool.expected.json"),
+    )
+    .expect("fixture JSON 解析失败");
+
+    let mut req = base_req();
+    req.tools = vec![
+        json!({"type": "function", "name": "tool_a"}),
+        json!({"type": "function", "name": "tool_b"}),
+    ];
+    req.tool_choice = "auto".into();
+    req.input = vec![
+        ResponseItem::Message {
+            id: None,
+            role: "user".into(),
+            content: vec![ContentItem::InputText {
+                text: "Run two tools.".into(),
+            }],
+            phase: None,
+            metadata: None,
+        },
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "tool_a".into(),
+            namespace: None,
+            arguments: "{\"x\":1}".into(),
+            call_id: "call_a".into(),
+            metadata: None,
+        },
+        ResponseItem::FunctionCallOutput {
+            id: None,
+            call_id: "call_a".into(),
+            output: FunctionCallOutputPayload {
+                body: FunctionCallOutputBody::Text("result_a".into()),
+                success: Some(true),
+            },
+            metadata: None,
+        },
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "tool_b".into(),
+            namespace: None,
+            arguments: "{\"y\":2}".into(),
+            call_id: "call_b".into(),
+            metadata: None,
+        },
+        ResponseItem::FunctionCallOutput {
+            id: None,
+            call_id: "call_b".into(),
+            output: FunctionCallOutputPayload {
+                body: FunctionCallOutputBody::Text("result_b".into()),
+                success: Some(true),
+            },
+            metadata: None,
+        },
+    ];
+
+    let actual = build(&req, &ctx()).unwrap();
+    assert_eq!(actual, expected);
+}
+
+// ============================================================
+// I1: response_format 正确映射（json_schema）
+// ============================================================
+
+/// text.format 含 json_schema 时，response_format 应为
+/// {"type":"json_schema","json_schema":{"name":...,"schema":...,"strict":...}}
+#[test]
+fn text_format_json_schema_maps_to_response_format() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "answer": { "type": "string" }
+        },
+        "required": ["answer"]
+    });
+    let text_controls =
+        codex_api::create_text_param_for_request(None, &Some(schema.clone()), true);
+
+    let mut req = base_req();
+    req.text = text_controls;
+
+    let v = build(&req, &ctx()).unwrap();
+    let rf = v
+        .get("response_format")
+        .expect("text.format 应产生 response_format 字段");
+    assert_eq!(
+        rf["type"], "json_schema",
+        "response_format.type 应为 json_schema"
+    );
+    let inner = rf
+        .get("json_schema")
+        .expect("response_format 应含 json_schema 对象");
+    assert_eq!(inner["schema"], schema, "json_schema.schema 应与输入 schema 一致");
+    assert_eq!(inner["strict"], true, "json_schema.strict 应为 true");
+    assert_eq!(
+        inner["name"], "codex_output_schema",
+        "json_schema.name 应与 TextFormat.name 一致"
+    );
+    // 不应把原始 TextFormat 的字段直接暴露在顶层
+    assert!(
+        rf.get("schema").is_none(),
+        "response_format 不应含裸 schema 字段（嵌套格式错误）"
+    );
+}
+
+// ============================================================
+// I2: 非 function 工具定义硬失败（§4.0b）
+// ============================================================
+
+/// native 类型工具定义 → 硬失败
+#[test]
+fn native_tool_definition_hard_fails() {
+    let mut req = base_req();
+    req.tools = vec![json!({"type": "native", "name": "shell"})];
+    assert!(build(&req, &ctx()).is_err(), "native 工具类型应硬失败");
+}
+
+/// provider 类型工具定义 → 硬失败
+#[test]
+fn provider_tool_definition_hard_fails() {
+    let mut req = base_req();
+    req.tools = vec![json!({"type": "provider", "name": "web_search"})];
+    assert!(build(&req, &ctx()).is_err(), "provider 工具类型应硬失败");
+}
+
+/// freeform 类型工具定义 → 硬失败
+#[test]
+fn freeform_tool_definition_hard_fails() {
+    let mut req = base_req();
+    req.tools = vec![json!({"type": "freeform", "name": "anything"})];
+    assert!(build(&req, &ctx()).is_err(), "freeform 工具类型应硬失败");
+}
+
+/// 无 type 字段的工具定义 → 硬失败
+#[test]
+fn no_type_tool_definition_hard_fails() {
+    let mut req = base_req();
+    req.tools = vec![json!({"name": "mystery_tool", "parameters": {"type": "object"}})];
+    assert!(build(&req, &ctx()).is_err(), "缺少 type 字段的工具定义应硬失败");
+}
