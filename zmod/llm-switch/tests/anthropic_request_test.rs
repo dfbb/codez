@@ -175,7 +175,7 @@ fn tool_output_maps_is_error() {
     assert_eq!(tr["tool_use_id"], "c");
     assert_eq!(tr["is_error"], true);
     // 内容应为错误文本
-    assert!(tr["content"].is_string() || tr["content"].is_array());
+    assert!(tr["content"].is_string(), "tool_result content 应为字符串");
 }
 
 #[test]
@@ -746,4 +746,41 @@ fn golden_system_user_tool_roundtrip() {
         "实际输出与黄金 fixture 不符\n实际:\n{}",
         serde_json::to_string_pretty(&actual).unwrap()
     );
+}
+
+#[test]
+fn multiple_orphan_calls_injected_in_order() {
+    // 验证多孤儿 FunctionCall 按出现顺序注入占位 tool_result
+    let mut req = base_req();
+    req.input = vec![
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "f1".into(),
+            namespace: None,
+            arguments: "{}".into(),
+            call_id: "orphan_a".into(),
+            metadata: None,
+        },
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "f2".into(),
+            namespace: None,
+            arguments: "{}".into(),
+            call_id: "orphan_b".into(),
+            metadata: None,
+        },
+    ];
+    let v = build(&req, &ctx()).unwrap();
+    // 取所有 tool_result block 的 tool_use_id 顺序
+    let ids: Vec<&str> = v["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "user")
+        .filter_map(|m| m["content"].as_array())
+        .flatten()
+        .filter(|b| b["type"] == "tool_result")
+        .map(|b| b["tool_use_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["orphan_a", "orphan_b"], "多孤儿应按出现顺序注入");
 }

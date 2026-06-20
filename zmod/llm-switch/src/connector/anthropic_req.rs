@@ -65,9 +65,9 @@ pub(crate) fn build_anthropic_request(
     // 用 (role, Vec<content block>) 有序列来积累，新 role 时新开一条。
     let mut turns: Vec<(String, Vec<Value>)> = Vec::new();
 
-    // call_id 追踪：已见调用集合、待补结果集合
+    // call_id 追踪：已见调用集合（O(1) 查找）、待补结果列表（按出现顺序，保证注入顺序确定）
     let mut seen_calls: HashSet<String> = HashSet::new();
-    let mut calls_needing_result: HashSet<String> = HashSet::new();
+    let mut calls_needing_result: Vec<String> = Vec::new();
 
     for item in &req.input {
         match item {
@@ -117,7 +117,7 @@ pub(crate) fn build_anthropic_request(
                     ConnError::HardFail(format!("FunctionCall arguments 非法 JSON: {e}"))
                 })?;
                 seen_calls.insert(call_id.clone());
-                calls_needing_result.insert(call_id.clone());
+                calls_needing_result.push(call_id.clone());
                 push_block(
                     "assistant",
                     json!({
@@ -141,7 +141,7 @@ pub(crate) fn build_anthropic_request(
                     );
                     continue;
                 }
-                calls_needing_result.remove(call_id);
+                calls_needing_result.retain(|id| id != call_id);
                 let block = tool_result_block(call_id, output)?;
                 push_block("user", block, &mut turns);
             }
@@ -445,7 +445,7 @@ fn apply_field_downgrade(body: &mut Value, req: &codex_api::ResponsesApiRequest)
         if reasoning.effort.is_some() {
             // 按 effort 近似映射：有 effort 时开启 thinking
             // Anthropic thinking 格式：{"type":"enabled","budget_tokens":N}
-            // 用保守预算 8000，避免超出 max_tokens
+            // 上限 8000：参考 Anthropic Extended Thinking 文档建议，保守值避免超出 max_tokens
             let budget = body["max_tokens"]
                 .as_u64()
                 .map(|m| (m / 2).max(1024).min(8000))
@@ -453,35 +453,38 @@ fn apply_field_downgrade(body: &mut Value, req: &codex_api::ResponsesApiRequest)
             body["thinking"] = json!({"type": "enabled", "budget_tokens": budget});
         } else if reasoning.summary.is_some() || reasoning.context.is_some() {
             tracing::warn!("reasoning.summary/context 在 v1 anthropic connector 中不支持，已丢弃");
+        } else {
+            // effort/summary/context 均为 None，reasoning 对象存在但无可映射字段，丢弃并 warn
+            tracing::warn!("reasoning 对象存在但 effort/summary/context 均为 None，已丢弃（v1 anthropic connector 无法映射）");
         }
     }
 
     // text.format → 降级为系统指令追加（Anthropic 无原生 response_format）
-    // 实现策略：在 system 字段末尾追加 JSON 格式指令
+    // 统一策略：对所有结构化输出 format（json_schema/json_object 等）追加系统指令，不静默丢弃
     if let Some(text_controls) = &req.text {
         if let Some(format) = &text_controls.format {
             if let Ok(fmt_val) = serde_json::to_value(format) {
-                if fmt_val.get("type").and_then(|t| t.as_str()) == Some("json_schema") {
-                    let schema_hint = format!(
+                let hint = if fmt_val.get("type").and_then(|t| t.as_str()) == Some("json_schema") {
+                    // json_schema：追加 schema 说明
+                    format!(
                         "\n\nYou must respond with valid JSON matching this schema: {}",
                         serde_json::to_string(&fmt_val).unwrap_or_default()
-                    );
-                    // 追加到 system（若存在）或设置新 system
-                    let existing_system = body
-                        .get("system")
-                        .and_then(|s| s.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    body["system"] = json!(format!("{existing_system}{schema_hint}"));
-                    tracing::warn!(
-                        "text.format json_schema 在 v1 anthropic connector 中降级为系统指令追加"
-                    );
+                    )
                 } else {
-                    tracing::warn!(
-                        format = ?fmt_val,
-                        "text.format 在 v1 anthropic connector 中无法映射，已丢弃"
-                    );
-                }
+                    // json_object 等其他结构化输出 format：追加通用 JSON 提示
+                    "\n\nRespond with valid JSON.".to_string()
+                };
+                // 追加到 system（若存在）或设置新 system
+                let existing_system = body
+                    .get("system")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                body["system"] = json!(format!("{existing_system}{hint}"));
+                tracing::warn!(
+                    format_type = ?fmt_val.get("type"),
+                    "text.format 在 v1 anthropic connector 中降级为系统指令追加"
+                );
             }
         }
     }

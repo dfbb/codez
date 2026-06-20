@@ -59,3 +59,26 @@ pub fn make_connector(kind: ConnectorKind) -> Box<dyn Connector> {
         ConnectorKind::Anthropic => Box::new(anthropic::AnthropicConnector),
     }
 }
+
+/// 返回 `ResponseItem` 变体名字符串（供 HardFail 错误信息使用）。
+pub(crate) fn variant_name(item: &codex_protocol::models::ResponseItem) -> &'static str {
+    use codex_protocol::models::ResponseItem::*;
+    match item {
+        Message { .. } => "Message",
+        AgentMessage { .. } => "AgentMessage",
+        Reasoning { .. } => "Reasoning",
+        LocalShellCall { .. } => "LocalShellCall",
+        FunctionCall { .. } => "FunctionCall",
+        ToolSearchCall { .. } => "ToolSearchCall",
+        FunctionCallOutput { .. } => "FunctionCallOutput",
+        CustomToolCall { .. } => "CustomToolCall",
+        CustomToolCallOutput { .. } => "CustomToolCallOutput",
+        ToolSearchOutput { .. } => "ToolSearchOutput",
+        WebSearchCall { .. } => "WebSearchCall",
+        ImageGenerationCall { .. } => "ImageGenerationCall",
+        Compaction { .. } => "Compaction",
+        CompactionTrigger { .. } => "CompactionTrigger",
+        ContextCompaction { .. } => "ContextCompaction",
+        Other => "Other",
+    }
+}
