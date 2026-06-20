@@ -114,6 +114,28 @@ fn tool_use_aggregates_partial_json_to_arguments_string() {
 }
 
 #[test]
+fn max_tokens_stop_reason_maps_end_turn_to_none() {
+    // 截断（max_tokens）既非模型主动结束也非工具调用 → end_turn 三态取 None。
+    let events = vec![
+        json!({"type":"message_start","message":{"id":"msg_3","usage":{"input_tokens":1}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"text"}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"truncat"}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":7}}),
+        json!({"type":"message_stop"}),
+    ];
+    let out = run(&events, true).unwrap();
+    let end = out
+        .iter()
+        .find_map(|e| match e {
+            ResponseEvent::Completed { end_turn, .. } => Some(*end_turn),
+            _ => None,
+        })
+        .expect("Completed");
+    assert_eq!(end, None); // max_tokens → end_turn 三态 None
+}
+
+#[test]
 fn error_event_fails() {
     let events =
         vec![json!({"type":"error","error":{"type":"overloaded_error","message":"x"}})];
