@@ -1,3 +1,5 @@
+pub(crate) use super::chat_req::build_chat_request;
+
 use async_trait::async_trait;
 
 use super::{Connector, EgressCtx};

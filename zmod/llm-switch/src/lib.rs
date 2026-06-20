@@ -4,6 +4,54 @@ mod pipeline;
 mod transform;
 mod connector;
 
+/// 测试辅助模块（集成测试入口；不进入正式公共 API）。
+#[doc(hidden)]
+pub mod testing {
+    use crate::connector::{ConnError, EgressCtx};
+
+    /// 构造最小 `ResponsesApiRequest` 样本（供各集成测试复用）。
+    pub fn sample_request() -> codex_api::ResponsesApiRequest {
+        codex_api::ResponsesApiRequest {
+            model: "test".into(),
+            instructions: String::new(),
+            input: vec![],
+            tools: vec![],
+            tool_choice: "auto".into(),
+            parallel_tool_calls: true,
+            reasoning: None,
+            store: false,
+            stream: true,
+            include: vec![],
+            service_tier: None,
+            prompt_cache_key: None,
+            text: None,
+            client_metadata: None,
+        }
+    }
+
+    /// 构造最小 `EgressCtx`（供各集成测试复用）。
+    pub fn dummy_ctx(model: &str) -> EgressCtx {
+        EgressCtx {
+            base_url: "https://api.example.com".into(),
+            model: model.to_string(),
+            auth: crate::AuthKind::Bearer,
+            key: Some("test-key".into()),
+            anthropic_version: None,
+            path_override: None,
+            default_max_tokens: None,
+            http: reqwest::Client::new(),
+        }
+    }
+
+    /// 转发 `build_chat_request`，供集成测试调用内部逻辑。
+    pub fn build_chat_request_for_test(
+        req: &codex_api::ResponsesApiRequest,
+        ctx: &EgressCtx,
+    ) -> Result<serde_json::Value, ConnError> {
+        crate::connector::chat::build_chat_request(req, ctx)
+    }
+}
+
 pub use config::{
     load_config_from_str, AuthKind, Config, ConfigError, Connector, ProviderCfg,
 };
