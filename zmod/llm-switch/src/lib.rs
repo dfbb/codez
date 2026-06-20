@@ -1,8 +1,10 @@
 mod config;
+mod http;
 
 pub use config::{
     load_config_from_str, AuthKind, Config, ConfigError, Connector, ProviderCfg,
 };
+pub use http::{build_headers, default_path, egress_url, resolve_key, HttpError};
 
 use std::sync::OnceLock;
 
