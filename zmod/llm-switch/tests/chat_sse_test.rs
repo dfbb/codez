@@ -79,6 +79,46 @@ fn missing_id_synthesizes_response_id() {
     assert!(rid.starts_with("llmswitch-"), "synth id when upstream omits id: {rid}");
 }
 
+#[test]
+fn cached_tokens_in_prompt_tokens_details_is_mapped() {
+    // usage 含 prompt_tokens_details.cached_tokens 时，
+    // 合成 Completed 的 token_usage.cached_input_tokens 应等于该值。
+    let chunks = vec![
+        text_chunk("resp-c", "Hi"),
+        json!({"id":"resp-c","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],
+               "usage":{
+                   "prompt_tokens": 10,
+                   "completion_tokens": 3,
+                   "total_tokens": 13,
+                   "prompt_tokens_details": {"cached_tokens": 7}
+               }}),
+    ];
+    let events = run(&chunks, true).unwrap();
+    let usage = events.iter().find_map(|e| match e {
+        ResponseEvent::Completed { token_usage, .. } => token_usage.as_ref(),
+        _ => None,
+    }).expect("Completed with usage");
+    assert_eq!(usage.cached_input_tokens, 7);
+    assert_eq!(usage.input_tokens, 10);
+    assert_eq!(usage.output_tokens, 3);
+}
+
+#[test]
+fn finish_reason_length_gives_end_turn_false() {
+    // finish_reason="length" 表示 token 截断，end_turn 应为 Some(false)。
+    let chunks = vec![
+        text_chunk("resp-l", "Truncated"),
+        json!({"id":"resp-l","choices":[{"index":0,"delta":{},"finish_reason":"length"}],
+               "usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}),
+    ];
+    let events = run(&chunks, true).unwrap();
+    let end_turn = events.iter().find_map(|e| match e {
+        ResponseEvent::Completed { end_turn, .. } => Some(*end_turn),
+        _ => None,
+    }).expect("Completed present");
+    assert_eq!(end_turn, Some(false));
+}
+
 // ─── Fixture-based 黄金测试 ───────────────────────────────────────────────────
 
 #[test]

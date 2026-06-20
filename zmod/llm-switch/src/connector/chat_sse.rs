@@ -156,6 +156,8 @@ impl ChatSseState {
         }
 
         // 2. 合成 assistant message 完成项（§4.5）
+        // 仅当有累计文本时才合成 assistant Message 完成项；纯 tool-call 响应只发 FunctionCall 项 + Completed
+        // （无文本即无可合成内容；是否需要空 Message 由 Task 08 接线时对照 codex 消费端确认）。
         if !self.text.is_empty() {
             out.push(ResponseEvent::OutputItemDone(ResponseItem::Message {
                 id: None,
@@ -194,11 +196,13 @@ impl ChatSseState {
 /// 把 `finish_reason` 映射到 `end_turn`。
 /// - `"stop"` → `Some(true)`（模型主动停止）
 /// - `"tool_calls"` → `Some(false)`（还需要工具调用）
-/// - 其他（`"length"`、未知）→ `None`
+/// - `"length"` → `Some(false)`（token 截断 = 非自然结束）
+/// - 其他未知 reason → `None`
 fn map_end_turn(fr: Option<&str>) -> Option<bool> {
     match fr {
         Some("stop") => Some(true),
         Some("tool_calls") => Some(false),
+        Some("length") => Some(false), // token 截断，非自然结束
         _ => None,
     }
 }
@@ -209,7 +213,11 @@ fn map_usage(u: &Value) -> TokenUsage {
     let g = |k: &str| u.get(k).and_then(Value::as_i64).unwrap_or(0);
     TokenUsage {
         input_tokens: g("prompt_tokens"),
-        cached_input_tokens: 0,
+        cached_input_tokens: u
+            .get("prompt_tokens_details")
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
         output_tokens: g("completion_tokens"),
         reasoning_output_tokens: 0,
         total_tokens: g("total_tokens"),
