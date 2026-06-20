@@ -1,10 +1,15 @@
 mod config;
 mod http;
+mod pipeline;
+mod transform;
+mod connector;
 
 pub use config::{
     load_config_from_str, AuthKind, Config, ConfigError, Connector, ProviderCfg,
 };
 pub use http::{build_headers, default_path, egress_url, resolve_key, HttpError};
+pub use pipeline::{default_plugins, run_transforms, TransformPlugin};
+pub use connector::{make_connector, ConnError, Connector as ConnectorTrait, EgressCtx};
 
 use std::sync::OnceLock;
 
