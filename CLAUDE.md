@@ -36,8 +36,16 @@ codez 是基于 [openai/codex](https://github.com/openai/codex) 仓库 `codex-rs
 **patch 命名**：
 
 - 文件：`patches/<feature>.patch`，文件名与对应 zmod crate 的 `<feature>` 完全一致。
-- 内容：仅包含为接入该 zmod 功能而对 `codex-rs` 做的最小侵入式改动（注册到 workspace `members`、在上游代码里插入调用点等）。
+- 内容：仅包含为接入该 zmod 功能而对 `codex-rs` 做的最小侵入式改动（构建集成见下、在上游代码里插入调用点等）。
 - 一个 `<feature>` 只对应一个 patch；若改动跨多个上游文件，仍合并进同一个 `<feature>.patch`，不要按文件拆分。
+
+**构建集成（按 crate 是否反向依赖 codex-rs 分两种）**：
+
+- **情况 A — zmod crate 不依赖 codex-rs 的 crate（独立功能）**：patch 把 `"../zmod/<feature>"` 加进 `codex-rs/Cargo.toml` 的 workspace `members`，随 workspace 一起编译。
+- **情况 B — zmod crate 反向依赖 codex-rs 的 crate**（如依赖 `codex-api`/`codex-protocol`）：**不要**把它加进 workspace `members`（跨 workspace 根、且要同步 `[workspace.dependencies]`，易出问题）。改为——
+  - zmod crate **不声明自己的 `[workspace]`**（否则被当 path 依赖编译时报 nested-workspace 错），用显式 path 反指依赖：`codex-api = { path = "../../codex-rs/codex-api" }` 等（不用 `workspace = true`）。
+  - patch 在**需要它的那个 codex-rs crate**（如 `codex-rs/core/Cargo.toml`）里加一条外部 path 依赖：`codez-<feature> = { path = "../../zmod/<feature>" }`，它作为普通 path 依赖被一起编译，不进 member 列表。
+  - 注意避免依赖环：zmod crate 只应依赖被它接管的下层 crate（api/protocol 等），不要依赖会反过来依赖它的上层 crate（如 core）。
 
 **对应关系示例**：
 
@@ -48,7 +56,7 @@ zmod/session-trace/        ->  patches/session-trace.patch
   Cargo.toml name = codez-session-trace
 ```
 
-**编译顺序**：先把 `patches/*.patch` 全部打到 `codex-rs` 上（patch 至少要把各 `codez-<feature>` 加入 workspace `members`），再对 `codex-rs` + `zmod` 一起 `cargo build`。
+**编译顺序**：先把 `patches/*.patch` 全部打到 `codex-rs` 上（patch 按上面情况 A/B 完成各 `codez-<feature>` 的构建集成），再对 `codex-rs` + `zmod` 一起 `cargo build`。
 
 ## zmod 运行时配置与开关
 
