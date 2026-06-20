@@ -116,6 +116,15 @@ pub mod testing {
     ) -> Result<codex_api::ResponseStream, codex_api::ApiError> {
         crate::sse::run_egress(url, headers, body, reqwest::Client::new(), translator).await
     }
+
+    /// 永不写鉴权头的 Noop `AuthProvider`（供实跑测试使用；testkey 自带 auth_key，无需退路）。
+    pub fn noop_auth_provider() -> codex_api::SharedAuthProvider {
+        struct Noop;
+        impl codex_api::AuthProvider for Noop {
+            fn add_auth_headers(&self, _h: &mut reqwest::header::HeaderMap) {}
+        }
+        std::sync::Arc::new(Noop)
+    }
 }
 
 pub use config::{
@@ -126,6 +135,13 @@ pub use pipeline::{default_plugins, run_transforms, TransformPlugin};
 pub use connector::{make_connector, ConnError, Connector as ConnectorTrait, EgressCtx, SseTranslator};
 
 use std::sync::OnceLock;
+
+/// 仅供实跑测试 / 独立运行：从 gitignored testkey.toml 读配置，允许内联 auth_key。
+pub fn load_testkey_config(path: &std::path::Path) -> Result<Config, ConfigError> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| ConfigError::Parse(e.to_string()))?;
+    load_config_from_str(&text, true)
+}
 
 /// 路由结果:命中某个被接管的 provider。
 #[derive(Debug, Clone)]
