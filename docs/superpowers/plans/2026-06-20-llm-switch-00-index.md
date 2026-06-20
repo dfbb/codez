@@ -42,6 +42,17 @@
 - `SharedAuthProvider = Arc<dyn AuthProvider>`,`AuthProvider::add_auth_headers(&self, &mut HeaderMap)`(`codex-api/src/auth.rs`)。
 - core 接入点:`ApiResponsesClient::new(transport, api_provider, api_auth).with_telemetry(...).stream_request(request, options)`(`core/src/client.rs:1324`);`map_response_stream(api_stream, session_telemetry, inference_trace_attempt)`(`client.rs:1758`)。
 
+## 开发期构建与测试(架构决策,2026-06-20 定)
+
+`zmod/llm-switch` 反向依赖 codex-api/codex-protocol,而后者所有依赖都用 `{ workspace = true }`(版本由 `codex-rs/Cargo.toml` 的 `[workspace.dependencies]` 钉死)。若在 `zmod/llm-switch/` 下**独立** `cargo test`,本 crate 不属任何 workspace,会独立解析 codex-api 整棵树、生成自己的 Cargo.lock、版本与 workspace 漂移——又慢又撞版本。**决策:开发期(Task 01–08)一律在 codex-rs workspace 内编译/测试**,与生产编译方式(Task 09 patch 接入后)完全一致。
+
+落地方式:
+
+- **构建接线提前**:把 Task 09 patch 的第①部分——`codex-rs/core/Cargo.toml` 的 `[dependencies]` 加 `codez-llm-switch = { path = "../../zmod/llm-switch" }`——**在 Task 01 就应用到 codex-rs 工作树**(uncommitted,不提交进 codex-rs 子树)。这一行让本 crate 作为 core 的 path 依赖被拉进 workspace 图,共享 `codex-rs/Cargo.lock`。Task 09 调用点逻辑(client.rs)仍按原计划在 Task 09 加,届时连同这行一起导出进 `patches/llm-switch.patch` 并 `git checkout` 还原 codex-rs。
+- **测试命令统一**:各任务 brief 里写的 `cd zmod/llm-switch && cargo test --test X` 一律读作 **`cd codex-rs && cargo nextest run -p codez-llm-switch`**(或 `cargo test -p codez-llm-switch --test X`)。`-p` 形式因 crate 已在 workspace 图内而可用。
+- **codex-rs 工作树故意 dirty**:`core/Cargo.toml`(+ 构建产生的 `Cargo.lock`)在 Task 01–08 期间保持已修改状态,这是 dev-build 使能器,**不得**提交进 codex-rs、**不得**被任何任务 `git checkout` 还原(直到 Task 09 正式导出 patch 时还原)。每个任务只提交 `zmod/llm-switch/**`(及 codez 自己的 patches/docs)。
+- **crate 自身**:`zmod/llm-switch/Cargo.toml` 的 codex-api/codex-protocol 为**激活** path 依赖(不注释);其余版本(reqwest/tokio 等)对齐 workspace;crate 不声明自己的 `[workspace]`;不进 codex-rs workspace `members`;不提交自己的 `Cargo.lock`(gitignore)。
+
 ## 任务依赖图
 
 ```
