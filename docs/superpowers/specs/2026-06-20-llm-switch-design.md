@@ -144,7 +144,8 @@ trait Connector {
 | `WebSearchCall` | **硬失败** | **硬失败** | 同上,v1 硬失败 |
 | `ImageGenerationCall` | **硬失败** | **硬失败** | 同上,v1 硬失败 |
 | `Reasoning` | 出站丢弃 | 出站丢弃 | 见 §4.4(encrypted_content 不可发往非 Responses 上游) |
-| `Compaction` / `CompactionTrigger` / `ContextCompaction` | 出站丢弃 | 出站丢弃 | codex 内部上下文压缩记账项,非上游可懂内容。**实现期须逐一核实**确实不携带模型可见正文,若携带则改硬失败 |
+| `Compaction` / `ContextCompaction` | **硬失败** | **硬失败** | 二者都带 `encrypted_content`(`Compaction.encrypted_content: String`、`ContextCompaction.encrypted_content: Option<String>`,已核对),承载模型可见的压缩历史。非 Responses 上游读不了,**静默丢会改变模型可见历史**,故硬失败(等价于:v1 不支持含这些项的历史)|
+| `CompactionTrigger` | 出站丢弃 | 出站丢弃 | 仅 `metadata`、无 `encrypted_content`/正文(已核对),纯触发标记,可安全丢弃 |
 | `Other` | **硬失败** | **硬失败** | 未知变体(`#[serde(other)]`),无法安全翻译 |
 
 > 原则:**v1 工具能力只支持标准 `FunctionCall`/`FunctionCallOutput`**;一切 provider/native/custom/freeform 工具项(及未知变体)一律**硬失败**返回 `ApiError`,绝不"warning 丢弃"、也绝不强行译成函数调用(那会让模型引用上游不存在的工具)。仅 codex 纯内部记账项可出站丢弃,且实现期须核实。
@@ -234,13 +235,16 @@ OutputItemDone(ResponseItem::Message {
 > **图片 v1 一律硬失败(修正)**:config / `ModelProviderInfo` 都没有 `supports_images`/视觉能力字段(已核对),连接器无从判定 DeepSeek/Claude 当前模型是否支持图片。因此 **v1 把一切图片(输入图片、工具图片输出)都硬失败**,不做能力猜测。将来要支持时,先在 config-zmod 增 `supports_images = true` 之类显式能力字段再放行。
 > 与 §4.4 一致:加密内容只在 responses 直通透传;chat/anthropic 出口遇到 `EncryptedContent`(无论在 message、AgentMessage 还是 tool output 里)一律硬失败。
 
-### 4.4 Reasoning / encrypted_content 的出站处置(修正:"透传"无落点)
+### 4.4 reasoning 的两类对象(修正:消除与 §7.1 的冲突)
 
-OpenAI Responses 的 `Reasoning`(含 `encrypted_content`)是 OpenAI 专有的加密推理项,**非 Responses 上游无法理解**,所以"透传不动"在 chat/anthropic 请求里没有协议落点。明确处置:
+**必须区分两个同名但不同的东西**,二者处理规则不同,不冲突:
 
-- **chat / anthropic 出站**:`Reasoning` item **不写入**发往上游的请求体(出站丢弃)。连接器只构造请求**副本**,codex 的本地会话历史(原始 `ResponseItem` 列表)**不受影响**,后续轮次仍完整保留 reasoning。
-- **responses 直通**:`encrypted_content` 原样透传不变(走原生 client,本就如此)。
-- 这样既不向不懂它的上游发无效字段,也不破坏 codex 本地对 reasoning 的保真。
+1. **历史里的 `ResponseItem::Reasoning`**(`input[]` 中的加密推理**输出项**,含 `encrypted_content`):OpenAI 专有,非 Responses 上游读不了,"透传"无落点。处置——
+   - **chat / anthropic 出站**:**不写入**发往上游的请求体(出站丢弃)。连接器只构造请求**副本**,codex 本地会话历史(原始 `ResponseItem` 列表)**不受影响**,后续轮次仍完整保留 reasoning。
+   - **responses 直通**:`encrypted_content` 原样透传(走原生 client)。
+2. **请求级 `ResponsesApiRequest.reasoning: Option<Reasoning>`**(reasoning **配置**:effort / summary,**非加密、非历史**,`codex-api/src/common.rs:191`):这才是 §7.1"降级转换"的对象——anthropic → `thinking`、chat → `reasoning_effort`,目标不支持则丢弃 + warn。
+
+> 一句话:**加密的 reasoning 输出项(历史)出站丢弃;reasoning 配置(请求字段)按 §7.1 降级**。§4.4 与 §7.1 分别管这两者,无矛盾。
 
 ### 4.7 `run` 的错误与 spawn 边界(修正:建连错误必须同步返回)
 
@@ -376,7 +380,7 @@ default_max_tokens = 8192
 | 级别 | 字段(示例) | 处置 |
 |---|---|---|
 | **可安全忽略**(纯传输/缓存元数据,不影响模型输出) | `store`、`include`、`prompt_cache_key`、`service_tier`、`client_metadata` | 静默丢弃 |
-| **降级转换**(目标有近似表达,尽力映射,丢真实语义时记 warning) | `reasoning`(anthropic→`thinking` / chat→`reasoning_effort`,无则丢+warn)、`parallel_tool_calls`(chat 透传 / anthropic 无直接对应→丢+warn)、`tool_choice`(映射到目标 tool_choice;无法表达的强制档→warn)、`text.format` 结构化输出 schema(chat→`response_format` json_schema;anthropic 无→降级为指令或 warn) | 尽力映射 + 必要时 warn |
+| **降级转换**(目标有近似表达,尽力映射,丢真实语义时记 warning) | **请求级 `reasoning` 配置**(`ResponsesApiRequest.reasoning`,即 effort/summary,**非**历史里的加密 `Reasoning` item——后者按 §4.4 出站丢弃)→ anthropic→`thinking` / chat→`reasoning_effort`,无则丢+warn;`parallel_tool_calls`(chat 透传 / anthropic 无直接对应→丢+warn)、`tool_choice`(映射到目标 tool_choice;无法表达的强制档→warn)、`text.format` 结构化输出 schema(chat→`response_format` json_schema;anthropic 无→降级为指令或 warn) | 尽力映射 + 必要时 warn |
 | **必须硬失败**(静默丢会破坏模型可见语义/工具链,且无法降级) | 图片/多模态输入而目标模型无视觉能力;承载工具调用/结果的不支持 `ResponseItem` 变体(§4.0 标"硬失败"者);`tool_choice` 指定了目标完全无法表达的必调工具 | 返回 `ApiError`,不发请求 |
 
 > 实现期:每个连接器对上表逐项落实,黄金测试覆盖"降级"与"硬失败"两类断言。
