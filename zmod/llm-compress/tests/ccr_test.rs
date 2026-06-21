@@ -78,6 +78,33 @@ fn sanitizes_unsafe_path_components() {
     assert!(canon.starts_with(std::fs::canonicalize(&root).unwrap()), "路径不得穿越到 ccr 根外");
 }
 
+/// 核心总则回归:短原文 + 长路径场景下,attach 必须返回原文,
+/// 绝不产出"有损但无路径"的 `见 ccr` 字符串。
+///
+/// 构造方式:原文约 50 字节 (足以通过 max_file_bytes 检查但很短),
+/// compressed 为 "[c]" (3 字节),使 attached = "[c] [原文: <path>]" 极易超原文长度。
+/// 断言:结果要么 == original,要么包含 "原文:" — 不得含 "见 ccr"。
+#[test]
+#[serial]
+fn short_original_never_emits_pathless_marker() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::env::set_var("HOME", tmp.path());
+    let c = ctx("thread-short");
+    // 原文足够短:~50 字节。tmp 路径通常 50+ 字节,加上 "[c] [原文: …]" 前缀必然超长。
+    let original = "short original text for ccr test!!!!!";
+    let compressed = "[c]".to_string();
+    let cfg = cfg_enabled();
+    let out = attach(compressed, original, &c, "call-short", &cfg);
+    // 核心总则:结果只允许是"含路径占位"或"原文",绝无"有损无路径"
+    assert!(
+        out == original || out.contains("原文:"),
+        "违反核心总则:结果既非原文又无路径占位 => {:?}",
+        out
+    );
+    // 具体回归断言:不得出现无路径 marker
+    assert!(!out.contains("见 ccr"), "违反核心总则:产出无路径 marker `见 ccr` => {:?}", out);
+}
+
 #[test]
 #[serial]
 fn same_fragment_reuses_file() {
