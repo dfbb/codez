@@ -23,7 +23,7 @@ use codex_protocol::models::{
     FunctionCallOutputBody, FunctionCallOutputContentItem, ResponseItem,
 };
 
-use crate::router::{Budget, ContentRouter};
+use crate::router::{Budget, ContentKind, ContentRouter};
 
 fn build_router() -> ContentRouter {
     use crate::compress::{
@@ -113,9 +113,17 @@ fn compress_in_place(
     let (pre, pre_lossy) = crate::preprocess::run(s, &cfg.preprocess);
     // ④⑤ 路由压缩
     let budget = Budget { cfg, cmd, query: &ctx.query_terms };
+    let mut candidate_is_json = false;
     let candidate = match router.compress_text(&pre, &budget) {
-        Some((new, comp_lossy, _kind)) => {
-            if pre_lossy || comp_lossy {
+        Some((new, comp_lossy, kind)) => {
+            // kind=Json ⟹ 产物是合法 JSON,绝不追加 CCR(§4.0/§4.7 铁律)。
+            // pre_lossy 仅表示预处理删了内容;但若路由器产出 JSON,写回 JSON
+            // 不可再追加"[原文: /path]"——那会破坏 JSON 合法性。
+            // 规则:只有 kind==Text 且(pre_lossy 或 comp_lossy)才 attach CCR。
+            if kind == ContentKind::Json {
+                candidate_is_json = true;
+                new
+            } else if pre_lossy || comp_lossy {
                 crate::ccr::attach(new, s, ctx, call_id, &cfg.ccr)
             } else {
                 new
@@ -129,8 +137,10 @@ fn compress_in_place(
             }
         }
     };
-    // ⑥ 最终写回闸门
-    if candidate.len() <= s.len() {
+    // ⑥ 最终写回闸门(体积 + JSON 保卫:Json 产物必须仍可 parse)
+    let json_valid = !candidate_is_json
+        || serde_json::from_str::<serde_json::Value>(&candidate).is_ok();
+    if candidate.len() <= s.len() && json_valid {
         *s = candidate;
     }
 }
