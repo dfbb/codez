@@ -42,6 +42,10 @@ impl Compressor for LogCompressor {
         }
         let new_text = final_lines.join("\n");
         let saved = text.len().saturating_sub(new_text.len());
+        // 模板标记含 UTF-8 中文,折叠后体积可能不减反增;严守压后≤压前不变量。
+        if saved == 0 {
+            return CompressOutcome::Unchanged;
+        }
         // 删行 → lossy=true;仅模板折叠(无删行)→ lossy=false
         let lossy = dropped;
         CompressOutcome::Compressed {
