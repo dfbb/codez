@@ -1,6 +1,7 @@
 //! codez-llm-compress:在 codex LLM 请求边界压缩请求。
 //! 入口 transform() 在 Task 08 加入;本任务先建 config 地基。
 
+pub mod ccr;
 pub mod command;
 pub mod config;
 pub mod query;
