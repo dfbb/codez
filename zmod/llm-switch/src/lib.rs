@@ -128,7 +128,7 @@ pub mod testing {
 }
 
 pub use config::{
-    load_config_from_str, AuthKind, Config, ConfigError, Connector, ProviderCfg,
+    load_config_from_str, AuthKind, CapType, Config, ConfigError, Connector, ProviderCfg,
 };
 pub use http::{build_headers, default_path, egress_url, resolve_key, HttpError};
 pub use pipeline::{default_plugins, run_transforms, TransformPlugin};
@@ -241,6 +241,18 @@ pub fn route(model_provider_id: &str) -> Option<Route> {
     route_in(loaded(), model_provider_id)
 }
 
+fn suppress_hosted_tools_in(cfg: &Config, model_provider_id: &str) -> bool {
+    route_in(cfg, model_provider_id)
+        .is_some_and(|rt| rt.cfg.captype == CapType::Chat)
+}
+
+/// codex 侧能力门控用:被接管且 `captype = "chat"`(缺省)的 provider 需要 codex
+/// 关闭命名空间 / web_search / image_generation 等托管工具(v1 连接器无法表达,
+/// 否则硬失败)。`captype = "response"` 或未接管 → false(透传原生能力)。
+pub fn suppress_hosted_tools(model_provider_id: &str) -> bool {
+    suppress_hosted_tools_in(loaded(), model_provider_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,5 +266,22 @@ mod tests {
         let cfg = load_config_from_str("[llm-switch]\nenabled=true\n[llm-switch.providers.x]\nconnector=\"chat\"\nauth=\"bearer\"\n", false).unwrap();
         assert!(route_in(&cfg, "x").is_some());
         assert!(route_in(&cfg, "unknown").is_none());
+    }
+    #[test]
+    fn captype_defaults_to_chat_suppresses_hosted_tools() {
+        let cfg = load_config_from_str("[llm-switch]\nenabled=true\n[llm-switch.providers.x]\nconnector=\"chat\"\nauth=\"bearer\"\n", false).unwrap();
+        assert_eq!(cfg.providers["x"].captype, CapType::Chat);
+        assert!(suppress_hosted_tools_in(&cfg, "x"));
+    }
+    #[test]
+    fn captype_response_passes_through() {
+        let cfg = load_config_from_str("[llm-switch]\nenabled=true\n[llm-switch.providers.x]\nconnector=\"chat\"\ncaptype=\"response\"\nauth=\"bearer\"\n", false).unwrap();
+        assert_eq!(cfg.providers["x"].captype, CapType::Response);
+        assert!(!suppress_hosted_tools_in(&cfg, "x"));
+    }
+    #[test]
+    fn unrouted_provider_never_suppresses() {
+        let cfg = load_config_from_str("[llm-switch]\nenabled=true\n[llm-switch.providers.x]\nconnector=\"chat\"\nauth=\"bearer\"\n", false).unwrap();
+        assert!(!suppress_hosted_tools_in(&cfg, "unknown"));
     }
 }

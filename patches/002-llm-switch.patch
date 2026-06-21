@@ -118,7 +118,7 @@ index bca6be6a7..f58835c5d 100644
          code_mode_service: crate::tools::code_mode::CodeModeService::new(),
          tool_search_handler_cache: Default::default(),
 diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
-index af7acf17a..3655dae12 100644
+index af7acf17a..9fffb9e77 100644
 --- a/codex-rs/core/src/tools/spec_plan.rs
 +++ b/codex-rs/core/src/tools/spec_plan.rs
 @@ -304,7 +304,7 @@ fn hosted_model_tool_specs(context: &CoreToolPlanContext<'_>) -> Vec<ToolSpec> {
@@ -130,7 +130,7 @@ index af7acf17a..3655dae12 100644
          .then_some(turn_context.config.web_search_mode.value());
      let web_search_config = web_search_mode
          .as_ref()
-@@ -337,7 +337,25 @@ pub(crate) fn tool_suggest_enabled(turn_context: &TurnContext) -> bool {
+@@ -337,7 +337,26 @@ pub(crate) fn tool_suggest_enabled(turn_context: &TurnContext) -> bool {
  }
  
  fn namespace_tools_enabled(turn_context: &TurnContext) -> bool {
@@ -140,13 +140,14 @@ index af7acf17a..3655dae12 100644
 +
 +/// codez llm-switch:被本地接管的 provider（如 deepseek 走 Chat Completions）在 v1
 +/// 仅支持标准 `function` 工具，命名空间 / web_search / image_generation 等托管工具
-+/// 无法在目标协议中表达，会触发连接器硬失败（§4.0b）。被 `route()` 接管时一律按
-+/// 「无任何托管能力」处理，复用 codex 原生的能力门控从源头不产生这些工具；连接器
-+/// 里的硬失败保留作兜底安全网。
++/// 无法在目标协议中表达，会触发连接器硬失败（§4.0b）。当该 provider 配置了
++/// `captype = "chat"`（缺省）时按「无任何托管能力」处理，复用 codex 原生的能力门控
++/// 从源头不产生这些工具；`captype = "response"`（出口仍走 Responses）则透传原能力。
++/// 连接器里的硬失败保留作兜底安全网。
 +fn provider_capabilities(
 +    turn_context: &TurnContext,
 +) -> codex_model_provider::ProviderCapabilities {
-+    if codez_llm_switch::route(&turn_context.config.model_provider_id).is_some() {
++    if codez_llm_switch::suppress_hosted_tools(&turn_context.config.model_provider_id) {
 +        return codex_model_provider::ProviderCapabilities {
 +            namespace_tools: false,
 +            image_generation: false,
@@ -157,7 +158,7 @@ index af7acf17a..3655dae12 100644
  }
  
  fn multi_agent_v2_enabled(turn_context: &TurnContext) -> bool {
-@@ -387,7 +405,7 @@ fn image_generation_runtime_enabled(turn_context: &TurnContext) -> bool {
+@@ -387,7 +406,7 @@ fn image_generation_runtime_enabled(turn_context: &TurnContext) -> bool {
          .auth_manager
          .as_deref()
          .is_some_and(AuthManager::current_auth_uses_codex_backend)

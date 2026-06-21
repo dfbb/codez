@@ -12,6 +12,8 @@ pub enum ConfigError {
     UnknownConnector(String, String),
     #[error("provider '{0}': unknown auth '{1}'")]
     UnknownAuth(String, String),
+    #[error("provider '{0}': unknown captype '{1}' (expected \"chat\" or \"response\")")]
+    UnknownCapType(String, String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,9 +22,17 @@ pub enum Connector { Chat, Anthropic }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthKind { Bearer, XApiKey }
 
+/// 能力屏蔽模式：被接管的 provider 是否要求 codex 关闭命名空间 / web_search /
+/// image_generation 等托管工具（这些在 v1 chat/anthropic 连接器中无法表达，会硬失败）。
+/// - `Chat`（缺省）：屏蔽所有托管工具能力（标准第三方 Chat/Anthropic 后端）。
+/// - `Response`：透传 codex 原生能力（出口仍是 Responses 协议，能处理托管工具）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapType { Chat, Response }
+
 #[derive(Debug, Clone)]
 pub struct ProviderCfg {
     pub connector: Connector,
+    pub captype: CapType,
     pub base_url: Option<String>,
     pub auth: AuthKind,
     pub key_env: Option<String>,
@@ -57,6 +67,8 @@ struct RawSwitch {
 #[derive(Deserialize)]
 struct RawProvider {
     connector: String,
+    #[serde(default)]
+    captype: Option<String>,
     base_url: Option<String>,
     auth: String,
     key_env: Option<String>,
@@ -93,8 +105,15 @@ pub fn load_config_from_str(toml_text: &str, allow_inline_key: bool) -> Result<C
             "x-api-key" => AuthKind::XApiKey,
             other => return Err(ConfigError::UnknownAuth(id.clone(), other.to_string())),
         };
+        // captype 缺省为 "chat"(屏蔽托管工具);"response" 透传 codex 原生能力。
+        let captype = match raw.captype.as_deref() {
+            None | Some("chat") => CapType::Chat,
+            Some("response") => CapType::Response,
+            Some(other) => return Err(ConfigError::UnknownCapType(id.clone(), other.to_string())),
+        };
         providers.insert(id, ProviderCfg {
             connector,
+            captype,
             base_url: raw.base_url,
             auth,
             key_env: raw.key_env,
