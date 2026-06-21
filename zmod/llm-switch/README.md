@@ -3,7 +3,7 @@
 codez 的第一个 zmod 功能 crate，在 **codex 进程内接管 LLM API 层**，让 codex 能接入 DeepSeek、Claude 等非 OpenAI 模型。
 
 - 包名：`codez-llm-switch`　lib target：`codez_llm_switch`
-- 对应补丁：`patches/llm-switch.patch`（对 codex-rs 的侵入式改动）
+- 对应补丁：构建集成 `patches/001-build.patch`（共享）+ 代码接入 `patches/002-llm-switch.patch`
 - 设计文档：`docs/superpowers/specs/2026-06-20-llm-switch-design.md`
 
 ## 作用
@@ -123,11 +123,11 @@ default_max_tokens = 8192                    # anthropic max_tokens 兜底（缺
 
 ## 与 codex-rs 的集成（patch）
 
-本 crate 反向依赖 `codex-api` / `codex-protocol`（path 依赖，见 `Cargo.toml`），属 CLAUDE.md 所述「情况 B」。生产接入由 `patches/llm-switch.patch` 表达，触点仅三处：
+本 crate 反向依赖 `codex-api` / `codex-protocol`（path 依赖，见 `Cargo.toml`），属 CLAUDE.md 所述「情况 B」。生产接入分两个 patch：构建集成在共享的 `patches/001-build.patch`，代码接入点在 `patches/002-llm-switch.patch`。触点：
 
-1. `core/Cargo.toml`：加 `codez-llm-switch = { path = "../../zmod/llm-switch" }`（普通 path 依赖，不进 workspace members）。
-2. `core/src/client.rs`：`ModelClient::new` 增形参 `model_provider_id: String`，存进 `ModelClientState`。
-3. `core/src/client.rs` 的 `stream_responses_api`：按 `codez_llm_switch::route(...)` 二选一——`None` 走原生 `ApiResponsesClient`（保留 `.with_telemetry(...)`），`Some(rt)` 走 `codez_llm_switch::run(...)`，二者落进同一个 `match stream_result`。
+1. **`001-build.patch`** → `core/Cargo.toml`：加 `codez-llm-switch = { path = "../../zmod/llm-switch" }`（普通 path 依赖，不进 workspace members）。
+2. **`002-llm-switch.patch`** → `core/src/client.rs`：`ModelClient::new` 增形参 `model_provider_id: String`，存进 `ModelClientState`（含 `memories/write` 等所有调用点同步改）。
+3. **`002-llm-switch.patch`** → `core/src/client.rs` 的 `stream_responses_api`：按 `codez_llm_switch::route(...)` 二选一——`None` 走原生 `ApiResponsesClient`（保留 `.with_telemetry(...)`），`Some(rt)` 走 `codez_llm_switch::run(...)`，二者落进同一个 `match stream_result`。
 
 > 已知缺口：接管路径不接 codex-api 层的请求/SSE 遥测（连接器用自己的 HTTP/SSE 客户端）；`inference_trace` 与 `map_response_stream` 的 LastResponse/cancellation 两路径都保留。
 
@@ -185,7 +185,7 @@ cargo test -p codez-llm-switch --test chat_request_test # 单个集成测试
 cargo clippy -p codez-llm-switch --all-targets         # lint
 ```
 
-> 纪律：软链 `codex-rs/llm-switch`、`codex-rs/Cargo.toml` 的 members 那行、构建生成的 `codex-rs/Cargo.lock` 改动都是 **dev-only 脚手架**，保持 uncommitted dirty，**绝不**提交进 codex-rs 子树、**不进** `patches/llm-switch.patch`。`git reset --hard` 会撤掉 members 行（软链因被 ignore 而留存），按上面两步重建即可。
+> 纪律：软链 `codex-rs/llm-switch`、`codex-rs/Cargo.toml` 的 members 那行、构建生成的 `codex-rs/Cargo.lock` 改动都是 **dev-only 脚手架**，保持 uncommitted dirty，**绝不**提交进 codex-rs 子树、**不进**任何 patch。`git reset --hard` 会撤掉 members 行（软链因被 ignore 而留存），按上面两步重建即可。
 
 ### 实跑测试（门控）
 

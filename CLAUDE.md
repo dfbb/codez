@@ -15,17 +15,17 @@ codez 是基于 [openai/codex](https://github.com/openai/codex) 仓库 `codex-rs
 | `scripts/` | codez 自己的脚本（目前是 `scripts/git/` 同步脚本） | codez |
 | `docs/` | codez 自己的文档 | codez |
 | `zmod/` | codez 新增功能的 Rust crate（当前为空） | codez |
-| `patches/` | 每个 `zmod` crate 对应、打到 `codex-rs` 上的 patch（当前为空） | codez |
+| `patches/` | 打到 `codex-rs` 上的 patch：`001-build.patch`（共享构建集成）+ 每个 zmod crate 一个 `NNN-<feature>.patch`（代码接入点） | codez |
 
 ## 核心设计：patch + 同步
 
-**编译模型**：在 `codex-rs` 上打上所有 `zmod` 对应的 patch，然后 `codex-rs` 和 `zmod` 一起编译。`zmod/` 与 `patches/` 目前为空，这套打补丁的构建流程尚未落地，是后续要实现的设计目标——新增功能时优先放进 `zmod` 的独立 crate，对 `codex-rs` 的侵入性改动用 `patches/` 表达，而不是直接修改 `codex-rs` 源码（否则下次同步会冲突）。
+**编译模型**：`scripts/build/build_codex.sh` 在 `codex-rs` 上按编号顺序打上 `patches/` 下所有 patch，`codex-rs` 和 `zmod` 一起 `cargo build`，编完逆序 `git apply -R` 还原子树。新增功能时优先放进 `zmod` 的独立 crate，对 `codex-rs` 的侵入性改动用 `patches/` 表达，而不是直接修改 `codex-rs` 源码（否则下次同步会冲突）。
 
 **为什么不直接改 `codex-rs`**：`codex-rs/` 是用 `git subtree --squash` 从上游同步的快照。直接改动会在每次 `04-sync-codex-rs.zsh` 同步时产生三方合并冲突。把改动隔离到 `zmod/` + `patches/` 才能让同步保持顺畅。
 
 ## zmod crate 与 patch 命名规则
 
-每个新增功能是一个 `zmod` crate，**一一对应**一个 `patches` 下的补丁；二者用同一个 `<feature>` 短名（kebab-case，如 `auth-proxy`、`session-trace`）绑定。
+每个新增功能是一个 `zmod` crate，对应一个 `patches` 下的 feature 补丁（外加共享的 `001-build.patch` 承载其构建集成）；crate 与 feature 补丁用同一个 `<feature>` 短名（kebab-case，如 `auth-proxy`、`session-trace`）绑定。
 
 **crate 命名**：
 
@@ -33,18 +33,20 @@ codez 是基于 [openai/codex](https://github.com/openai/codex) 仓库 `codex-rs
 - 包名（`Cargo.toml` 的 `[package] name`）：`codez-<feature>`，统一加 `codez-` 前缀，避免与 `codex-rs` 上游 crate（多为 `codex-*`）冲突。
 - crate 内 lib/bin target 名用下划线形式 `codez_<feature>`（Cargo 自动转换，保持显式更清晰）。
 
-**patch 命名**：
+**patch 命名（编号前缀 + build patch 集中）**：
 
-- 文件：`patches/<feature>.patch`，文件名与对应 zmod crate 的 `<feature>` 完全一致。
-- 内容：仅包含为接入该 zmod 功能而对 `codex-rs` 做的最小侵入式改动（构建集成见下、在上游代码里插入调用点等）。
-- 一个 `<feature>` 只对应一个 patch；若改动跨多个上游文件，仍合并进同一个 `<feature>.patch`，不要按文件拆分。
+- 文件：`patches/NNN-<feature>.patch`，三位数编号前缀决定**应用顺序**（升序打、逆序取消），`<feature>` 与对应 zmod crate 的短名一致。
+- **`001-build.patch` 是共享的「构建集成」补丁**，专门承载所有 zmod crate 对 `codex-rs` 构建的改动（`codex-rs/core/Cargo.toml` 的 path 依赖、workspace members 等）。**新增 crate 的构建改动一律追加进 `001-build.patch`，不要再开新的构建 patch**——否则多个 patch 在 `Cargo.toml` 同一处插入依赖会产生冲突。
+- 每个 feature 的 patch（如 `002-llm-switch.patch`、`003-llm-compress.patch`）**只含该功能对上游代码的接入点改动**（在 `client.rs` 等插入调用点、改签名等），**不含**任何 `Cargo.toml`/members 的构建改动（那些在 `001-build.patch`）。
+- 一个 `<feature>` 只对应一个 feature patch；若代码改动跨多个上游文件，仍合并进同一个 `NNN-<feature>.patch`，不要按文件拆分。
+- 编译统一由 `scripts/build/build_codex.sh` 驱动：按编号顺序 `git apply` 全部 patch → `cargo build` → 逆序 `git apply -R` 反向取消，保持 codex-rs 子树干净。**所有 patch 一起打，不支持单独编译某一个功能。**
 
-**构建集成（按 crate 是否反向依赖 codex-rs 分两种）**：
+**构建集成（按 crate 是否反向依赖 codex-rs 分两种；改动都落在 `001-build.patch`）**：
 
-- **情况 A — zmod crate 不依赖 codex-rs 的 crate（独立功能）**：patch 把 `"../zmod/<feature>"` 加进 `codex-rs/Cargo.toml` 的 workspace `members`，随 workspace 一起编译。
+- **情况 A — zmod crate 不依赖 codex-rs 的 crate（独立功能）**：`001-build.patch` 把 `"../zmod/<feature>"` 加进 `codex-rs/Cargo.toml` 的 workspace `members`，随 workspace 一起编译。
 - **情况 B — zmod crate 反向依赖 codex-rs 的 crate**（如依赖 `codex-api`/`codex-protocol`）：**不要**把它加进 workspace `members`（跨 workspace 根、且要同步 `[workspace.dependencies]`，易出问题）。改为——
   - zmod crate **不声明自己的 `[workspace]`**（否则被当 path 依赖编译时报 nested-workspace 错），用显式 path 反指依赖：`codex-api = { path = "../../codex-rs/codex-api" }` 等（不用 `workspace = true`）。
-  - patch 在**需要它的那个 codex-rs crate**（如 `codex-rs/core/Cargo.toml`）里加一条外部 path 依赖：`codez-<feature> = { path = "../../zmod/<feature>" }`，它作为普通 path 依赖被一起编译，不进 member 列表。
+  - `001-build.patch` 在**需要它的那个 codex-rs crate**（如 `codex-rs/core/Cargo.toml`）里加一条外部 path 依赖：`codez-<feature> = { path = "../../zmod/<feature>" }`，它作为普通 path 依赖被一起编译，不进 member 列表。
   - 注意避免依赖环：zmod crate 只应依赖被它接管的下层 crate（api/protocol 等），不要依赖会反过来依赖它的上层 crate（如 core）。
 
 **情况 B 的开发期测试（软链成为 workspace member）**：
@@ -60,19 +62,19 @@ ln -s ../zmod/<feature> codex-rs/<feature>     # 软链;cargo 视其为根下 me
 ```
 
 - 软链就位后，crate 是 workspace 正式 member：`cd codex-rs && cargo test -p codez-<feature>` 完整支持 `[dev-dependencies]` 与 `tests/*.rs` 集成测试，且**共享 codex-rs 的 `Cargo.lock` 与 `target`**（无版本漂移、复用已编译的 codex-api 树，快）。
-- **纪律**：软链 `codex-rs/<feature>` 必须写进根 `.gitignore`（如 `/codex-rs/llm-switch`），**绝不提交进 codex-rs 子树**；`codex-rs/Cargo.toml` 的 members 那一行与构建产生的 `codex-rs/Cargo.lock` 改动是 dev-only 脚手架，保持 uncommitted dirty，**不进 `patches/<feature>.patch`**。
+- **纪律**：软链 `codex-rs/<feature>` 必须写进根 `.gitignore`（如 `/codex-rs/llm-switch`），**绝不提交进 codex-rs 子树**；`codex-rs/Cargo.toml` 的 members 那一行与构建产生的 `codex-rs/Cargo.lock` 改动是 dev-only 脚手架，保持 uncommitted dirty，**不进任何 patch**。
 - 软链 + members 仅为「跑该 crate 自己的测试」；**生产接入仍是上面情况 B 的 core path 依赖 + 调用点**（patch 内容不变，core 要调用 `run()` 必须 Cargo 依赖它，与 member 身份无关）。`git reset --hard` 会撤掉 members 那行（软链因被 ignore 而留存）；按本约定两条命令即可重建。
 
 **对应关系示例**：
 
 ```text
-zmod/auth-proxy/            ->  patches/auth-proxy.patch
-  Cargo.toml name = codez-auth-proxy
-zmod/session-trace/        ->  patches/session-trace.patch
-  Cargo.toml name = codez-session-trace
+patches/001-build.patch     # 共享：所有 crate 对 codex-rs 的构建集成（Cargo.toml/members）
+patches/002-llm-switch.patch    ->  zmod/llm-switch/   (name = codez-llm-switch)
+patches/003-llm-compress.patch  ->  zmod/llm-compress/ (name = codez-llm-compress)
+# feature 补丁只含代码接入点；构建改动都在 001-build.patch
 ```
 
-**编译顺序**：先把 `patches/*.patch` 全部打到 `codex-rs` 上（patch 按上面情况 A/B 完成各 `codez-<feature>` 的构建集成），再对 `codex-rs` + `zmod` 一起 `cargo build`。
+**编译顺序**：由 `scripts/build/build_codex.sh` 按编号升序把 `patches/*.patch` 全部打到 `codex-rs` 上（`001-build.patch` 完成各 `codez-<feature>` 的构建集成，feature 补丁插入调用点），再 `cargo build`，最后逆序 `git apply -R` 反向取消、还原子树。
 
 ## zmod 运行时配置与开关
 
@@ -134,7 +136,7 @@ git add codex-rs
 git commit
 ```
 
-同步后必做：重新核对 `patches/*.patch` 是否仍能干净地打到新版 `codex-rs` 上；上游若改动了 patch 命中的代码，需要更新对应 `<feature>.patch`。确认无误后再推送：
+同步后必做：重新核对 `patches/*.patch` 是否仍能干净地打到新版 `codex-rs` 上；上游若改动了 patch 命中的代码，需要更新对应 `NNN-<feature>.patch`（构建相关的命中则更新 `001-build.patch`）。确认无误后再推送：
 
 ```bash
 scripts/git/06-push-origin-slow-network.zsh main   # 慢网络推荐
@@ -145,7 +147,7 @@ git push --progress origin main
 ### 提交 codez 自己改动的规则
 
 - codez 自己的改动（`scripts/` `docs/` `zmod/` `patches/`）在 feature 分支上开发，**不要**和「同步 codex-rs」的 squash 提交混在一条提交里。
-- 一个 zmod 功能的 crate 与其 `patches/<feature>.patch` 尽量在同一组提交里一起改，保持 crate ↔ patch 同步。
+- 一个 zmod 功能的 crate 与其 `patches/NNN-<feature>.patch`（及 `001-build.patch` 中该 crate 的构建改动）尽量在同一组提交里一起改，保持 crate ↔ patch 同步。
 - **绝不**直接修改 `codex-rs/` 源码来实现 codez 功能（用 `patches/` 表达），否则下次 `04-sync-codex-rs.zsh` 必然冲突。
 - 所有提交只推到 `origin`（`dfbb/codez`），永远不向 `upstream-codex` push。
 

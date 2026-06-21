@@ -1,15 +1,3 @@
-diff --git a/codex-rs/core/Cargo.toml b/codex-rs/core/Cargo.toml
-index d16e8d9cb..de384fb26 100644
---- a/codex-rs/core/Cargo.toml
-+++ b/codex-rs/core/Cargo.toml
-@@ -76,6 +76,7 @@ codex-utils-pty = { workspace = true }
- codex-utils-string = { workspace = true }
- codex-utils-stream-parser = { workspace = true }
- codex-windows-sandbox = { package = "codex-windows-sandbox", path = "../windows-sandbox-rs" }
-+codez-llm-compress = { path = "../../zmod/llm-compress" }
- csv = { workspace = true }
- dirs = { workspace = true }
- dunce = { workspace = true }
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
 index 73d7398a3..c8b1d3b36 100644
 --- a/codex-rs/core/src/client.rs

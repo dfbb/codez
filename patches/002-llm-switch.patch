@@ -1,15 +1,3 @@
-diff --git a/codex-rs/core/Cargo.toml b/codex-rs/core/Cargo.toml
-index d16e8d9cb..284eb978d 100644
---- a/codex-rs/core/Cargo.toml
-+++ b/codex-rs/core/Cargo.toml
-@@ -76,6 +76,7 @@ codex-utils-pty = { workspace = true }
- codex-utils-string = { workspace = true }
- codex-utils-stream-parser = { workspace = true }
- codex-windows-sandbox = { package = "codex-windows-sandbox", path = "../windows-sandbox-rs" }
-+codez-llm-switch = { path = "../../zmod/llm-switch" }
- csv = { workspace = true }
- dirs = { workspace = true }
- dunce = { workspace = true }
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
 index 73d7398a3..7757bdf1f 100644
 --- a/codex-rs/core/src/client.rs
@@ -189,3 +177,15 @@ index 1ccbd302d..fe03516de 100755
      );
  
      WebsocketTestHarness {
+diff --git a/codex-rs/memories/write/src/runtime.rs b/codex-rs/memories/write/src/runtime.rs
+index 0835e1552..750a88a1d 100644
+--- a/codex-rs/memories/write/src/runtime.rs
++++ b/codex-rs/memories/write/src/runtime.rs
+@@ -237,6 +237,7 @@ impl MemoryStartupContext {
+             /*beta_features_header*/ None,
+             config.features.enabled(Feature::ItemIds),
+             /*attestation_provider*/ None,
++            config.model_provider_id.clone(),
+         );
+ 
+         let mut client_session = model_client.new_session();

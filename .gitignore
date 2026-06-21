@@ -2,6 +2,9 @@
 /target/
 **/target/
 
+# build_codex.sh 产物输出目录（编译好的 codex 二进制，不提交）
+/release/
+
 # Cargo 锁文件（库项目可取消注释忽略；可执行/工作区一般保留提交）
 # Cargo.lock
 

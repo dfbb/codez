@@ -4,7 +4,7 @@ codez 的 zmod 之一。在 codex 把 LLM 请求发往上游**之前**,对已组
 
 - **包名**:`codez-llm-compress`(`publish = false`)
 - **lib target**:`codez_llm_compress`
-- **对应 patch**:`patches/llm-compress.patch`
+- **对应 patch**:构建集成 `patches/001-build.patch`(共享) + 代码接入 `patches/003-llm-compress.patch`
 - **设计依据**:`docs/superpowers/specs/2026-06-20-llm-compress-design.md`
 
 ## 它做什么
@@ -134,11 +134,11 @@ cargo test -p codez-llm-compress           # 跑全部测试
 cargo clippy -p codez-llm-compress --all-targets
 ```
 
-软链、`codex-rs/Cargo.toml` 的 member 行、构建生成的 `codex-rs/Cargo.lock` 改动均为 dev-only 脚手架,保持 uncommitted,**不进** `patches/llm-compress.patch`。
+软链、`codex-rs/Cargo.toml` 的 member 行、构建生成的 `codex-rs/Cargo.lock` 改动均为 dev-only 脚手架,保持 uncommitted,**不进**任何 patch。
 
 ## 生产接入(patch)
 
-`patches/llm-compress.patch` 对 codex-rs 的全部侵入(单点、不改任何 codex 函数签名):
+构建集成由共享的 `patches/001-build.patch`(加 `core/Cargo.toml` path 依赖)承载;代码接入由 `patches/003-llm-compress.patch` 对 codex-rs 表达(单点、不改任何 codex 函数签名):
 
 1. `codex-rs/core/Cargo.toml` 加外部 path 依赖 `codez-llm-compress = { path = "../../zmod/llm-compress" }`(不进 workspace members)。
 2. `codex-rs/core/src/client.rs` 在 `prepare_response_items_for_request` 之后、`record_started` 之前插入 queryid 取值 + `transform()` 调用。
