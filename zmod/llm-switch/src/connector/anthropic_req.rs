@@ -369,7 +369,7 @@ fn map_tools(tools: &[Value]) -> Result<Option<Vec<Value>>, ConnError> {
 /// 把 codex 的 `tool_choice` 字符串映射成 Anthropic tool_choice 对象（§4.11）。
 ///
 /// - `"auto"` → `{"type":"auto"}`
-/// - `"none"` → `{"type":"none"}`  （Anthropic 不支持 none，但结构可表达）
+/// - `"none"` → `{"type":"none"}`  （Anthropic Messages 现支持 none，禁止调用任何工具）
 /// - `"required"` → `{"type":"any"}`
 /// - JSON 字符串 `{"type":"function","name":"..."}` → `{"type":"tool","name":"..."}`
 /// - 其他 → `ConnError::HardFail`
@@ -408,12 +408,13 @@ fn apply_field_downgrade(body: &mut Value, req: &codex_api::ResponsesApiRequest)
     // reasoning → thinking（Anthropic Extended Thinking，§7.1）
     if let Some(reasoning) = &req.reasoning {
         if reasoning.effort.is_some() {
-            // 按 effort 近似映射：有 effort 时开启 thinking
+            // 近似映射：有 effort 即开启 thinking（v1 不按 low/medium/high 区分 budget，
+            // effort 级别语义在 v1 丢失——anthropic budget 是 token 数而非档位）。
             // Anthropic thinking 格式：{"type":"enabled","budget_tokens":N}
             // 上限 8000：参考 Anthropic Extended Thinking 文档建议，保守值避免超出 max_tokens
             let budget = body["max_tokens"]
                 .as_u64()
-                .map(|m| (m / 2).max(1024).min(8000))
+                .map(|m| (m / 2).clamp(1024, 8000))
                 .unwrap_or(4000);
             body["thinking"] = json!({"type": "enabled", "budget_tokens": budget});
         } else if reasoning.summary.is_some() || reasoning.context.is_some() {

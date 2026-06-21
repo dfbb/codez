@@ -306,6 +306,13 @@ fn reasoning_item_is_discarded_silently() {
     // 只有 user 消息，没有 reasoning 相关的消息
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0]["role"], "user");
+    // §4.4 不变量：连接器只构造请求副本，codex 本地历史（req.input）不受影响——
+    // 丢弃 Reasoning 仅作用于出站请求，原始 input 仍含该项。
+    assert_eq!(req.input.len(), 2, "build 不应改动 codex 本地历史");
+    assert!(
+        matches!(req.input[0], ResponseItem::Reasoning { .. }),
+        "原始 Reasoning 项应保留在 req.input 中"
+    );
 }
 
 #[test]
@@ -840,4 +847,63 @@ fn no_type_tool_definition_hard_fails() {
     let mut req = base_req();
     req.tools = vec![json!({"name": "mystery_tool", "parameters": {"type": "object"}})];
     assert!(build(&req, &ctx()).is_err(), "缺少 type 字段的工具定义应硬失败");
+}
+
+// ============================================================
+// C1: 无 tools 时不得写 parallel_tool_calls（否则上游 400）
+// ============================================================
+
+/// 无 tools 的请求不应包含 parallel_tool_calls 键（§4.10；上游对「设了
+/// parallel_tool_calls 但无 tools」返回 400）。
+#[test]
+fn no_tools_omits_parallel_tool_calls() {
+    let mut req = base_req();
+    req.tools = vec![];
+    req.parallel_tool_calls = false;
+    let v = build(&req, &ctx()).unwrap();
+    assert!(
+        v.get("parallel_tool_calls").is_none(),
+        "无 tools 时不应写入 parallel_tool_calls，实际: {v}"
+    );
+    assert!(v.get("tools").is_none(), "无 tools 时不应写入 tools");
+    assert!(v.get("tool_choice").is_none(), "无 tools 时不应写入 tool_choice");
+}
+
+// ============================================================
+// I2: §4.11 不可表达的强制 tool_choice → 硬失败
+// ============================================================
+
+/// 强制指定某工具但目标无法等价表达（非 function 类型的强制档）→ 硬失败。
+#[test]
+fn forced_unexpressible_tool_choice_hard_fails() {
+    let mut req = base_req();
+    req.tools =
+        vec![json!({"type":"function","name":"f","parameters":{"type":"object"}})];
+    // codex 用 JSON 串表达的强制档，但 type 不是 function（chat 无等价表达）
+    req.tool_choice = json!({"type":"allowed_tools","tools":["f"]}).to_string();
+    assert!(
+        build(&req, &ctx()).is_err(),
+        "不可表达的强制 tool_choice 应硬失败（§4.11）"
+    );
+}
+
+// ============================================================
+// I3: §7.1 reasoning 配置降级 → reasoning_effort
+// ============================================================
+
+/// reasoning.effort 应降级映射成顶层 reasoning_effort 字符串。
+#[test]
+fn reasoning_effort_maps_to_reasoning_effort() {
+    use codex_protocol::openai_models::ReasoningEffort;
+    let mut req = base_req();
+    req.reasoning = Some(codex_api::Reasoning {
+        effort: Some(ReasoningEffort::High),
+        summary: None,
+        context: None,
+    });
+    let v = build(&req, &ctx()).unwrap();
+    assert_eq!(
+        v["reasoning_effort"], "high",
+        "reasoning.effort=High 应降级为 reasoning_effort=\"high\""
+    );
 }

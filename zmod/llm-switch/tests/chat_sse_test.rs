@@ -104,8 +104,8 @@ fn cached_tokens_in_prompt_tokens_details_is_mapped() {
 }
 
 #[test]
-fn finish_reason_length_gives_end_turn_false() {
-    // finish_reason="length" 表示 token 截断，end_turn 应为 Some(false)。
+fn finish_reason_length_gives_end_turn_none() {
+    // finish_reason="length" 表示 token 截断，按 spec §4.5 → end_turn=None（不判定是否结束回合）。
     let chunks = vec![
         text_chunk("resp-l", "Truncated"),
         json!({"id":"resp-l","choices":[{"index":0,"delta":{},"finish_reason":"length"}],
@@ -116,7 +116,7 @@ fn finish_reason_length_gives_end_turn_false() {
         ResponseEvent::Completed { end_turn, .. } => Some(*end_turn),
         _ => None,
     }).expect("Completed present");
-    assert_eq!(end_turn, Some(false));
+    assert_eq!(end_turn, None);
 }
 
 // ─── Fixture-based 黄金测试 ───────────────────────────────────────────────────

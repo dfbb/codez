@@ -193,17 +193,15 @@ impl ChatSseState {
 
 // ─── 辅助函数 ─────────────────────────────────────────────────────────────────
 
-/// 把 `finish_reason` 映射到 `end_turn`。
+/// 把 `finish_reason` 映射到 `end_turn`（§4.5）。
 /// - `"stop"` → `Some(true)`（模型主动停止）
 /// - `"tool_calls"` → `Some(false)`（还需要工具调用）
-/// - `"length"` → `Some(false)`（token 截断 = 非自然结束）
-/// - 其他未知 reason → `None`
+/// - `"length"`/未知 reason → `None`（截断/未知，不判定是否结束回合）
 fn map_end_turn(fr: Option<&str>) -> Option<bool> {
     match fr {
         Some("stop") => Some(true),
         Some("tool_calls") => Some(false),
-        Some("length") => Some(false), // token 截断，非自然结束
-        _ => None,
+        _ => None, // length/未知
     }
 }
 

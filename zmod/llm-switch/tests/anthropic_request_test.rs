@@ -816,3 +816,46 @@ fn text_format_json_schema_appends_system_instruction() {
         "system 应保留原始 instructions，实际: {system:?}"
     );
 }
+
+// ============================================================
+// I2: §4.11 不可表达的强制 tool_choice → 硬失败
+// ============================================================
+
+/// 强制指定某工具但目标无法等价表达（非 function 类型的强制档）→ 硬失败。
+#[test]
+fn forced_unexpressible_tool_choice_hard_fails() {
+    let mut req = base_req();
+    req.tools =
+        vec![json!({"type":"function","name":"f","parameters":{"type":"object"}})];
+    req.tool_choice = json!({"type":"allowed_tools","tools":["f"]}).to_string();
+    assert!(
+        build(&req, &ctx()).is_err(),
+        "不可表达的强制 tool_choice 应硬失败（§4.11）"
+    );
+}
+
+// ============================================================
+// I3: §7.1 reasoning 配置降级 → thinking
+// ============================================================
+
+/// reasoning.effort 存在时应降级映射成 anthropic 的 thinking 块（enabled + budget）。
+#[test]
+fn reasoning_effort_maps_to_thinking() {
+    use codex_protocol::openai_models::ReasoningEffort;
+    let mut req = base_req();
+    req.reasoning = Some(codex_api::Reasoning {
+        effort: Some(ReasoningEffort::High),
+        summary: None,
+        context: None,
+    });
+    let v = build(&req, &ctx()).unwrap();
+    assert_eq!(
+        v["thinking"]["type"], "enabled",
+        "reasoning.effort 存在时应开启 thinking"
+    );
+    assert!(
+        v["thinking"]["budget_tokens"].as_u64().is_some(),
+        "thinking 应含 budget_tokens，实际: {}",
+        v["thinking"]
+    );
+}

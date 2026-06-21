@@ -196,15 +196,16 @@ pub(crate) fn build_chat_request(
         "messages": messages,
         "stream": true,
         "stream_options": {"include_usage": true},
-        "parallel_tool_calls": req.parallel_tool_calls,
     });
 
     if let Some(tools_arr) = tools {
         body["tools"] = Value::Array(tools_arr);
-        // tool_choice 仅在有 tools 时写入；否则 strip（§4.10）
+        // tool_choice / parallel_tool_calls 仅在有 tools 时写入；否则 strip（§4.10）。
+        // 上游对「设了 parallel_tool_calls 但无 tools」会返回 400，故二者同处理。
         if let Some(tc) = map_tool_choice(&req.tool_choice)? {
             body["tool_choice"] = tc;
         }
+        body["parallel_tool_calls"] = json!(req.parallel_tool_calls);
     }
 
     // ── §7.1 字段降级 ─────────────────────────────────────────────────
