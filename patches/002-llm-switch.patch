@@ -117,6 +117,24 @@ index bca6be6a7..f58835c5d 100644
          ),
          code_mode_service: crate::tools::code_mode::CodeModeService::new(),
          tool_search_handler_cache: Default::default(),
+diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
+index af7acf17a..f6ca8aa59 100644
+--- a/codex-rs/core/src/tools/spec_plan.rs
++++ b/codex-rs/core/src/tools/spec_plan.rs
+@@ -337,6 +337,13 @@ pub(crate) fn tool_suggest_enabled(turn_context: &TurnContext) -> bool {
+ }
+ 
+ fn namespace_tools_enabled(turn_context: &TurnContext) -> bool {
++    // codez llm-switch:被接管的 provider（如 deepseek 走 Chat Completions）在 v1
++    // 仅支持标准 `function` 工具，命名空间工具无法在 Chat 协议中表达回程路由。
++    // 在源头关闭，复用 codex 原生的 namespace 降级过滤（见下方 model_visible_specs
++    // 的 filter），避免请求里出现 `{"type":"namespace"}` 触发连接器硬失败（§4.0b）。
++    if codez_llm_switch::route(&turn_context.config.model_provider_id).is_some() {
++        return false;
++    }
+     turn_context.provider.capabilities().namespace_tools
+ }
+ 
 diff --git a/codex-rs/core/tests/responses_headers.rs b/codex-rs/core/tests/responses_headers.rs
 index cf9b9a939..5e9e20616 100644
 --- a/codex-rs/core/tests/responses_headers.rs
