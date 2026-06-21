@@ -113,82 +113,11 @@ fn middle_error_is_kept_not_folded() {
 }
 
 #[test]
-fn template_mining_folds_similar_lines_lossless() {
-    let mut cfg = Config::disabled();
-    cfg.truncate.head_lines = 100;
-    cfg.truncate.tail_lines = 100; // 不触发评分删行,只看模板折叠
-    cfg.log.template_min_run = 3;
-    let c = LogCompressor;
-    // 连续同模板行(仅数字不同)。
-    // 注意:template_mine 把所有变量内联为 " | " 连接的单行,这会使体积增大而非减小。
-    // 正确行为:saved==0 守卫拦截 → Unchanged(不违反压后≤压前不变量)。
-    let text = "worker 1 done\nworker 2 done\nworker 3 done\nworker 4 done\nworker 5 done";
-    // 守卫修复后:模板折叠体积增大,saved=0,返回 Unchanged — lossy=false 不变量由 Unchanged 自然满足。
-    match c.compress(text, &budget_t08(&cfg)) {
-        CompressOutcome::Unchanged => {
-            // 正确:体积未减小,不产生 Compressed
-        }
-        CompressOutcome::Compressed { lossy, text: new, saved_bytes, .. } => {
-            // 若真的有净收益,则必须满足:lossy=false(纯模板折叠)且包含模板标记
-            assert!(!lossy, "纯模板折叠 → lossy=false");
-            assert!(new.contains("[llm-compress: 模板]") || new.contains("模板"));
-            assert!(saved_bytes > 0, "Compressed 时 saved_bytes 必须 > 0");
-        }
-    }
-}
-
-#[test]
 fn detect_still_recognizes_multiline_logs() {
     let cfg = Config::disabled();
     let c = LogCompressor;
     let text = "2026-06-21T08:15:30 INFO a\n2026-06-21T08:15:31 INFO b\n2026-06-21T08:15:32 INFO c\n2026-06-21T08:15:33 INFO d\n2026-06-21T08:15:34 INFO e\n2026-06-21T08:15:35 INFO f\n2026-06-21T08:15:36 INFO g\n2026-06-21T08:15:37 INFO h";
     assert!(c.detect(text, &budget_t08(&cfg)));
-}
-
-/// Task08 回归:模板折叠标记本身是 UTF-8 中文,开销可能抵消甚至超过节省。
-/// 构造极短的同模板连续行,使得折叠后标记开销 ≥ 原始节省 → saved==0。
-/// 守卫加入前:返回 Compressed{saved_bytes:0}(违反契约)。
-/// 守卫加入后:返回 Unchanged。
-///
-/// 构造:3 行同模板,每行 "x N" (4 bytes ASCII)。
-///   原始长度: 3×4 + 2(换行) = 14 bytes
-///   折叠后:[llm-compress: 模板] x # \n [llm-compress: 变量 ×3] x 1 | x 2 | x 3
-///   "[llm-compress: 模板] " = 22 bytes (UTF-8)
-///   "[llm-compress: 变量 ×3] " = 26 bytes (UTF-8)  ← 远超 14 bytes
-///   → new_text.len() > text.len() → saved == 0 → Unchanged
-#[test]
-fn template_fold_no_net_saving_returns_unchanged() {
-    let mut cfg = Config::disabled();
-    // head/tail 足够大,不触发评分删行,只看模板折叠
-    cfg.truncate.head_lines = 100;
-    cfg.truncate.tail_lines = 100;
-    cfg.log.template_min_run = 3;
-    let c = LogCompressor;
-
-    // 构造 ≥8 行以通过 detect,但只有前 3 行相同模板(后面填凑行数但不构成新模板组)
-    // 这 3 行模板折叠后因中文标记开销必然 saved==0
-    // 后续行(各不相同)不触发折叠
-    let text = "x 1\nx 2\nx 3\na_line_unique_001\na_line_unique_002\na_line_unique_003\na_line_unique_004\na_line_unique_005";
-
-    match c.compress(text, &budget_t08(&cfg)) {
-        CompressOutcome::Unchanged => {
-            // 正确:saved==0 守卫拦住了零收益 Compressed
-        }
-        CompressOutcome::Compressed { saved_bytes, text: new_text, .. } => {
-            // 守卫缺失时会到这里;如果 saved_bytes > 0 那压缩是真实有效的,
-            // 不过设计上短行折叠必然 saved==0,此分支属 bug。
-            // 无论如何,验证核心不变量:Compressed 时 new_text 必须比原文短。
-            assert!(
-                new_text.len() < text.len(),
-                "Compressed 时 new_text({}) 必须短于原文({}),saved_bytes={}",
-                new_text.len(),
-                text.len(),
-                saved_bytes
-            );
-            // 如果走到这里且断言通过,说明压缩确实有收益(意外);
-            // 若断言失败,RED 证据:守卫缺失时返回 saved==0 的 Compressed。
-        }
-    }
 }
 
 /// 补充不变量测试:任意 Compressed 结果的 new_text 必须严格短于原文。
@@ -198,7 +127,6 @@ fn compressed_outcome_always_has_positive_savings() {
     let mut cfg = Config::disabled();
     cfg.truncate.head_lines = 3;
     cfg.truncate.tail_lines = 3;
-    cfg.log.template_min_run = 3;
     let c = LogCompressor;
 
     // 大量重复行,确保有真实节省
@@ -222,4 +150,75 @@ fn compressed_outcome_always_has_positive_savings() {
         );
     }
     // Unchanged 也合法,无需断言
+}
+
+// ========== Item D: keep_levels 接线测试 ==========
+
+/// keep_levels 默认含 "warn":中段 WARN 行必须被保留(即使 line_score < 1.0)。
+/// RED 前:score_keep 不看 keep_levels → WARN 行 score=0.5 < 1.0 → 被删 → 测试失败。
+/// GREEN 后:keep_levels 接线 → WARN 行被留下 → 测试通过。
+#[test]
+fn warn_kept_by_default_keep_levels() {
+    let mut cfg = Config::disabled();
+    cfg.truncate.head_lines = 2;
+    cfg.truncate.tail_lines = 2;
+    // 默认 keep_levels = ["error", "warn"]
+    let c = LogCompressor;
+
+    // 构造:头2行 INFO、中段1行 WARN、尾部大量 INFO
+    let mut lines: Vec<String> = Vec::new();
+    for i in 0..2 {
+        lines.push(format!("INFO head {i}"));
+    }
+    lines.push("WARN disk usage high: 85%".to_string());
+    for i in 0..8 {
+        lines.push(format!("INFO middle filler {i}"));
+    }
+    for i in 0..2 {
+        lines.push(format!("INFO tail {i}"));
+    }
+    let text = lines.join("\n");
+
+    match c.compress(&text, &budget_t08(&cfg)) {
+        CompressOutcome::Compressed { text: new, .. } => {
+            assert!(new.contains("WARN disk usage high"), "WARN 行必须被 keep_levels 保留");
+        }
+        CompressOutcome::Unchanged => {
+            panic!("期望 Compressed(有 INFO 行应被删除),实际 Unchanged");
+        }
+    }
+}
+
+/// keep_levels=["error"] 时(不含 warn):中段 WARN 行可以被丢弃。
+/// 证明 keep_levels 真正驱动保留逻辑(非硬编码)。
+#[test]
+fn warn_dropped_when_not_in_keep_levels() {
+    let mut cfg = Config::disabled();
+    cfg.truncate.head_lines = 2;
+    cfg.truncate.tail_lines = 2;
+    cfg.log.keep_levels = vec!["error".to_string()]; // warn 不在其中
+    let c = LogCompressor;
+
+    let mut lines: Vec<String> = Vec::new();
+    for i in 0..2 {
+        lines.push(format!("INFO head {i}"));
+    }
+    lines.push("WARN disk usage high: 85%".to_string());
+    for i in 0..8 {
+        lines.push(format!("INFO middle filler {i}"));
+    }
+    for i in 0..2 {
+        lines.push(format!("INFO tail {i}"));
+    }
+    let text = lines.join("\n");
+
+    match c.compress(&text, &budget_t08(&cfg)) {
+        CompressOutcome::Compressed { text: new, .. } => {
+            // WARN 行不在 keep_levels 且 score < 1.0 → 应被删除
+            assert!(!new.contains("WARN disk usage high"), "keep_levels 不含 warn 时,WARN 行应被删除");
+        }
+        CompressOutcome::Unchanged => {
+            panic!("期望 Compressed(有行应被删除),实际 Unchanged");
+        }
+    }
 }

@@ -46,8 +46,6 @@ pub struct DiffCfg {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct LogCfg {
-    pub dedup_repeats: bool,
-    pub template_min_run: usize,
     pub keep_levels: Vec<String>,
 }
 
@@ -128,7 +126,7 @@ impl Default for DiffCfg {
 
 impl Default for LogCfg {
     fn default() -> Self {
-        Self { dedup_repeats: true, template_min_run: 3, keep_levels: vec!["error".to_string(), "warn".to_string()] }
+        Self { keep_levels: vec!["error".to_string(), "warn".to_string()] }
     }
 }
 

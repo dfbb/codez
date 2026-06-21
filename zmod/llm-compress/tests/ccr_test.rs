@@ -27,10 +27,10 @@ fn enabled_writes_file_and_appends_path() {
     let compressed = "[llm-compress: 略 49 行]".to_string();
     let out = attach(compressed.clone(), &original, &c, "call1", &cfg_enabled());
     // 占位里追加了原文路径
-    assert!(out.contains("原文:"), "含路径占位");
+    assert!(out.contains("[llm-compress: 原文 "), "含路径占位");
     assert!(out.starts_with("[llm-compress: 略 49 行]"));
     // 路径指向的文件内容 == 原文
-    let path_part = out.split("原文:").nth(1).unwrap().trim().trim_end_matches(']').trim();
+    let path_part = out.split("原文 ").nth(1).unwrap().trim().trim_end_matches(']').trim();
     let written = std::fs::read_to_string(path_part).unwrap();
     assert_eq!(written, original);
 }
@@ -71,7 +71,7 @@ fn sanitizes_unsafe_path_components() {
     let c = ctx("../../etc/evil");
     let original = "LONG CONTENT ".repeat(50);
     let out = attach("[llm-compress: 略]".to_string(), &original, &c, "a/b/../c", &cfg_enabled());
-    let path_part = out.split("原文:").nth(1).unwrap().trim().trim_end_matches(']').trim();
+    let path_part = out.split("原文 ").nth(1).unwrap().trim().trim_end_matches(']').trim();
     // 路径必须落在 HOME/.codex/llm-compress/ccr 下,无穿越
     let root = tmp.path().join(".codex/llm-compress/ccr");
     let canon = std::fs::canonicalize(path_part).unwrap();
@@ -82,22 +82,22 @@ fn sanitizes_unsafe_path_components() {
 /// 绝不产出"有损但无路径"的 `见 ccr` 字符串。
 ///
 /// 构造方式:原文约 50 字节 (足以通过 max_file_bytes 检查但很短),
-/// compressed 为 "[c]" (3 字节),使 attached = "[c] [原文: <path>]" 极易超原文长度。
-/// 断言:结果要么 == original,要么包含 "原文:" — 不得含 "见 ccr"。
+/// compressed 为 "[c]" (3 字节),使 attached = "[c] [llm-compress: 原文 <path>]" 极易超原文长度。
+/// 断言:结果要么 == original,要么包含 "[llm-compress: 原文 " — 不得含 "见 ccr"。
 #[test]
 #[serial]
 fn short_original_never_emits_pathless_marker() {
     let tmp = tempfile::tempdir().unwrap();
     std::env::set_var("HOME", tmp.path());
     let c = ctx("thread-short");
-    // 原文足够短:~50 字节。tmp 路径通常 50+ 字节,加上 "[c] [原文: …]" 前缀必然超长。
+    // 原文足够短:~50 字节。tmp 路径通常 50+ 字节,加上 "[c] [llm-compress: 原文 …]" 前缀必然超长。
     let original = "short original text for ccr test!!!!!";
     let compressed = "[c]".to_string();
     let cfg = cfg_enabled();
     let out = attach(compressed, original, &c, "call-short", &cfg);
     // 核心总则:结果只允许是"含路径占位"或"原文",绝无"有损无路径"
     assert!(
-        out == original || out.contains("原文:"),
+        out == original || out.contains("[llm-compress: 原文 "),
         "违反核心总则:结果既非原文又无路径占位 => {:?}",
         out
     );
@@ -115,7 +115,7 @@ fn same_fragment_reuses_file() {
     let o1 = attach("[c1]".to_string(), &original, &c, "call1", &cfg_enabled());
     let o2 = attach("[c2]".to_string(), &original, &c, "call1", &cfg_enabled());
     // 同 (call_id, fragment_hash) → 同一文件路径
-    let p1 = o1.split("原文:").nth(1).unwrap().trim().trim_end_matches(']').trim();
-    let p2 = o2.split("原文:").nth(1).unwrap().trim().trim_end_matches(']').trim();
+    let p1 = o1.split("原文 ").nth(1).unwrap().trim().trim_end_matches(']').trim();
+    let p2 = o2.split("原文 ").nth(1).unwrap().trim().trim_end_matches(']').trim();
     assert_eq!(p1, p2);
 }

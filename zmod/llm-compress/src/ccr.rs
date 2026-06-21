@@ -46,7 +46,7 @@ pub fn attach(compressed: String, original: &str, ctx: &RequestCtx, call_id: &st
     }
     match try_persist(original, ctx, call_id, cfg) {
         Some(path) => {
-            let attached = format!("{compressed} [原文: {}]", path.display());
+            let attached = format!("{compressed} [llm-compress: 原文 {}]", path.display());
             // 二次体积闸门:含路径占位若超原文,放弃压缩返回原文(核心总则:绝不留"有损无路径")
             if attached.len() <= original.len() {
                 attached

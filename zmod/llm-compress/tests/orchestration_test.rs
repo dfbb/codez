@@ -188,11 +188,11 @@ fn json_kind_never_gets_ccr_attached() {
     let out = get_text(&r.input[0]);
 
     // 铁律:产物要么不含 JSON 结构,要么不含 CCR 标记——二者不能同时出现。
-    // 具体:若输出以 '{' 或 '[' 开头(JSON 产物特征),则不允许含 "[原文:"。
+    // 具体:若输出以 '{' 或 '[' 开头(JSON 产物特征),则不允许含 "[llm-compress: 原文 "。
     let looks_like_json = out.trim_start().starts_with('{') || out.trim_start().starts_with('[');
     if looks_like_json {
         assert!(
-            !out.contains("[原文:"),
+            !out.contains("[llm-compress: 原文 "),
             "JSON 产物不得携带 CCR 标记!\n输出前 200 字节: {:?}",
             &out[..out.len().min(200)]
         );
@@ -242,8 +242,8 @@ fn enabled_compresses_large_plaintext() {
     );
 
     // 若含 CCR 标记,路径指向的文件必须存在。
-    if let Some(start) = out.find("[原文: ") {
-        let rest = &out[start + "[原文: ".len()..];
+    if let Some(start) = out.find("[llm-compress: 原文 ") {
+        let rest = &out[start + "[llm-compress: 原文 ".len()..];
         let path_end = rest.find(']').expect("CCR 标记缺少右括号");
         let path = std::path::Path::new(&rest[..path_end]);
         assert!(

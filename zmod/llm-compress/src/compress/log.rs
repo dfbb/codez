@@ -1,5 +1,6 @@
 //! LogCompressor:文本型日志压缩器。
-//! 两步压缩:① 模板挖掘(不删内容)② 级别评分保留(删行)。占位为裸文本标记 [llm-compress: …]。
+//! 级别评分保留(删行):保 head/tail + keep_levels + 高分行 + 栈帧,删低价值行。
+//! 占位为裸文本标记 [llm-compress: …]。
 
 use crate::router::{Budget, CompressOutcome, Compressor, ContentKind};
 
@@ -25,33 +26,27 @@ impl Compressor for LogCompressor {
     fn compress(&self, text: &str, budget: &Budget) -> CompressOutcome {
         let lines: Vec<&str> = text.lines().collect();
 
-        // ① 级别评分保留(删行):先裁掉低价值行,中段 ERROR/栈帧/高分行必留
+        // 级别评分保留(删行):保 head/tail + keep_levels + 高分行 + 栈帧
         let head = budget.cfg.truncate.head_lines;
         let tail = budget.cfg.truncate.tail_lines;
         let lines_owned: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
-        let (after_score, dropped) = score_keep(&lines_owned, head, tail, budget);
+        let keep_levels = &budget.cfg.log.keep_levels;
+        let (after_score, dropped) = score_keep(&lines_owned, head, tail, keep_levels, budget);
 
-        // ② 模板挖掘(不删内容):对留下的行做连续同模板折叠
-        let min_run = budget.cfg.log.template_min_run.max(2);
-        let after_score_refs: Vec<&str> = after_score.iter().map(String::as_str).collect();
-        let (final_lines, tpl_changed) = template_mine(&after_score_refs, min_run);
-
-        // 无实质变化:既无删行也无模板折叠 → Unchanged
-        if !dropped && !tpl_changed {
+        // 无删行 → Unchanged
+        if !dropped {
             return CompressOutcome::Unchanged;
         }
-        let new_text = final_lines.join("\n");
+        let new_text = after_score.join("\n");
         let saved = text.len().saturating_sub(new_text.len());
-        // 模板标记含 UTF-8 中文,折叠后体积可能不减反增;严守压后≤压前不变量。
+        // 防御性:删行后体积理论上必缩小,但保留守卫
         if saved == 0 {
             return CompressOutcome::Unchanged;
         }
-        // 删行 → lossy=true;仅模板折叠(无删行)→ lossy=false
-        let lossy = dropped;
         CompressOutcome::Compressed {
             text: new_text,
             saved_bytes: saved,
-            lossy,
+            lossy: true,
             kind: ContentKind::Text,
         }
     }
@@ -146,55 +141,21 @@ fn has_consecutive_repeat(lines: &[&str]) -> bool {
     lines.windows(2).any(|w| w[0] == w[1])
 }
 
-/// 模板挖掘:连续 ≥ min_run 行,规范化(数字/hex→占位)后相等则折叠为模板头 + 变量表。
-/// 不删内容(变量全保留)。返回 (新行序列, 是否折叠过)。
-fn template_mine(lines: &[&str], min_run: usize) -> (Vec<String>, bool) {
-    let mut out: Vec<String> = Vec::new();
-    let mut changed = false;
-    let mut i = 0;
-    while i < lines.len() {
-        let tpl = normalize_template(lines[i]);
-        let mut j = i + 1;
-        while j < lines.len() && normalize_template(lines[j]) == tpl {
-            j += 1;
-        }
-        let run = j - i;
-        if run >= min_run {
-            out.push(format!("[llm-compress: 模板] {tpl}"));
-            let vars: Vec<String> = lines[i..j].iter().map(|l| l.to_string()).collect();
-            out.push(format!("[llm-compress: 变量 ×{run}] {}", vars.join(" | ")));
-            changed = true;
-        } else {
-            for line in &lines[i..j] {
-                out.push(line.to_string());
-            }
-        }
-        i = j;
-    }
-    (out, changed)
+/// 行是否属于 keep_levels 中的某个级别(大小写不敏感的子串匹配)。
+fn line_has_keep_level(line: &str, keep_levels: &[String]) -> bool {
+    let lower = line.to_lowercase();
+    keep_levels.iter().any(|lvl| lower.contains(lvl.as_str()))
 }
 
-/// 把行内数字串、十六进制串替换成占位,用于"同模板"判定。
-fn normalize_template(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut chars = line.chars().peekable();
-    while let Some(&c) = chars.peek() {
-        if c.is_ascii_digit() {
-            while chars.peek().is_some_and(|c| c.is_ascii_digit() || *c == 'x' || c.is_ascii_hexdigit()) {
-                chars.next();
-            }
-            out.push('#');
-        } else {
-            out.push(c);
-            chars.next();
-        }
-    }
-    out
-}
-
-/// 级别评分保留:保 head/tail + 必留行(error/warn/栈帧/高分)+ 中段按分;
+/// 级别评分保留:保 head/tail + keep_levels行 + 高分行(≥1.0) + 栈帧;
 /// 丢弃的连续段折叠为 [llm-compress: 略 N 行]。返回 (新行, 是否删了行)。
-fn score_keep(lines: &[String], head: usize, tail: usize, budget: &Budget) -> (Vec<String>, bool) {
+fn score_keep(
+    lines: &[String],
+    head: usize,
+    tail: usize,
+    keep_levels: &[String],
+    budget: &Budget,
+) -> (Vec<String>, bool) {
     let n = lines.len();
     if n <= head + tail {
         return (lines.to_vec(), false);
@@ -204,10 +165,11 @@ fn score_keep(lines: &[String], head: usize, tail: usize, budget: &Budget) -> (V
     // head/tail 必留
     keep[..head.min(n)].fill(true);
     keep[n.saturating_sub(tail)..].fill(true);
-    // 必留:模板行/变量行(以 [llm-compress: 开头)+ 高分行 + 栈帧
+    // 必留:[llm-compress: 开头的占位行 + 高分行 + keep_levels行 + 栈帧
     for (i, line) in lines.iter().enumerate() {
         if line.starts_with("[llm-compress: ")
             || crate::score::line_score(line, query) >= 1.0
+            || line_has_keep_level(line, keep_levels)
             || is_stack_frame(line)
         {
             keep[i] = true;

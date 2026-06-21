@@ -57,6 +57,9 @@ pub fn transform(request: &mut ResponsesApiRequest, _api_provider: &ApiProvider,
     let router = build_router();
 
     let total_before = total_text_bytes(&request.input);
+    if total_before < cfg.min_total_bytes {
+        return;
+    }
     for item in request.input.iter_mut() {
         compress_item(item, &ctx, &router, &cfg);
     }
@@ -118,7 +121,7 @@ fn compress_in_place(
         Some((new, comp_lossy, kind)) => {
             // kind=Json ⟹ 产物是合法 JSON,绝不追加 CCR(§4.0/§4.7 铁律)。
             // pre_lossy 仅表示预处理删了内容;但若路由器产出 JSON,写回 JSON
-            // 不可再追加"[原文: /path]"——那会破坏 JSON 合法性。
+            // 不可再追加"[llm-compress: 原文 /path]"——那会破坏 JSON 合法性。
             // 规则:只有 kind==Text 且(pre_lossy 或 comp_lossy)才 attach CCR。
             if kind == ContentKind::Json {
                 candidate_is_json = true;
