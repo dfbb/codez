@@ -78,7 +78,7 @@ index 1d0c4c48c..e64588f6a 100644
      (model_client, attestation_calls)
  }
 diff --git a/codex-rs/core/src/config/mod.rs b/codex-rs/core/src/config/mod.rs
-index 8e9ccc6c2..2ed124547 100644
+index 8e9ccc6c2..412e243a5 100644
 --- a/codex-rs/core/src/config/mod.rs
 +++ b/codex-rs/core/src/config/mod.rs
 @@ -1425,6 +1425,9 @@ impl Config {
@@ -91,6 +91,34 @@ index 8e9ccc6c2..2ed124547 100644
              model_auto_compact_token_limit: self.model_auto_compact_token_limit,
              tool_output_token_limit: self.tool_output_token_limit,
              base_instructions: self.base_instructions.clone(),
+@@ -1828,6 +1831,14 @@ fn load_model_catalog(
+         .transpose()
+ }
+ 
++/// codez llm-switch:从普通路径字符串加载 provider 专属模型 catalog。复用
++/// `load_catalog_json` 的解析与校验；`from_absolute_path` 自带 `~` 展开与绝对化，
++/// 仅路径来源不同（来自 config-zmod，非 codex config.toml 的 AbsolutePathBuf）。
++fn load_llm_switch_model_catalog(path: &str) -> std::io::Result<ModelsResponse> {
++    let abs = AbsolutePathBuf::from_absolute_path(path)?;
++    load_catalog_json(&abs)
++}
++
+ fn filter_mcp_servers_by_requirements(
+     mcp_servers: &mut HashMap<String, McpServerConfig>,
+     mcp_requirements: Option<&Sourced<BTreeMap<String, McpServerRequirement>>>,
+@@ -3533,6 +3544,12 @@ impl Config {
+ 
+         let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(true);
+         let model_catalog = load_model_catalog(cfg.model_catalog_json.clone())?;
++        // codez llm-switch:被接管 provider 配了 model_catalog_json 时，用它作模型目录
++        // （第三方模型进 /model 列表、带推理强度），覆盖全局/内置 catalog。
++        let model_catalog = match codez_llm_switch::model_catalog_json(&model_provider_id) {
++            Some(path) => Some(load_llm_switch_model_catalog(&path)?),
++            None => model_catalog,
++        };
+ 
+         let log_dir = cfg
+             .log_dir
 diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
 index 0c07f5e95..313837acc 100644
 --- a/codex-rs/core/src/session/session.rs

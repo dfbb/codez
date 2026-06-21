@@ -115,8 +115,11 @@ default_max_tokens = 8192                    # anthropic max_tokens 兜底（缺
 | `anthropic_version` | 否 | x-api-key 形态下的版本头，缺省 `2023-06-01` |
 | `default_max_tokens` | 否 | anthropic `max_tokens` 兜底，缺省 4096 |
 | `context_window` | 否 | 覆盖 codex 对该模型的上下文窗口（token）。被接管的第三方模型多不在 codex 内置表、走 fallback（硬上限 272k）；配此值经 patch 在 `with_config_overrides` 连同 `max_context_window` 一起抬高，绕过 clamp。例：`1000000` |
+| `model_catalog_json` | 否 | 该 provider 专属的模型目录 JSON 路径（支持 `~`）。用此 provider 时 codex 以该表作模型目录，使第三方模型进 `/model` 列表并带推理强度。例：`~/.codex/model-catalog-deepseek.json` |
 
 > **`context_window` 的实施**：codex 对未知模型用 fallback 元数据（`max_context_window = 272_000`），其 `model_context_window` 顶层覆盖会被 clamp 到该上限。`002-llm-switch.patch` 给 `ModelsManagerConfig` 加了 `force_context_window`，由 `core` 的 `to_models_manager_config()` 从 `codez_llm_switch::context_window(provider_id)` 填充，在 `with_config_overrides` 里**同时**设 `context_window` 与 `max_context_window`（不 clamp），从而突破 272k。
+
+> **`model_catalog_json` 的实施**：`/model` 列表由 `build_available_models` 从模型目录（catalog）映射，第三方 slug 不在 codex 内置表、走 fallback（`visibility=None`、`supported_reasoning_levels` 空），既不进列表也无推理强度可选。`002-llm-switch.patch` 在 `core` 加载 config 时，若 `codez_llm_switch::model_catalog_json(provider_id)` 返回路径，则用 `load_llm_switch_model_catalog` 读它并覆盖 `config.model_catalog`——后续 `StaticModelsManager` 即以该表作目录，模型带 `visibility=list` 与 `supported_reasoning_levels` 进 `/model`。catalog JSON 即 codex 的 `ModelsResponse`（`{"models":[{slug,display_name,visibility:"list",supported_reasoning_levels,context_window,...}]}`，必填字段见 `~/.codex/model-catalog-*.json` 示例）。
 
 ### fail-safe 与开关
 

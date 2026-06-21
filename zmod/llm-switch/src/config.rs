@@ -44,6 +44,9 @@ pub struct ProviderCfg {
     /// 覆盖 codex 对该 provider 模型的上下文窗口（token）。被接管的第三方模型
     /// 通常不在 codex 内置表里、走 fallback（硬上限 272k），配此值可绕过。
     pub context_window: Option<i64>,
+    /// 该 provider 专属的模型 catalog JSON 路径。用此 provider 时，codex 用这张表
+    /// 作为模型目录（使第三方模型进 /model 列表、带推理强度），而非全局内置表。
+    pub model_catalog_json: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +84,7 @@ struct RawProvider {
     anthropic_version: Option<String>,
     default_max_tokens: Option<u32>,
     context_window: Option<i64>,
+    model_catalog_json: Option<String>,
 }
 
 /// 解析 config-zmod 文本。`allow_inline_key=false` 为运行时主路径(出现 auth_key 直接报错);
@@ -127,6 +131,7 @@ pub fn load_config_from_str(toml_text: &str, allow_inline_key: bool) -> Result<C
             anthropic_version: raw.anthropic_version,
             default_max_tokens: raw.default_max_tokens,
             context_window: raw.context_window,
+            model_catalog_json: raw.model_catalog_json,
         });
     }
     Ok(Config { enabled: sw.enabled, providers })

@@ -264,6 +264,17 @@ pub fn context_window(model_provider_id: &str) -> Option<i64> {
     context_window_in(loaded(), model_provider_id)
 }
 
+fn model_catalog_json_in(cfg: &Config, model_provider_id: &str) -> Option<String> {
+    route_in(cfg, model_provider_id).and_then(|rt| rt.cfg.model_catalog_json)
+}
+
+/// codex 侧模型目录用:被接管 provider 配了 `model_catalog_json` 时返回该路径,让
+/// codex 用这张表作模型目录(第三方模型进 /model 列表、带推理强度)。未接管 / 未配
+/// → None(codex 用全局内置 / config.toml 的 catalog)。
+pub fn model_catalog_json(model_provider_id: &str) -> Option<String> {
+    model_catalog_json_in(loaded(), model_provider_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,5 +316,11 @@ mod tests {
         let cfg = load_config_from_str("[llm-switch]\nenabled=true\n[llm-switch.providers.x]\nconnector=\"chat\"\nauth=\"bearer\"\n", false).unwrap();
         assert_eq!(context_window_in(&cfg, "x"), None);
         assert_eq!(context_window_in(&cfg, "unknown"), None);
+    }
+    #[test]
+    fn model_catalog_json_read_when_configured() {
+        let cfg = load_config_from_str("[llm-switch]\nenabled=true\n[llm-switch.providers.x]\nconnector=\"chat\"\nauth=\"bearer\"\nmodel_catalog_json=\"/tmp/x.json\"\n", false).unwrap();
+        assert_eq!(model_catalog_json_in(&cfg, "x"), Some("/tmp/x.json".to_string()));
+        assert_eq!(model_catalog_json_in(&cfg, "unknown"), None);
     }
 }
