@@ -3,7 +3,7 @@ use codex_api::ResponseEvent;
 use codex_protocol::models::{ContentItem, ResponseItem};
 use serde_json::json;
 
-/// 从 JSONL fixture 文件逐行解析 JSON chunk。
+/// Parse JSON chunks line by line from a JSONL fixture file.
 fn load_jsonl(name: &str) -> Vec<serde_json::Value> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -29,16 +29,16 @@ fn accumulates_text_and_synthesizes_assistant_message() {
                "usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}),
     ];
     let events = run(&chunks, true).unwrap();
-    // 至少两条 OutputTextDelta（展示）
+    // at least two OutputTextDelta (display)
     let deltas: Vec<&String> = events.iter().filter_map(|e| match e {
         ResponseEvent::OutputTextDelta(s) => Some(s), _ => None }).collect();
     assert_eq!(deltas, vec!["Hello", " world"]);
-    // 合成 assistant message 完成项（§4.5）
+    // synthesized assistant message completion item (§4.5)
     let synth = events.iter().find_map(|e| match e {
         ResponseEvent::OutputItemDone(ResponseItem::Message { role, content, .. }) if role == "assistant" => Some(content),
         _ => None }).expect("synth assistant message present");
     assert!(matches!(&synth[0], ContentItem::OutputText { text } if text == "Hello world"));
-    // Completed 三字段
+    // Completed three fields
     let completed = events.iter().find_map(|e| match e {
         ResponseEvent::Completed { response_id, token_usage, end_turn } => Some((response_id, token_usage, end_turn)),
         _ => None }).expect("Completed present");
@@ -62,9 +62,9 @@ fn aggregates_tool_call_arguments_by_index() {
         ResponseEvent::OutputItemDone(ResponseItem::FunctionCall { name, arguments, call_id, .. }) => Some((name, arguments, call_id)),
         _ => None }).expect("FunctionCall present");
     assert_eq!(fc.0, "get_weather");
-    assert_eq!(fc.1, "{\"city\":\"SF\"}"); // 按 index 聚合完整 arguments
-    assert_eq!(fc.2, "call_1");            // call_id 回填（§4.8）
-    // tool_calls 时 end_turn=false
+    assert_eq!(fc.1, "{\"city\":\"SF\"}"); // complete arguments aggregated by index
+    assert_eq!(fc.2, "call_1");            // call_id backfill (§4.8)
+    // tool_calls → end_turn=false
     let completed2 = events.iter().find_map(|e| match e {
         ResponseEvent::Completed { end_turn, .. } => Some(end_turn), _ => None }).unwrap();
     assert_eq!(*completed2, Some(false));
@@ -72,8 +72,8 @@ fn aggregates_tool_call_arguments_by_index() {
 
 #[test]
 fn reasoning_content_delta_aggregates_into_reasoning_item() {
-    // DeepSeek thinking 模型在 delta.reasoning_content 里流式输出思考，
-    // 回程应聚合成 ReasoningContentDelta（展示）+ finish 时一条 Reasoning 项（回传）。
+    // DeepSeek thinking models stream their thinking in delta.reasoning_content;
+    // the return path should aggregate it into ReasoningContentDelta (display) + one Reasoning item at finish (resend).
     let chunks = vec![
         json!({"id":"r","choices":[{"index":0,"delta":{"reasoning_content":"think "},"finish_reason":null}]}),
         json!({"id":"r","choices":[{"index":0,"delta":{"reasoning_content":"harder"},"finish_reason":null}]}),
@@ -81,11 +81,11 @@ fn reasoning_content_delta_aggregates_into_reasoning_item() {
                "usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}),
     ];
     let events = run(&chunks, true).unwrap();
-    // 展示用的 ReasoningContentDelta
+    // ReasoningContentDelta for display
     let rdeltas: Vec<&String> = events.iter().filter_map(|e| match e {
         ResponseEvent::ReasoningContentDelta { delta, .. } => Some(delta), _ => None }).collect();
     assert_eq!(rdeltas, vec!["think ", "harder"]);
-    // finish 时合成 Reasoning 项（交还 codex 存住）
+    // synthesize a Reasoning item at finish (handed back to codex to store)
     let reasoning = events.iter().find_map(|e| match e {
         ResponseEvent::OutputItemDone(ResponseItem::Reasoning { content, .. }) => content.clone(),
         _ => None }).expect("Reasoning item present");
@@ -104,8 +104,8 @@ fn missing_id_synthesizes_response_id() {
 
 #[test]
 fn cached_tokens_in_prompt_tokens_details_is_mapped() {
-    // usage 含 prompt_tokens_details.cached_tokens 时，
-    // 合成 Completed 的 token_usage.cached_input_tokens 应等于该值。
+    // when usage contains prompt_tokens_details.cached_tokens,
+    // the synthesized Completed's token_usage.cached_input_tokens should equal that value.
     let chunks = vec![
         text_chunk("resp-c", "Hi"),
         json!({"id":"resp-c","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],
@@ -128,7 +128,7 @@ fn cached_tokens_in_prompt_tokens_details_is_mapped() {
 
 #[test]
 fn finish_reason_length_gives_end_turn_none() {
-    // finish_reason="length" 表示 token 截断，按 spec §4.5 → end_turn=None（不判定是否结束回合）。
+    // finish_reason="length" means token truncation; per spec §4.5 → end_turn=None (no determination of turn end).
     let chunks = vec![
         text_chunk("resp-l", "Truncated"),
         json!({"id":"resp-l","choices":[{"index":0,"delta":{},"finish_reason":"length"}],
@@ -142,22 +142,22 @@ fn finish_reason_length_gives_end_turn_none() {
     assert_eq!(end_turn, None);
 }
 
-// ─── Fixture-based 黄金测试 ───────────────────────────────────────────────────
+// ─── Fixture-based golden tests ───────────────────────────────────────────────────
 
 #[test]
 fn fixture_text_stream_produces_correct_events() {
     let chunks = load_jsonl("chat_sse_text.jsonl");
     let events = run(&chunks, true).unwrap();
-    // 有两条 OutputTextDelta（"Hello" 和 ", world"；第一个 empty delta 被跳过）
+    // two OutputTextDelta ("Hello" and ", world"; the first empty delta is skipped)
     let deltas: Vec<&String> = events.iter().filter_map(|e| match e {
         ResponseEvent::OutputTextDelta(s) => Some(s), _ => None }).collect();
     assert_eq!(deltas, vec!["Hello", ", world"]);
-    // assistant message 累计正确
+    // assistant message accumulated correctly
     let msg = events.iter().find_map(|e| match e {
         ResponseEvent::OutputItemDone(ResponseItem::Message { role, content, .. }) if role == "assistant" => Some(content),
         _ => None }).expect("assistant message");
     assert!(matches!(&msg[0], ContentItem::OutputText { text } if text == "Hello, world"));
-    // response_id 正确
+    // response_id correct
     let rid = events.iter().find_map(|e| match e {
         ResponseEvent::Completed { response_id, .. } => Some(response_id.as_str()), _ => None }).unwrap();
     assert_eq!(rid, "chatcmpl-text1");

@@ -11,7 +11,7 @@ pub enum HttpError {
     BadHeader(String),
 }
 
-/// 默认出站 path。Chat → `/chat/completions`；Anthropic → `/v1/messages`。
+/// Default outbound path. Chat → `/chat/completions`; Anthropic → `/v1/messages`.
 pub fn default_path(connector: Connector) -> &'static str {
     match connector {
         Connector::Chat => "/chat/completions",
@@ -19,14 +19,14 @@ pub fn default_path(connector: Connector) -> &'static str {
     }
 }
 
-/// `base_url.trim_end('/') + path`（§4.0a）。
-/// path 缺省由 connector 决定，可被 path_override 覆盖。
+/// `base_url.trim_end('/') + path` (§4.0a).
+/// The default path is determined by the connector and can be overridden by path_override.
 pub fn egress_url(base_url: &str, connector: Connector, path_override: Option<&str>) -> String {
     let path = path_override.unwrap_or_else(|| default_path(connector));
     format!("{}{}", base_url.trim_end_matches('/'), path)
 }
 
-/// 原始 key 优先级：key_env（读环境变量）→ auth_key（内联，仅 testkey）→ None（留给 bearer 退路）。
+/// Raw key precedence: key_env (read from environment) → auth_key (inline, testkey only) → None (left to the bearer fallback).
 pub fn resolve_key(cfg: &ProviderCfg) -> Result<Option<String>, HttpError> {
     if let Some(env_name) = &cfg.key_env {
         if let Ok(v) = std::env::var(env_name) {
@@ -41,10 +41,10 @@ pub fn resolve_key(cfg: &ProviderCfg) -> Result<Option<String>, HttpError> {
     Ok(None)
 }
 
-/// 按 auth 形态整形鉴权头（§7.2）。
+/// Shape the auth headers according to the auth kind (§7.2).
 /// - `Bearer` → `Authorization: Bearer <key>`
 /// - `XApiKey` → `x-api-key: <key>` + `anthropic-version: <ver>`
-/// 同时注入 `Content-Type: application/json`。
+/// Also injects `Content-Type: application/json`.
 pub fn build_headers(
     auth: AuthKind,
     key: Option<&str>,

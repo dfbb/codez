@@ -1,14 +1,14 @@
-//! 共享 SSE 出口引擎（Task 08）。
+//! Shared SSE egress engine (Task 08).
 //!
-//! `run_egress` 同步完成 HTTP POST + 状态码校验，非 2xx 直接 `Err`（绝不 spawn）；
-//! 2xx 才 spawn 读取任务，逐 `data:` 行喂状态机，把 `ResponseEvent` 塞进 channel，
-//! 返回 `codex_api::ResponseStream`（§4.7）。
+//! `run_egress` completes the HTTP POST + status-code check synchronously; non-2xx returns `Err` directly (never spawns);
+//! only 2xx spawns the read task, feeds each `data:` line to the state machine, pushes `ResponseEvent`s into the channel,
+//! and returns a `codex_api::ResponseStream` (§4.7).
 //!
-//! UTF-8 策略：原始字节累积进 `Vec<u8>`，仅在找到完整 SSE 帧边界（字节序列
-//! `\n\n`）后才对帧字节做 UTF-8 解码。`\n`（0x0A）在 UTF-8 中绝不会作为多字节
-//! 字符的后续字节，故在字节层面查找 `\n\n` 安全；完整帧保证 UTF-8 对齐，不会
-//! 在汉字等多字节字符中间截断，从根本上消除 `from_utf8_lossy` 产生替换字符的
-//! 问题。
+//! UTF-8 strategy: raw bytes accumulate into a `Vec<u8>`, and the frame bytes are UTF-8 decoded only after a complete
+//! SSE frame boundary (the byte sequence `\n\n`) is found. `\n` (0x0A) never appears as a continuation byte of a
+//! multi-byte character in UTF-8, so searching for `\n\n` at the byte level is safe; a complete frame guarantees
+//! UTF-8 alignment and won't truncate in the middle of a multi-byte character (e.g. a CJK character), fundamentally
+//! eliminating the replacement-character problem that `from_utf8_lossy` would produce.
 
 use futures::StreamExt;
 use reqwest::header::HeaderMap;
@@ -26,7 +26,7 @@ pub(crate) async fn run_egress(
     http: reqwest::Client,
     mut translator: Box<dyn SseTranslator>,
 ) -> Result<ResponseStream, ApiError> {
-    // ── 同步阶段（§4.7）：发请求 + 状态码校验 ──────────────────────────────
+    // ── Synchronous phase (§4.7): send request + status-code check ──────────────────────────────
     let resp = http
         .post(&url)
         .headers(headers)
@@ -43,12 +43,12 @@ pub(crate) async fn run_egress(
 
     let status = resp.status();
     if !status.is_success() {
-        // 第三方 401/403 映射成普通 Api 错误，避免触发 OpenAI recovery（§4.7）
+        // Map third-party 401/403 to a plain Api error, avoiding triggering OpenAI recovery (§4.7)
         let text = resp.text().await.unwrap_or_default();
         return Err(ApiError::Api { status, message: text });
     }
 
-    // ── 异步阶段：仅 2xx 才 spawn ─────────────────────────────────────────
+    // ── Asynchronous phase: only spawn on 2xx ─────────────────────────────────────────
     let (tx, rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(64);
     let mut byte_stream = resp.bytes_stream();
 
@@ -68,7 +68,7 @@ pub(crate) async fn run_egress(
             };
             buf.extend_from_slice(&chunk);
 
-            // 按 SSE 事件边界（字节序列 \n\n）切分，仅在完整帧边界解码 UTF-8
+            // Split on SSE event boundaries (byte sequence \n\n), decoding UTF-8 only at complete frame boundaries
             while let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
                 let frame_bytes = buf[..pos].to_vec();
                 buf.drain(..pos + 2);
@@ -87,7 +87,7 @@ pub(crate) async fn run_egress(
                     let line = line.trim_start();
                     let data = match line.strip_prefix("data:") {
                         Some(d) => d.trim(),
-                        None => continue, // 忽略 event:/id:/注释行
+                        None => continue, // ignore event:/id:/comment lines
                     };
                     if data == "[DONE]" {
                         done = true;
@@ -128,7 +128,7 @@ pub(crate) async fn run_egress(
             }
         }
 
-        // EOF 或 [DONE] → finish（合成 assistant message + Completed，§4.5）
+        // EOF or [DONE] → finish (synthesize assistant message + Completed, §4.5)
         for ev in translator.finish() {
             if tx.send(Ok(ev)).await.is_err() {
                 return;

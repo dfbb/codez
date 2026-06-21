@@ -1,8 +1,8 @@
-//! chat SSE→ResponseEvent 状态机（Task 05）
+//! chat SSE→ResponseEvent state machine (Task 05)
 //!
-//! `ChatSseState` 是纯函数式累加器：每次喂一个已解析的 JSON chunk（`push_chunk`），
-//! 收到 `[DONE]` 时调用 `finish()` 发合成 assistant message 完成项 + `Completed`。
-//! 无 I/O、无 async，便于离线单元测试。
+//! `ChatSseState` is a purely functional accumulator: feed it one parsed JSON chunk at a time (`push_chunk`),
+//! and on receiving `[DONE]`, call `finish()` to emit the synthesized assistant message completion item + `Completed`.
+//! No I/O, no async, making offline unit testing easy.
 
 use std::collections::BTreeMap;
 
@@ -13,9 +13,9 @@ use serde_json::Value;
 
 use crate::connector::ConnError;
 
-// ─── 内部聚合器 ──────────────────────────────────────────────────────────────
+// ─── Internal accumulator ──────────────────────────────────────────────────────────
 
-/// 单条 tool_call 的流式聚合状态。
+/// Streaming aggregation state for a single tool_call.
 #[derive(Default)]
 struct ToolAcc {
     call_id: Option<String>,
@@ -23,62 +23,62 @@ struct ToolAcc {
     arguments: String,
 }
 
-// ─── 主状态机 ─────────────────────────────────────────────────────────────────
+// ─── Main state machine ─────────────────────────────────────────────────────────────
 
-/// Chat Completions SSE chunk 累加器。
+/// Chat Completions SSE chunk accumulator.
 ///
-/// 使用方式：
+/// Usage:
 /// ```ignore
 /// let mut st = ChatSseState::default();
 /// for chunk in sse_chunks { events.extend(st.push_chunk(&chunk)?); }
-/// events.extend(st.finish());   // 收到 [DONE] 时调用
+/// events.extend(st.finish());   // call when [DONE] is received
 /// ```
 #[derive(Default)]
 pub(crate) struct ChatSseState {
-    /// 累计文本（用于合成 assistant message）。
+    /// accumulated text (used to synthesize the assistant message).
     text: String,
-    /// 累计 reasoning_content（thinking 模型的思考流，回传时还给 codex 存住）。
+    /// accumulated reasoning_content (the thinking stream of thinking models, also given back to codex to store on resend).
     reasoning: String,
-    /// 本次响应 ID（取第一个 chunk 的 `id` 字段）。
+    /// this response's ID (taken from the first chunk's `id` field).
     response_id: Option<String>,
-    /// 最后一个 `finish_reason`。
+    /// the last `finish_reason`.
     finish_reason: Option<String>,
-    /// `usage` 字段（通常在末尾 chunk）。
+    /// the `usage` field (usually in the final chunk).
     usage: Option<Value>,
-    /// tool_calls 按 `index` 聚合。BTreeMap 保证有序输出。
+    /// tool_calls aggregated by `index`. BTreeMap guarantees ordered output.
     tool_calls: BTreeMap<i64, ToolAcc>,
-    /// 合成 ID 用的递增计数器（确定性，测试可复现）。
+    /// incrementing counter for synthesized IDs (deterministic, reproducible in tests).
     synth_counter: u64,
 }
 
 impl ChatSseState {
-    /// 喂一个解析好的 JSON chunk，返回该 chunk 产生的 `ResponseEvent` 列表。
+    /// Feed one parsed JSON chunk, returning the `ResponseEvent`s it produces.
     ///
-    /// 错误只在 chunk 本身携带 `error` 字段时触发（HardFail 语义）。
-    /// 字段缺失/类型不符均静默跳过（稳健处理原则）。
+    /// An error is only triggered when the chunk itself carries an `error` field (HardFail semantics).
+    /// Missing fields / type mismatches are silently skipped (robust-handling principle).
     pub(crate) fn push_chunk(&mut self, chunk: &Value) -> Result<Vec<ResponseEvent>, ConnError> {
         let mut out = Vec::new();
 
-        // chunk 携带 error 字段 → 流报错
+        // chunk carries an error field → stream error
         if let Some(err) = chunk.get("error") {
             return Err(ConnError::HardFail(format!("upstream error in SSE chunk: {err}")));
         }
 
-        // 取响应 ID（只记第一个非空的）
+        // take the response ID (only record the first non-empty one)
         if let Some(id) = chunk.get("id").and_then(Value::as_str) {
             if !id.is_empty() {
                 self.response_id.get_or_insert_with(|| id.to_string());
             }
         }
 
-        // usage（通常出现在最后一个数据 chunk 或流末尾）
+        // usage (usually appears in the last data chunk or at the end of the stream)
         if let Some(u) = chunk.get("usage") {
             if !u.is_null() {
                 self.usage = Some(u.clone());
             }
         }
 
-        // 取 choices[0]
+        // take choices[0]
         let Some(choice) = chunk.get("choices").and_then(|c| c.as_array()).and_then(|a| a.first()) else {
             return Ok(out);
         };
@@ -92,21 +92,21 @@ impl ChatSseState {
 
         let delta = choice.get("delta");
 
-        // 文本 delta
+        // text delta
         if let Some(content) = delta
             .and_then(|d| d.get("content"))
             .and_then(Value::as_str)
         {
             if !content.is_empty() {
                 self.text.push_str(content);
-                // OutputTextDelta 仅用于展示，不累计（累计在 self.text）
+                // OutputTextDelta is for display only, not accumulated (accumulation happens in self.text)
                 out.push(ResponseEvent::OutputTextDelta(content.to_string()));
             }
         }
 
-        // reasoning_content delta（DeepSeek 等 thinking 模型的思考流）。
-        // 累计后在 finish() 合成 Reasoning 项交还 codex，使其能展示并在下一轮回传
-        // （满足上游「tool_calls 的 assistant 消息必须带 reasoning_content」约束）。
+        // reasoning_content delta (the thinking stream of thinking models like DeepSeek).
+        // Accumulated and synthesized into a Reasoning item in finish() to hand back to codex, so it can display
+        // and resend on the next round (satisfying the upstream constraint that "the assistant message for tool_calls must carry reasoning_content").
         if let Some(rc) = delta
             .and_then(|d| d.get("reasoning_content"))
             .and_then(Value::as_str)
@@ -120,7 +120,7 @@ impl ChatSseState {
             }
         }
 
-        // tool_calls delta（按 index 聚合）
+        // tool_calls delta (aggregated by index)
         if let Some(tcs) = delta
             .and_then(|d| d.get("tool_calls"))
             .and_then(Value::as_array)
@@ -150,17 +150,17 @@ impl ChatSseState {
         Ok(out)
     }
 
-    /// 收到 `[DONE]` 时调用。
+    /// Called when `[DONE]` is received.
     ///
-    /// 顺序（§4.5）：
-    /// 1. 各 `FunctionCall` 完成项（按 index 顺序）
-    /// 2. 合成 assistant `Message` 完成项（若有文本）
+    /// Order (§4.5):
+    /// 1. each `FunctionCall` completion item (in index order)
+    /// 2. synthesized assistant `Message` completion item (if there is text)
     /// 3. `Completed`
     pub(crate) fn finish(&mut self) -> Vec<ResponseEvent> {
         let mut out = Vec::new();
 
-        // 0. Reasoning 项（若有思考流）：放在 FunctionCall / Message 之前，
-        //    使 codex 历史中 Reasoning 紧挨其后的 tool_call，下一轮出站可正确回传。
+        // 0. Reasoning item (if there is a thinking stream): placed before FunctionCall / Message,
+        //    so that in codex history the Reasoning sits right before its tool_call, and the next outbound round resends it correctly.
         if !self.reasoning.is_empty() {
             out.push(ResponseEvent::OutputItemDone(ResponseItem::Reasoning {
                 id: None,
@@ -173,9 +173,9 @@ impl ChatSseState {
             }));
         }
 
-        // 1. FunctionCall 完成项
+        // 1. FunctionCall completion items
         for (_idx, acc) in std::mem::take(&mut self.tool_calls) {
-            // call_id 缺失时合成（§4.8 call_id 回填）
+            // synthesize when call_id is missing (§4.8 call_id backfill)
             let call_id = acc.call_id.unwrap_or_else(|| self.synth_id("call"));
             out.push(ResponseEvent::OutputItemDone(ResponseItem::FunctionCall {
                 id: None,
@@ -187,9 +187,9 @@ impl ChatSseState {
             }));
         }
 
-        // 2. 合成 assistant message 完成项（§4.5）
-        // 仅当有累计文本时才合成 assistant Message 完成项；纯 tool-call 响应只发 FunctionCall 项 + Completed
-        // （无文本即无可合成内容；是否需要空 Message 由 Task 08 接线时对照 codex 消费端确认）。
+        // 2. synthesized assistant message completion item (§4.5)
+        // only synthesize an assistant Message completion item when there is accumulated text; a pure tool-call response only emits FunctionCall items + Completed
+        // (no text means nothing to synthesize; whether an empty Message is needed is confirmed against codex's consumer side when Task 08 wires it up).
         if !self.text.is_empty() {
             out.push(ResponseEvent::OutputItemDone(ResponseItem::Message {
                 id: None,
@@ -216,29 +216,29 @@ impl ChatSseState {
         out
     }
 
-    /// 生成确定性合成 ID（避免随机依赖，测试可复现）。
+    /// Generate a deterministic synthesized ID (avoids random dependencies, reproducible in tests).
     fn synth_id(&mut self, kind: &str) -> String {
         self.synth_counter += 1;
         format!("llmswitch-{kind}-{}", self.synth_counter)
     }
 }
 
-// ─── 辅助函数 ─────────────────────────────────────────────────────────────────
+// ─── Helper functions ─────────────────────────────────────────────────────────────────
 
-/// 把 `finish_reason` 映射到 `end_turn`（§4.5）。
-/// - `"stop"` → `Some(true)`（模型主动停止）
-/// - `"tool_calls"` → `Some(false)`（还需要工具调用）
-/// - `"length"`/未知 reason → `None`（截断/未知，不判定是否结束回合）
+/// Map `finish_reason` to `end_turn` (§4.5).
+/// - `"stop"` → `Some(true)` (model stopped on its own)
+/// - `"tool_calls"` → `Some(false)` (still needs a tool call)
+/// - `"length"`/unknown reason → `None` (truncation/unknown, no determination of turn end)
 fn map_end_turn(fr: Option<&str>) -> Option<bool> {
     match fr {
         Some("stop") => Some(true),
         Some("tool_calls") => Some(false),
-        _ => None, // length/未知
+        _ => None, // length/unknown
     }
 }
 
-/// 把 Chat Completions `usage` JSON 映射到 `TokenUsage`。
-/// 字段缺失时默认 0（稳健处理）。
+/// Map the Chat Completions `usage` JSON to `TokenUsage`.
+/// Default to 0 when fields are missing (robust handling).
 fn map_usage(u: &Value) -> TokenUsage {
     let g = |k: &str| u.get(k).and_then(Value::as_i64).unwrap_or(0);
     TokenUsage {
@@ -265,10 +265,10 @@ impl crate::connector::SseTranslator for ChatSseState {
     }
 }
 
-// ─── 便利函数（供 testing 模块和直接调用） ────────────────────────────────────
+// ─── Convenience functions (for the testing module and direct calls) ────────────────────────────────────
 
-/// 把整段 SSE chunk 序列跑完，返回所有事件。
-/// `done = true` 时自动调用 `finish()`（相当于收到 `[DONE]`）。
+/// Run an entire SSE chunk sequence to completion, returning all events.
+/// When `done = true`, automatically calls `finish()` (equivalent to receiving `[DONE]`).
 pub(crate) fn translate_chat_sse(
     chunks: &[Value],
     done: bool,

@@ -1,8 +1,8 @@
-//! Anthropic Messages SSE→ResponseEvent 状态机（Task 07）
+//! Anthropic Messages SSE→ResponseEvent state machine (Task 07)
 //!
-//! `AnthropicSseState` 是纯函数式累加器：每次喂一个已解析的 JSON 事件（`push_event`），
-//! 收到 `message_stop` 后调用 `finish()` 发合成 assistant message 完成项 + `Completed`。
-//! 无 I/O、无 async，便于离线单元测试。
+//! `AnthropicSseState` is a purely functional accumulator: feed it one parsed JSON event at a time (`push_event`),
+//! and after receiving `message_stop`, call `finish()` to emit the synthesized assistant message completion item + `Completed`.
+//! No I/O, no async, making offline unit testing easy.
 
 use std::collections::BTreeMap;
 
@@ -13,56 +13,56 @@ use serde_json::Value;
 
 use crate::connector::ConnError;
 
-// ─── 内部聚合器 ──────────────────────────────────────────────────────────────
+// ─── Internal accumulator ──────────────────────────────────────────────────────────
 
-/// 单个 content block 的流式聚合状态。
+/// Streaming aggregation state for a single content block.
 #[derive(Default)]
 struct BlockAcc {
-    /// true = tool_use block；false = text block。
+    /// true = tool_use block; false = text block.
     is_tool_use: bool,
-    /// tool_use block 的 id（→ call_id）。
+    /// tool_use block id (→ call_id).
     call_id: Option<String>,
-    /// tool_use block 的 name。
+    /// tool_use block name.
     name: Option<String>,
-    /// 聚合的 input_json_delta 片段。
+    /// aggregated input_json_delta fragments.
     partial_json: String,
 }
 
-// ─── 主状态机 ─────────────────────────────────────────────────────────────────
+// ─── Main state machine ─────────────────────────────────────────────────────────────
 
-/// Anthropic Messages SSE 事件累加器。
+/// Anthropic Messages SSE event accumulator.
 ///
-/// 使用方式：
+/// Usage:
 /// ```ignore
 /// let mut st = AnthropicSseState::default();
 /// for evt in sse_events { events.extend(st.push_event(&evt)?); }
-/// events.extend(st.finish());   // 收到 message_stop 时调用
+/// events.extend(st.finish());   // call when message_stop is received
 /// ```
 #[derive(Default)]
 pub(crate) struct AnthropicSseState {
-    /// 累计文本（用于合成 assistant message）。
+    /// accumulated text (used to synthesize the assistant message).
     text: String,
-    /// 本次响应 ID（取 message_start.message.id）。
+    /// this response's ID (taken from message_start.message.id).
     response_id: Option<String>,
-    /// stop_reason（取 message_delta.delta.stop_reason）。
+    /// stop_reason (taken from message_delta.delta.stop_reason).
     stop_reason: Option<String>,
-    /// message_start.message.usage.input_tokens。
+    /// message_start.message.usage.input_tokens.
     input_tokens: i64,
-    /// message_start.message.usage.cache_read_input_tokens。
+    /// message_start.message.usage.cache_read_input_tokens.
     cached_input_tokens: i64,
-    /// message_delta.usage.output_tokens。
+    /// message_delta.usage.output_tokens.
     output_tokens: i64,
-    /// content block 按 index 聚合。BTreeMap 保证有序输出。
+    /// content blocks aggregated by index. BTreeMap guarantees ordered output.
     blocks: BTreeMap<i64, BlockAcc>,
-    /// 合成 ID 用的递增计数器（确定性，测试可复现）。
+    /// incrementing counter for synthesized IDs (deterministic, reproducible in tests).
     synth_counter: u64,
 }
 
 impl AnthropicSseState {
-    /// 喂一个已解析的 Anthropic SSE 事件 JSON，返回该事件产生的 `ResponseEvent` 列表。
+    /// Feed one parsed Anthropic SSE event JSON, returning the `ResponseEvent`s it produces.
     ///
-    /// 错误只在事件类型为 `error` 时触发。
-    /// 字段缺失/类型不符均静默跳过（稳健处理原则）。
+    /// An error is only triggered when the event type is `error`.
+    /// Missing fields / type mismatches are silently skipped (robust-handling principle).
     pub(crate) fn push_event(&mut self, evt: &Value) -> Result<Vec<ResponseEvent>, ConnError> {
         let mut out = Vec::new();
 
@@ -156,26 +156,26 @@ impl AnthropicSseState {
                 }
             }
 
-            // content_block_stop / message_stop / ping → 无需即时事件
+            // content_block_stop / message_stop / ping → no immediate event needed
             _ => {}
         }
 
         Ok(out)
     }
 
-    /// 收到 `message_stop` 后调用。
+    /// Called after `message_stop` is received.
     ///
-    /// 顺序（§4.5）：
-    /// 1. 各 `FunctionCall` 完成项（按 block index 顺序）
-    /// 2. 合成 assistant `Message` 完成项（若有文本）
+    /// Order (§4.5):
+    /// 1. each `FunctionCall` completion item (in block index order)
+    /// 2. synthesized assistant `Message` completion item (if there is text)
     /// 3. `Completed`
     pub(crate) fn finish(&mut self) -> Vec<ResponseEvent> {
         let mut out = Vec::new();
 
-        // 1. FunctionCall 完成项
+        // 1. FunctionCall completion items
         for (_idx, mut acc) in std::mem::take(&mut self.blocks) {
             if acc.is_tool_use {
-                // 无参数工具的 partial_json 为空时，补 "{}"
+                // when a no-argument tool's partial_json is empty, fill in "{}"
                 if acc.partial_json.is_empty() {
                     acc.partial_json = "{}".into();
                 }
@@ -191,8 +191,8 @@ impl AnthropicSseState {
             }
         }
 
-        // 2. 合成 assistant message 完成项（§4.5）
-        // 纯 tool-call 响应只发 FunctionCall 项 + Completed，无文本则跳过
+        // 2. synthesized assistant message completion item (§4.5)
+        // a pure tool-call response only emits FunctionCall items + Completed; skip if there is no text
         if !self.text.is_empty() {
             out.push(ResponseEvent::OutputItemDone(ResponseItem::Message {
                 id: None,
@@ -225,20 +225,20 @@ impl AnthropicSseState {
         out
     }
 
-    /// 生成确定性合成 ID（避免随机依赖，测试可复现）。
+    /// Generate a deterministic synthesized ID (avoids random dependencies, reproducible in tests).
     fn synth_id(&mut self, kind: &str) -> String {
         self.synth_counter += 1;
         format!("llmswitch-{kind}-{}", self.synth_counter)
     }
 }
 
-// ─── 辅助函数 ─────────────────────────────────────────────────────────────────
+// ─── Helper functions ─────────────────────────────────────────────────────────────────
 
-/// 把 Anthropic `stop_reason` 映射到 `end_turn`。
-/// - `"end_turn"` → `Some(true)`（模型主动停止）
-/// - `"tool_use"` → `Some(false)`（还需要工具调用）
-/// - `"max_tokens"` → `None`（token 截断，语义不明确）
-/// - 其他未知 reason → `None`
+/// Map Anthropic's `stop_reason` to `end_turn`.
+/// - `"end_turn"` → `Some(true)` (model stopped on its own)
+/// - `"tool_use"` → `Some(false)` (still needs a tool call)
+/// - `"max_tokens"` → `None` (token truncation, semantics unclear)
+/// - other unknown reasons → `None`
 fn map_end_turn(stop_reason: Option<&str>) -> Option<bool> {
     match stop_reason {
         Some("end_turn") => Some(true),
@@ -258,10 +258,10 @@ impl crate::connector::SseTranslator for AnthropicSseState {
     }
 }
 
-// ─── 便利函数（供 testing 模块和直接调用） ────────────────────────────────────
+// ─── Convenience functions (for the testing module and direct calls) ────────────────────────────────────
 
-/// 把整段 Anthropic SSE 事件序列跑完，返回所有事件。
-/// `done = true` 时自动调用 `finish()`（相当于收到 `message_stop`）。
+/// Run an entire Anthropic SSE event sequence to completion, returning all events.
+/// When `done = true`, automatically calls `finish()` (equivalent to receiving `message_stop`).
 pub(crate) fn translate_anthropic_sse(
     events: &[Value],
     done: bool,

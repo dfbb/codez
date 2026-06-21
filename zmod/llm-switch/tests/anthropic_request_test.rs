@@ -1,16 +1,16 @@
-/// anthropic 出站请求构造测试（Task 06）
+/// anthropic outbound request construction tests (Task 06)
 ///
-/// # Fixture 来源声明（§8 必须明确）
-/// 本文件采用**自建 fixture**方案：人工按照 Anthropic Messages API 官方文档格式核对，
-/// 固化成 `tests/fixtures/anthropic_req_*.expected.json`，不依赖第三方 converter 工具。
-/// 理由：本仓库当前无 `../3rd/proxy/llm-rosetta` Python 依赖，且官方格式已有完整文档支撑。
+/// # Fixture provenance declaration (§8 must be explicit)
+/// This file uses a **self-built fixture** approach: manually checked against the official Anthropic Messages API doc format,
+/// frozen into `tests/fixtures/anthropic_req_*.expected.json`, with no dependency on a third-party converter tool.
+/// Rationale: this repo currently has no `../3rd/proxy/llm-rosetta` Python dependency, and the official format is fully documented.
 ///
-/// # 复用 Task 04 钉死的类型（Step 0）
+/// # Reuses the types pinned by Task 04 (Step 0)
 /// - ContentItem: InputText{text} | InputImage{image_url,detail} | OutputText{text}
 /// - FunctionCallOutputContentItem: InputText{text} | InputImage{image_url,detail} | EncryptedContent{encrypted_content}
 /// - FunctionCallOutputBody: Text(String) | ContentItems(Vec<FunctionCallOutputContentItem>)
 /// - FunctionCallOutputPayload: { body: FunctionCallOutputBody, success: Option<bool> }
-/// - ResponseItem 变体（16个）：Message/AgentMessage/Reasoning/LocalShellCall/FunctionCall/
+/// - ResponseItem variants (16): Message/AgentMessage/Reasoning/LocalShellCall/FunctionCall/
 ///   ToolSearchCall/FunctionCallOutput/CustomToolCall/CustomToolCallOutput/ToolSearchOutput/
 ///   WebSearchCall/ImageGenerationCall/Compaction/CompactionTrigger/ContextCompaction/Other
 use codex_protocol::config_types::Verbosity;
@@ -32,7 +32,7 @@ fn base_req() -> codex_api::ResponsesApiRequest {
     r
 }
 
-// ── 辅助函数 ──────────────────────────────────────────────────────────────────
+// ── Helper functions ──────────────────────────────────────────────────────────────
 
 fn find_block<'a>(v: &'a serde_json::Value, ty: &str) -> Option<&'a serde_json::Value> {
     v["messages"]
@@ -44,7 +44,7 @@ fn find_block<'a>(v: &'a serde_json::Value, ty: &str) -> Option<&'a serde_json::
 }
 
 // ============================================================
-// §4.3 system 走顶层
+// §4.3 system goes to top level
 // ============================================================
 
 #[test]
@@ -81,7 +81,7 @@ fn empty_instructions_no_system_field() {
 }
 
 // ============================================================
-// §4.6 max_tokens 必填（兜底）
+// §4.6 max_tokens required (fallback)
 // ============================================================
 
 #[test]
@@ -99,7 +99,7 @@ fn max_tokens_falls_back_to_4096_when_no_config() {
 }
 
 // ============================================================
-// §4.3 消息 role 仅 user/assistant（FunctionCall → assistant content[tool_use]）
+// §4.3 message role is only user/assistant (FunctionCall → assistant content[tool_use])
 // ============================================================
 
 #[test]
@@ -124,7 +124,7 @@ fn function_call_becomes_tool_use_with_parsed_object() {
     assert_eq!(block["type"], "tool_use");
     assert_eq!(block["id"], "call_1");
     assert_eq!(block["name"], "get_weather");
-    // arguments 字符串解析成对象（§4.6）
+    // arguments string parsed into an object (§4.6)
     assert_eq!(block["input"]["city"], "SF");
 }
 
@@ -146,7 +146,7 @@ fn function_call_invalid_json_arguments_hard_fails() {
 }
 
 // ============================================================
-// §4.6 tool_result：is_error 原生字段
+// §4.6 tool_result: is_error native field
 // ============================================================
 
 #[test]
@@ -175,7 +175,7 @@ fn tool_output_maps_is_error() {
     let tr = find_block(&v, "tool_result").expect("tool_result present");
     assert_eq!(tr["tool_use_id"], "c");
     assert_eq!(tr["is_error"], true);
-    // 内容应为错误文本
+    // content should be the error text
     assert!(tr["content"].is_string(), "tool_result content 应为字符串");
 }
 
@@ -203,7 +203,7 @@ fn tool_output_success_no_is_error_field() {
     ];
     let v = build(&req, &ctx()).unwrap();
     let tr = find_block(&v, "tool_result").expect("tool_result present");
-    // 成功时不应有 is_error 字段（或为 false）
+    // on success there should be no is_error field (or it's false)
     let is_error = tr.get("is_error");
     assert!(
         is_error.is_none() || is_error == Some(&serde_json::Value::Bool(false)),
@@ -305,7 +305,7 @@ fn parallel_true_no_disable_parallel_field() {
         vec![json!({"type":"function","name":"f","parameters":{"type":"object"}})];
     req.parallel_tool_calls = true;
     let v = build(&req, &ctx()).unwrap();
-    // disable_parallel_tool_use 不应为 true（可能没有该字段）
+    // disable_parallel_tool_use should not be true (the field may be absent)
     let disable = v
         .get("tool_choice")
         .and_then(|tc| tc.get("disable_parallel_tool_use"));
@@ -323,7 +323,7 @@ fn tools_map_to_input_schema() {
     assert_eq!(v["tools"][0]["name"], "f");
     assert_eq!(v["tools"][0]["description"], "d");
     assert_eq!(v["tools"][0]["input_schema"]["type"], "object");
-    // 不应有 type 字段（Anthropic tools 格式）
+    // there should be no type field (Anthropic tools format)
     assert_eq!(v["tools"][0].get("type"), None);
 }
 
@@ -340,7 +340,7 @@ fn non_function_tool_definition_hard_fails() {
 #[test]
 fn web_search_tool_becomes_anthropic_server_tool() {
     let mut req = base_req();
-    // codex 的 web_search 托管工具序列化形态（含 Responses 侧参数，应被丢弃）
+    // codex's web_search hosted-tool serialized form (includes Responses-side params, which should be dropped)
     req.tools = vec![json!({
         "type": "web_search",
         "external_web_access": true,
@@ -351,7 +351,7 @@ fn web_search_tool_becomes_anthropic_server_tool() {
         .and_then(|arr| arr.iter().find(|t| t["type"] == "web_search_20250305"))
         .expect("应有 web_search_20250305 server tool");
     assert_eq!(ws["name"], "web_search");
-    // Responses 侧参数不应泄漏到 Anthropic 工具定义
+    // Responses-side params should not leak into the Anthropic tool definition
     assert_eq!(ws.get("external_web_access"), None);
 }
 
@@ -371,7 +371,7 @@ fn function_and_web_search_tools_coexist() {
 }
 
 // ============================================================
-// §4.10 孤儿修复（无重排——仅注入占位）
+// §4.10 orphan repair (no reordering — only placeholder injection)
 // ============================================================
 
 #[test]
@@ -412,12 +412,12 @@ fn orphan_tool_result_is_dropped() {
 }
 
 // ============================================================
-// 同 role 消息 content block 合并
+// Same-role message content block merging
 // ============================================================
 
 #[test]
 fn consecutive_same_role_blocks_merged() {
-    // 两个 FunctionCall 应合并进同一条 assistant 消息
+    // two FunctionCalls should be merged into the same assistant message
     let mut req = base_req();
     req.input = vec![
         ResponseItem::FunctionCall {
@@ -440,13 +440,13 @@ fn consecutive_same_role_blocks_merged() {
     let v = build(&req, &ctx()).unwrap();
     let msgs = v["messages"].as_array().unwrap();
     let asst_msgs: Vec<_> = msgs.iter().filter(|m| m["role"] == "assistant").collect();
-    // 两个 tool_use block 应在同一条 assistant 消息里
+    // the two tool_use blocks should be in the same assistant message
     assert_eq!(asst_msgs.len(), 1, "连续同 role 消息应合并为一条");
     assert_eq!(asst_msgs[0]["content"].as_array().unwrap().len(), 2);
 }
 
 // ============================================================
-// 出站丢弃变体（§4.0 / §4.4）
+// Dropped-on-egress variants (§4.0 / §4.4)
 // ============================================================
 
 #[test]
@@ -494,7 +494,7 @@ fn compaction_trigger_is_discarded_silently() {
 }
 
 // ============================================================
-// 硬失败变体（§4.0）
+// Hard-fail variants (§4.0)
 // ============================================================
 
 #[test]
@@ -738,7 +738,7 @@ fn other_variant_hard_fails() {
 }
 
 // ============================================================
-// §7.1 字段降级
+// §7.1 field downgrade
 // ============================================================
 
 #[test]
@@ -754,7 +754,7 @@ fn model_field_comes_from_ctx() {
 }
 
 // ============================================================
-// §8 黄金 fixture（自建，人工核对 Anthropic Messages API 格式）
+// §8 golden fixture (self-built, manually checked against the Anthropic Messages API format)
 // ============================================================
 
 #[test]
@@ -831,7 +831,7 @@ fn golden_system_user_tool_roundtrip() {
 
 #[test]
 fn multiple_orphan_calls_injected_in_order() {
-    // 验证多孤儿 FunctionCall 按出现顺序注入占位 tool_result
+    // verify that multiple orphan FunctionCalls inject placeholder tool_results in appearance order
     let mut req = base_req();
     req.input = vec![
         ResponseItem::FunctionCall {
@@ -852,7 +852,7 @@ fn multiple_orphan_calls_injected_in_order() {
         },
     ];
     let v = build(&req, &ctx()).unwrap();
-    // 取所有 tool_result block 的 tool_use_id 顺序
+    // take the tool_use_id order of all tool_result blocks
     let ids: Vec<&str> = v["messages"]
         .as_array()
         .unwrap()
@@ -867,12 +867,12 @@ fn multiple_orphan_calls_injected_in_order() {
 }
 
 // ============================================================
-// §7.1 text.format → 系统指令追加（json_schema 专项测试）
+// §7.1 text.format → appended system instruction (json_schema-specific test)
 // ============================================================
 
-/// 验证 text.format 为 json_schema 时，顶层 system 追加 JSON schema 指令。
-/// TextFormatType 当前只有 JsonSchema 一个变体（见 codex-api/src/common.rs），
-/// 通过 create_text_param_for_request 构造带 format 的 TextControls。
+/// Verify that when text.format is json_schema, the top-level system has the JSON schema instruction appended.
+/// TextFormatType currently has only the JsonSchema variant (see codex-api/src/common.rs);
+/// construct TextControls carrying format via create_text_param_for_request.
 #[test]
 fn text_format_json_schema_appends_system_instruction() {
     let schema = json!({"type": "object", "properties": {"answer": {"type": "string"}}});
@@ -890,7 +890,7 @@ fn text_format_json_schema_appends_system_instruction() {
         system.contains("You must respond with valid JSON matching this schema:"),
         "text.format=json_schema 应在 system 中追加 schema 指令，实际 system: {system:?}"
     );
-    // 原始 instructions 也应保留（追加而非替换）
+    // the original instructions should also be preserved (append, not replace)
     assert!(
         system.contains("You are a helpful assistant."),
         "system 应保留原始 instructions，实际: {system:?}"
@@ -898,10 +898,10 @@ fn text_format_json_schema_appends_system_instruction() {
 }
 
 // ============================================================
-// I2: §4.11 不可表达的强制 tool_choice → 硬失败
+// I2: §4.11 unexpressible forced tool_choice → hard fail
 // ============================================================
 
-/// 强制指定某工具但目标无法等价表达（非 function 类型的强制档）→ 硬失败。
+/// Forcing a specific tool but the target cannot be expressed equivalently (a forced tier that is not the function type) → hard fail.
 #[test]
 fn forced_unexpressible_tool_choice_hard_fails() {
     let mut req = base_req();
@@ -915,10 +915,10 @@ fn forced_unexpressible_tool_choice_hard_fails() {
 }
 
 // ============================================================
-// I3: §7.1 reasoning 配置降级 → thinking
+// I3: §7.1 reasoning config downgrade → thinking
 // ============================================================
 
-/// reasoning.effort 存在时应降级映射成 anthropic 的 thinking 块（enabled + budget）。
+/// When reasoning.effort is present, it should be downgrade-mapped into anthropic's thinking block (enabled + budget).
 #[test]
 fn reasoning_effort_maps_to_thinking() {
     use codex_protocol::openai_models::ReasoningEffort;

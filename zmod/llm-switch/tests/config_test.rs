@@ -44,10 +44,10 @@ connector = "chat"
 auth = "bearer"
 auth_key = "sk-secret"
 "#;
-    // 运行时路径 allow_inline_key=false:必须报配置错误拒绝启动
+    // Runtime path allow_inline_key=false: must report a config error and refuse to start
     let err = load_config_from_str(toml, false).unwrap_err();
     assert!(format!("{err}").contains("auth_key"), "err should mention auth_key: {err}");
-    // testkey 路径 allow_inline_key=true:接受
+    // testkey path allow_inline_key=true: accepted
     let ok = load_config_from_str(toml, true).expect("testkey path accepts inline key");
     assert_eq!(
         ok.providers.get("deepseek").unwrap().auth_key.as_deref(),
@@ -65,7 +65,7 @@ connector = "responses"
 auth = "bearer"
 "#;
     let cfg = load_config_from_str(toml, false).expect("parse ok");
-    // responses 不进 zmod:解析允许,但 route() 不返回它(见 lib.rs 测试 Step 6)
+    // responses does not enter zmod: parsing is allowed, but route() does not return it (see lib.rs test Step 6)
     assert!(cfg.providers.get("openai").is_none(), "responses provider dropped from routable map");
 }
 

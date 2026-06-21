@@ -1,12 +1,12 @@
 use crate::connector::ConnError;
 
-/// 变换插件：作用于 codex 原生 ResponsesApiRequest，协议无关。
-/// v1 无实现；将来 compressor 落在这里。
+/// Transform plugin: operates on codex's native ResponsesApiRequest, protocol-agnostic.
+/// No implementation in v1; the compressor will live here in the future.
 pub trait TransformPlugin: Send + Sync {
     fn transform(&self, req: &mut codex_api::ResponsesApiRequest) -> Result<(), ConnError>;
 }
 
-/// 有序执行所有插件；任一失败即中止。
+/// Run all plugins in order; abort on the first failure.
 pub fn run_transforms(
     plugins: &[Box<dyn TransformPlugin>],
     req: &mut codex_api::ResponsesApiRequest,
@@ -17,7 +17,7 @@ pub fn run_transforms(
     Ok(())
 }
 
-/// v1 默认插件集：空。
+/// v1 default plugin set: empty.
 pub fn default_plugins() -> Vec<Box<dyn TransformPlugin>> {
     crate::transform::plugins()
 }

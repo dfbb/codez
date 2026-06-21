@@ -5,12 +5,12 @@ mod transform;
 mod connector;
 mod sse;
 
-/// 测试辅助模块（集成测试入口；不进入正式公共 API）。
+/// Test helper module (integration-test entry point; not part of the formal public API).
 #[doc(hidden)]
 pub mod testing {
     use crate::connector::{ConnError, EgressCtx};
 
-    /// 构造最小 `ResponsesApiRequest` 样本（供各集成测试复用）。
+    /// Build a minimal `ResponsesApiRequest` sample (reused across integration tests).
     pub fn sample_request() -> codex_api::ResponsesApiRequest {
         codex_api::ResponsesApiRequest {
             model: "test".into(),
@@ -30,7 +30,7 @@ pub mod testing {
         }
     }
 
-    /// 构造最小 `EgressCtx`（供各集成测试复用）。
+    /// Build a minimal `EgressCtx` (reused across integration tests).
     pub fn dummy_ctx(model: &str) -> EgressCtx {
         EgressCtx {
             base_url: "https://api.example.com".into(),
@@ -45,7 +45,7 @@ pub mod testing {
         }
     }
 
-    /// 转发 `build_chat_request`，供集成测试调用内部逻辑。
+    /// Forward to `build_chat_request`, so integration tests can call the internal logic.
     pub fn build_chat_request_for_test(
         req: &codex_api::ResponsesApiRequest,
         ctx: &EgressCtx,
@@ -53,7 +53,7 @@ pub mod testing {
         crate::connector::chat::build_chat_request(req, ctx)
     }
 
-    /// 构造针对 anthropic connector 的最小 `EgressCtx`。
+    /// Build a minimal `EgressCtx` for the anthropic connector.
     pub fn dummy_ctx_anthropic(model: &str, default_max_tokens: Option<u32>) -> EgressCtx {
         EgressCtx {
             base_url: "https://api.anthropic.com".into(),
@@ -68,7 +68,7 @@ pub mod testing {
         }
     }
 
-    /// 转发 `build_anthropic_request`，供集成测试调用内部逻辑。
+    /// Forward to `build_anthropic_request`, so integration tests can call the internal logic.
     pub fn build_anthropic_request_for_test(
         req: &codex_api::ResponsesApiRequest,
         ctx: &EgressCtx,
@@ -76,9 +76,9 @@ pub mod testing {
         crate::connector::anthropic::build_anthropic_request(req, ctx)
     }
 
-    /// 把整段 SSE chunk 序列跑完，返回所有 `ResponseEvent`。
-    /// `done = true` 时自动调用 `finish()`（模拟 `[DONE]`）。
-    /// 供集成测试使用（集成测试访问不到 `#[cfg(test)]` 内的函数）。
+    /// Run an entire SSE chunk sequence to completion, returning all `ResponseEvent`s.
+    /// When `done = true`, automatically calls `finish()` (simulating `[DONE]`).
+    /// For integration tests (which cannot access functions inside `#[cfg(test)]`).
     pub fn translate_chat_sse_for_test(
         chunks: &[serde_json::Value],
         done: bool,
@@ -86,9 +86,9 @@ pub mod testing {
         crate::connector::chat_sse::translate_chat_sse(chunks, done)
     }
 
-    /// 把整段 Anthropic Messages SSE 事件序列跑完，返回所有 `ResponseEvent`。
-    /// `done = true` 时自动调用 `finish()`（模拟 `message_stop`）。
-    /// 供集成测试使用（集成测试访问不到 `#[cfg(test)]` 内的函数）。
+    /// Run an entire Anthropic Messages SSE event sequence to completion, returning all `ResponseEvent`s.
+    /// When `done = true`, automatically calls `finish()` (simulating `message_stop`).
+    /// For integration tests (which cannot access functions inside `#[cfg(test)]`).
     pub fn translate_anthropic_sse_for_test(
         events: &[serde_json::Value],
         done: bool,
@@ -96,18 +96,18 @@ pub mod testing {
         crate::connector::anthropic_sse::translate_anthropic_sse(events, done)
     }
 
-    /// 返回 chat 连接器的 `SseTranslator` 实例（供 `run_egress_for_test` 使用）。
+    /// Return the chat connector's `SseTranslator` instance (for `run_egress_for_test`).
     pub fn chat_translator() -> Box<dyn crate::SseTranslator> {
         Box::new(crate::connector::chat_sse::ChatSseState::default())
     }
 
-    /// 构造最小合法鉴权头（Bearer + 测试密钥）。
+    /// Build minimal valid auth headers (Bearer + test key).
     pub fn dummy_headers() -> reqwest::header::HeaderMap {
         crate::http::build_headers(crate::AuthKind::Bearer, Some("testkey"), None)
             .expect("dummy_headers should not fail")
     }
 
-    /// 转发 `sse::run_egress`，供 `run_test.rs` 集成测试使用。
+    /// Forward to `sse::run_egress`, for the `run_test.rs` integration test.
     pub async fn run_egress_for_test(
         url: String,
         headers: reqwest::header::HeaderMap,
@@ -117,7 +117,7 @@ pub mod testing {
         crate::sse::run_egress(url, headers, body, reqwest::Client::new(), translator).await
     }
 
-    /// 永不写鉴权头的 Noop `AuthProvider`（供实跑测试使用；testkey 自带 auth_key，无需退路）。
+    /// A Noop `AuthProvider` that never writes auth headers (for live tests; testkey carries its own auth_key, no fallback needed).
     pub fn noop_auth_provider() -> codex_api::SharedAuthProvider {
         struct Noop;
         impl codex_api::AuthProvider for Noop {
@@ -136,46 +136,46 @@ pub use connector::{make_connector, ConnError, Connector as ConnectorTrait, Egre
 
 use std::sync::OnceLock;
 
-/// 仅供实跑测试 / 独立运行：从 gitignored testkey.toml 读配置，允许内联 auth_key。
+/// For live tests / standalone runs only: read config from the gitignored testkey.toml, allowing inline auth_key.
 pub fn load_testkey_config(path: &std::path::Path) -> Result<Config, ConfigError> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| ConfigError::Parse(e.to_string()))?;
     load_config_from_str(&text, true)
 }
 
-/// 路由结果:命中某个被接管的 provider。
+/// Routing result: matched a taken-over provider.
 #[derive(Debug, Clone)]
 pub struct Route {
     pub provider_id: String,
     pub cfg: ProviderCfg,
 }
 
-/// 主入口（Task 09 patch 调用契约，签名逐字固定）。
+/// Main entry point (Task 09 patch call contract; signature fixed verbatim).
 ///
-/// 流水线：变换层 → 组装 `EgressCtx`（含密钥退路）→ 派发连接器。
-/// `base_url` 必填；缺失时早返回 `ApiError::InvalidRequest`。
+/// Pipeline: transform layer → assemble `EgressCtx` (with key fallback) → dispatch to the connector.
+/// `base_url` is required; returns `ApiError::InvalidRequest` early if missing.
 pub async fn run(
     rt: Route,
     mut request: codex_api::ResponsesApiRequest,
     api_auth: codex_api::SharedAuthProvider,
 ) -> Result<codex_api::ResponseStream, codex_api::ApiError> {
-    // ① 变换层（v1 直通）
+    // ① Transform layer (passthrough in v1)
     let plugins = pipeline::default_plugins();
     pipeline::run_transforms(&plugins, &mut request)
         .map_err(codex_api::ApiError::from)?;
 
-    // ② base_url 必填校验（§ plan Step 6 注）
+    // ② base_url required check (see § plan Step 6 note)
     let base_url = rt.cfg.base_url.clone().ok_or_else(|| {
         codex_api::ApiError::InvalidRequest {
             message: format!("provider {} missing base_url", rt.provider_id),
         }
     })?;
 
-    // ③ 密钥解析
+    // ③ Key resolution
     let key = http::resolve_key(&rt.cfg)
         .map_err(|e| codex_api::ApiError::InvalidRequest { message: e.to_string() })?;
 
-    // ④ 出口模型：config 覆盖 > 请求里的 model
+    // ④ Egress model: config override > model in the request
     let model = rt.cfg.model.clone().unwrap_or_else(|| request.model.clone());
 
     let ctx = connector::EgressCtx {
@@ -198,7 +198,7 @@ fn shared_http_client() -> reqwest::Client {
     CLIENT.get_or_init(reqwest::Client::new).clone()
 }
 
-/// 进程级配置缓存。运行时从 ~/.codex/config-zmod.toml 读一次。
+/// Process-level config cache. Read once at runtime from ~/.codex/config-zmod.toml.
 fn loaded() -> &'static Config {
     static CACHE: OnceLock<Config> = OnceLock::new();
     CACHE.get_or_init(|| {
@@ -208,13 +208,13 @@ fn loaded() -> &'static Config {
                 tracing::warn!("llm-switch disabled: bad config-zmod.toml: {e}");
                 Config { enabled: false, providers: Default::default() }
             }),
-            Err(_) => Config { enabled: false, providers: Default::default() }, // 缺文件 = 关闭
+            Err(_) => Config { enabled: false, providers: Default::default() }, // missing file = disabled
         }
     })
 }
 
 fn dirs_config_zmod_path() -> std::path::PathBuf {
-    // ~/.codex/config-zmod.toml;CODEX_HOME 覆盖优先(与 codex 约定一致)
+    // ~/.codex/config-zmod.toml; CODEX_HOME override takes precedence (consistent with codex's convention)
     let home = std::env::var_os("CODEX_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".codex")))
@@ -222,7 +222,7 @@ fn dirs_config_zmod_path() -> std::path::PathBuf {
     home.join("config-zmod.toml")
 }
 
-/// 全局开关:`[llm-switch].enabled`。
+/// Global switch: `[llm-switch].enabled`.
 pub fn enabled() -> bool {
     loaded().enabled
 }
@@ -235,8 +235,8 @@ fn route_in(cfg: &Config, model_provider_id: &str) -> Option<Route> {
     })
 }
 
-/// 按 codex 的 model_provider_id 判定是否接管。
-/// 未启用 / 未命中 / responses → None(走原生 Responses 分支)。
+/// Decide whether to take over based on codex's model_provider_id.
+/// Not enabled / no match / responses → None (takes the native Responses branch).
 pub fn route(model_provider_id: &str) -> Option<Route> {
     route_in(loaded(), model_provider_id)
 }
@@ -246,9 +246,9 @@ fn suppress_hosted_tools_in(cfg: &Config, model_provider_id: &str) -> bool {
         .is_some_and(|rt| rt.cfg.captype == CapType::Chat)
 }
 
-/// codex 侧能力门控用:被接管且 `captype = "chat"`(缺省)的 provider 需要 codex
-/// 关闭命名空间 / web_search / image_generation 等托管工具(v1 连接器无法表达,
-/// 否则硬失败)。`captype = "response"` 或未接管 → false(透传原生能力)。
+/// For codex-side capability gating: a taken-over provider with `captype = "chat"` (default) requires codex
+/// to disable namespace / web_search / image_generation and other hosted tools (the v1 connectors cannot
+/// express them, otherwise they hard-fail). `captype = "response"` or not taken over → false (pass native capabilities through).
 pub fn suppress_hosted_tools(model_provider_id: &str) -> bool {
     suppress_hosted_tools_in(loaded(), model_provider_id)
 }
@@ -258,12 +258,12 @@ fn allow_anthropic_web_search_in(cfg: &Config, model_provider_id: &str) -> bool 
         .is_some_and(|rt| rt.cfg.connector == Connector::Anthropic)
 }
 
-/// codex 侧能力门控用:即便 `suppress_hosted_tools` 为真(captype=chat),只要
-/// 该 provider 走 anthropic 连接器,就允许 codex 发出 web_search 托管工具——
-/// anthropic 连接器会把它翻译成 Anthropic 原生 `web_search_20250305` server tool。
-/// 仅放开 web_search;namespace / image_generation 仍随 suppress 关闭(Anthropic
-/// 不支持图片生成,namespace 函数调用 v1 连接器无法表达)。
-/// 非 anthropic 连接器 / 未接管 → false(过滤行为不变)。
+/// For codex-side capability gating: even when `suppress_hosted_tools` is true (captype=chat), as long as
+/// this provider uses the anthropic connector, codex is allowed to emit the web_search hosted tool —
+/// the anthropic connector translates it into Anthropic's native `web_search_20250305` server tool.
+/// Only web_search is allowed; namespace / image_generation stay disabled along with suppress (Anthropic
+/// does not support image generation, and namespace function calls cannot be expressed by the v1 connectors).
+/// Non-anthropic connectors / not taken over → false (filtering behavior unchanged).
 pub fn allow_anthropic_web_search(model_provider_id: &str) -> bool {
     allow_anthropic_web_search_in(loaded(), model_provider_id)
 }
@@ -272,9 +272,9 @@ fn context_window_in(cfg: &Config, model_provider_id: &str) -> Option<i64> {
     route_in(cfg, model_provider_id).and_then(|rt| rt.cfg.context_window)
 }
 
-/// codex 侧模型元数据用:被接管 provider 配了 `context_window` 时返回它,让 codex
-/// 用此值覆盖模型上下文窗口(绕过未知模型 fallback 的 272k 硬上限)。未接管 / 未配
-/// → None(codex 用自己的元数据)。
+/// For codex-side model metadata: when a taken-over provider has `context_window` configured, return it so codex
+/// uses this value to override the model's context window (bypassing the 272k hard cap of the unknown-model fallback).
+/// Not taken over / not configured → None (codex uses its own metadata).
 pub fn context_window(model_provider_id: &str) -> Option<i64> {
     context_window_in(loaded(), model_provider_id)
 }
@@ -283,9 +283,9 @@ fn model_catalog_json_in(cfg: &Config, model_provider_id: &str) -> Option<String
     route_in(cfg, model_provider_id).and_then(|rt| rt.cfg.model_catalog_json)
 }
 
-/// codex 侧模型目录用:被接管 provider 配了 `model_catalog_json` 时返回该路径,让
-/// codex 用这张表作模型目录(第三方模型进 /model 列表、带推理强度)。未接管 / 未配
-/// → None(codex 用全局内置 / config.toml 的 catalog)。
+/// For codex-side model catalog: when a taken-over provider has `model_catalog_json` configured, return that path so
+/// codex uses this table as the model catalog (third-party models appear in the /model list with reasoning effort).
+/// Not taken over / not configured → None (codex uses the global built-in / config.toml catalog).
 pub fn model_catalog_json(model_provider_id: &str) -> Option<String> {
     model_catalog_json_in(loaded(), model_provider_id)
 }
@@ -323,7 +323,7 @@ mod tests {
     }
     #[test]
     fn anthropic_connector_allows_web_search_even_when_chat() {
-        // captype 缺省 chat → suppress 为真,但 anthropic 连接器仍放开 web_search
+        // captype defaults to chat → suppress is true, but the anthropic connector still allows web_search
         let cfg = load_config_from_str("[llm-switch]\nenabled=true\n[llm-switch.providers.x]\nconnector=\"anthropic\"\nauth=\"x-api-key\"\n", false).unwrap();
         assert!(suppress_hosted_tools_in(&cfg, "x"));
         assert!(allow_anthropic_web_search_in(&cfg, "x"));

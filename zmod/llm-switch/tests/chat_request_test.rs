@@ -1,11 +1,11 @@
-/// chat 出站请求构造测试（Task 04）
+/// chat outbound request construction tests (Task 04)
 ///
-/// Step 0 核实的真实类型变体：
+/// Real type variants verified in Step 0:
 /// - ContentItem: InputText{text} | InputImage{image_url,detail} | OutputText{text}
 /// - FunctionCallOutputContentItem: InputText{text} | InputImage{image_url,detail} | EncryptedContent{encrypted_content}
 /// - FunctionCallOutputBody: Text(String) | ContentItems(Vec<FunctionCallOutputContentItem>)
 /// - FunctionCallOutputPayload: { body: FunctionCallOutputBody, success: Option<bool> }
-/// - ResponseItem 变体（16个）：Message/AgentMessage/Reasoning/LocalShellCall/FunctionCall/
+/// - ResponseItem variants (16): Message/AgentMessage/Reasoning/LocalShellCall/FunctionCall/
 ///   ToolSearchCall/FunctionCallOutput/CustomToolCall/CustomToolCallOutput/ToolSearchOutput/
 ///   WebSearchCall/ImageGenerationCall/Compaction/CompactionTrigger/ContextCompaction/Other
 use codex_protocol::models::{
@@ -27,7 +27,7 @@ fn base_req() -> codex_api::ResponsesApiRequest {
 }
 
 // ============================================================
-// 基本映射
+// Basic mapping
 // ============================================================
 
 #[test]
@@ -54,7 +54,7 @@ fn instructions_become_system_message() {
 
 #[test]
 fn developer_role_maps_to_system() {
-    // codex 会发 role=developer（开发者指令），DeepSeek 等只认 system/user/assistant/tool。
+    // codex emits role=developer (developer instruction); DeepSeek and others only recognize system/user/assistant/tool.
     let mut req = base_req();
     req.instructions = "".into();
     req.input = vec![
@@ -113,7 +113,7 @@ fn output_text_content_item_maps() {
 }
 
 // ============================================================
-// FunctionCall + FunctionCallOutput 配对
+// FunctionCall + FunctionCallOutput pairing
 // ============================================================
 
 #[test]
@@ -145,7 +145,7 @@ fn function_call_and_output_pair_by_call_id() {
     assert_eq!(asst["tool_calls"][0]["id"], "call_1");
     assert_eq!(asst["tool_calls"][0]["function"]["name"], "get_weather");
     assert_eq!(asst["tool_calls"][0]["function"]["arguments"], "{\"city\":\"SF\"}");
-    // tool result 紧跟 assistant（§4.10 重排）
+    // tool result immediately follows the assistant (§4.10 reordering)
     let asst_idx = msgs.iter().position(|m| m["role"] == "assistant").unwrap();
     assert_eq!(msgs[asst_idx + 1]["role"], "tool");
     assert_eq!(msgs[asst_idx + 1]["tool_call_id"], "call_1");
@@ -223,12 +223,12 @@ fn function_call_output_content_items_text_only_maps() {
 }
 
 // ============================================================
-// 孤儿修复（§4.10）
+// Orphan repair (§4.10)
 // ============================================================
 
 #[test]
 fn orphan_tool_call_gets_placeholder_result() {
-    // 有调用、无结果（压缩破坏）→ 注入合成占位结果，不硬失败（§4.10）
+    // call present, no result (compaction broke it) → inject a synthesized placeholder result, no hard fail (§4.10)
     let mut req = base_req();
     req.input = vec![ResponseItem::FunctionCall {
         id: None,
@@ -270,12 +270,12 @@ fn orphan_tool_result_is_dropped() {
 }
 
 // ============================================================
-// 工具定义
+// Tool definitions
 // ============================================================
 
 #[test]
 fn tool_choice_none_when_no_tools() {
-    // 有 tool_choice 但 tools 为空 → strip（§4.10）
+    // tool_choice present but tools empty → strip (§4.10)
     let mut req = base_req();
     req.tool_choice = "required".into();
     req.tools = vec![];
@@ -306,7 +306,7 @@ fn parallel_tool_calls_passthrough() {
 }
 
 // ============================================================
-// 出站丢弃变体（不报错，不出现在 messages）
+// Dropped-on-egress variants (no error, do not appear in messages)
 // ============================================================
 
 #[test]
@@ -329,13 +329,13 @@ fn reasoning_item_is_discarded_silently() {
         },
     ];
     let v = build(&req, &ctx()).unwrap();
-    // 不报错
+    // no error
     let msgs = v["messages"].as_array().unwrap();
-    // 只有 user 消息，没有 reasoning 相关的消息
+    // only the user message, no reasoning-related message
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0]["role"], "user");
-    // §4.4 不变量：连接器只构造请求副本，codex 本地历史（req.input）不受影响——
-    // 丢弃 Reasoning 仅作用于出站请求，原始 input 仍含该项。
+    // §4.4 invariant: the connector only builds a request copy; codex's local history (req.input) is unaffected —
+    // dropping Reasoning only affects the outbound request, the original input still contains the item.
     assert_eq!(req.input.len(), 2, "build 不应改动 codex 本地历史");
     assert!(
         matches!(req.input[0], ResponseItem::Reasoning { .. }),
@@ -345,7 +345,7 @@ fn reasoning_item_is_discarded_silently() {
 
 #[test]
 fn reasoning_before_tool_call_attaches_reasoning_content() {
-    // thinking 模型要求：带 tool_calls 的 assistant 消息须回传产生它的 reasoning_content。
+    // thinking-model requirement: an assistant message with tool_calls must send back the reasoning_content that produced it.
     let mut req = base_req();
     req.tools = vec![json!({"type": "function", "name": "f"})];
     req.tool_choice = "auto".into();
@@ -380,7 +380,7 @@ fn reasoning_before_tool_call_attaches_reasoning_content() {
 
 #[test]
 fn tool_call_without_reasoning_gets_placeholder() {
-    // 无前置 Reasoning 时占位 "tool call"，避免上游 400（缺 reasoning_content）。
+    // with no preceding Reasoning, placeholder "tool call" to avoid an upstream 400 (missing reasoning_content).
     let mut req = base_req();
     req.tools = vec![json!({"type": "function", "name": "f"})];
     req.tool_choice = "auto".into();
@@ -418,7 +418,7 @@ fn compaction_trigger_is_discarded_silently() {
 }
 
 // ============================================================
-// 硬失败变体（§4.0）
+// Hard-fail variants (§4.0)
 // ============================================================
 
 #[test]
@@ -604,7 +604,7 @@ fn agent_message_encrypted_content_hard_fails() {
 
 #[test]
 fn other_variant_hard_fails() {
-    // ResponseItem::Other 由 #[serde(other)] 产生，只能用 JSON 反序列化构造
+    // ResponseItem::Other is produced by #[serde(other)] and can only be constructed via JSON deserialization
     let unknown_item: ResponseItem = serde_json::from_str(r#"{"type":"unknown_future_variant"}"#).unwrap();
     let mut req = base_req();
     req.input = vec![unknown_item];
@@ -612,7 +612,7 @@ fn other_variant_hard_fails() {
 }
 
 // ============================================================
-// FunctionCallOutput 中的图片/加密内容硬失败
+// Images/encrypted content in FunctionCallOutput hard fail
 // ============================================================
 
 #[test]
@@ -675,7 +675,7 @@ fn function_call_output_encrypted_content_hard_fails() {
 }
 
 // ============================================================
-// tool_choice 映射
+// tool_choice mapping
 // ============================================================
 
 #[test]
@@ -719,10 +719,10 @@ fn tool_choice_empty_no_key() {
 }
 
 // ============================================================
-// C1: 黄金 fixture 对比测试
+// C1: golden fixture comparison test
 // ============================================================
 
-/// system+user+function call+tool result+assistant 完整往返，对比 fixture
+/// system+user+function call+tool result+assistant full round-trip, compared against the fixture
 #[test]
 fn fixture_system_user_tool_roundtrip() {
     let expected: serde_json::Value = serde_json::from_str(
@@ -787,7 +787,7 @@ fn fixture_system_user_tool_roundtrip() {
     assert_eq!(actual, expected);
 }
 
-/// 两个顺序工具往返（§4.10 重排），对比 fixture
+/// two sequential tool round-trips (§4.10 reordering), compared against the fixture
 #[test]
 fn fixture_multi_tool_sequential() {
     let expected: serde_json::Value = serde_json::from_str(
@@ -852,10 +852,10 @@ fn fixture_multi_tool_sequential() {
 }
 
 // ============================================================
-// I1: response_format 正确映射（json_schema）
+// I1: response_format mapped correctly (json_schema)
 // ============================================================
 
-/// text.format 含 json_schema 时，response_format 应为
+/// when text.format contains json_schema, response_format should be
 /// {"type":"json_schema","json_schema":{"name":...,"schema":...,"strict":...}}
 #[test]
 fn text_format_json_schema_maps_to_response_format() {
@@ -889,7 +889,7 @@ fn text_format_json_schema_maps_to_response_format() {
         inner["name"], "codex_output_schema",
         "json_schema.name 应与 TextFormat.name 一致"
     );
-    // 不应把原始 TextFormat 的字段直接暴露在顶层
+    // should not expose the raw TextFormat fields directly at the top level
     assert!(
         rf.get("schema").is_none(),
         "response_format 不应含裸 schema 字段（嵌套格式错误）"
@@ -897,10 +897,10 @@ fn text_format_json_schema_maps_to_response_format() {
 }
 
 // ============================================================
-// I2: 非 function 工具定义硬失败（§4.0b）
+// I2: non-function tool definitions hard fail (§4.0b)
 // ============================================================
 
-/// native 类型工具定义 → 硬失败
+/// native-type tool definition → hard fail
 #[test]
 fn native_tool_definition_hard_fails() {
     let mut req = base_req();
@@ -908,7 +908,7 @@ fn native_tool_definition_hard_fails() {
     assert!(build(&req, &ctx()).is_err(), "native 工具类型应硬失败");
 }
 
-/// provider 类型工具定义 → 硬失败
+/// provider-type tool definition → hard fail
 #[test]
 fn provider_tool_definition_hard_fails() {
     let mut req = base_req();
@@ -916,7 +916,7 @@ fn provider_tool_definition_hard_fails() {
     assert!(build(&req, &ctx()).is_err(), "provider 工具类型应硬失败");
 }
 
-/// freeform 类型工具定义 → 硬失败
+/// freeform-type tool definition → hard fail
 #[test]
 fn freeform_tool_definition_hard_fails() {
     let mut req = base_req();
@@ -924,7 +924,7 @@ fn freeform_tool_definition_hard_fails() {
     assert!(build(&req, &ctx()).is_err(), "freeform 工具类型应硬失败");
 }
 
-/// 无 type 字段的工具定义 → 硬失败
+/// tool definition with no type field → hard fail
 #[test]
 fn no_type_tool_definition_hard_fails() {
     let mut req = base_req();
@@ -933,11 +933,11 @@ fn no_type_tool_definition_hard_fails() {
 }
 
 // ============================================================
-// C1: 无 tools 时不得写 parallel_tool_calls（否则上游 400）
+// C1: must not write parallel_tool_calls when there are no tools (otherwise upstream 400)
 // ============================================================
 
-/// 无 tools 的请求不应包含 parallel_tool_calls 键（§4.10；上游对「设了
-/// parallel_tool_calls 但无 tools」返回 400）。
+/// a request with no tools should not contain the parallel_tool_calls key (§4.10; the upstream returns
+/// 400 for "parallel_tool_calls set but no tools").
 #[test]
 fn no_tools_omits_parallel_tool_calls() {
     let mut req = base_req();
@@ -953,16 +953,16 @@ fn no_tools_omits_parallel_tool_calls() {
 }
 
 // ============================================================
-// I2: §4.11 不可表达的强制 tool_choice → 硬失败
+// I2: §4.11 unexpressible forced tool_choice → hard fail
 // ============================================================
 
-/// 强制指定某工具但目标无法等价表达（非 function 类型的强制档）→ 硬失败。
+/// Forcing a specific tool but the target cannot be expressed equivalently (a forced tier that is not the function type) → hard fail.
 #[test]
 fn forced_unexpressible_tool_choice_hard_fails() {
     let mut req = base_req();
     req.tools =
         vec![json!({"type":"function","name":"f","parameters":{"type":"object"}})];
-    // codex 用 JSON 串表达的强制档，但 type 不是 function（chat 无等价表达）
+    // a forced tier codex expresses via JSON string, but type is not function (chat has no equivalent)
     req.tool_choice = json!({"type":"allowed_tools","tools":["f"]}).to_string();
     assert!(
         build(&req, &ctx()).is_err(),
@@ -971,10 +971,10 @@ fn forced_unexpressible_tool_choice_hard_fails() {
 }
 
 // ============================================================
-// I3: §7.1 reasoning 配置降级 → reasoning_effort
+// I3: §7.1 reasoning config downgrade → reasoning_effort
 // ============================================================
 
-/// reasoning.effort 应降级映射成顶层 reasoning_effort 字符串。
+/// reasoning.effort should be downgrade-mapped into a top-level reasoning_effort string.
 #[test]
 fn reasoning_effort_maps_to_reasoning_effort() {
     use codex_protocol::openai_models::ReasoningEffort;

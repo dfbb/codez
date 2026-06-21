@@ -1,6 +1,6 @@
-/// 门控实跑测试：需要 tests/testkey.toml（gitignored，含真实 auth_key）+ 网络。
-/// testkey.toml 缺失或 provider 不存在时自动跳过（不 fail）。
-/// 显式跑：cargo test -p codez-llm-switch --test live_test -- --ignored --nocapture
+/// Gated live test: requires tests/testkey.toml (gitignored, contains a real auth_key) + network.
+/// Automatically skipped (no fail) when testkey.toml is missing or the provider does not exist.
+/// Run explicitly: cargo test -p codez-llm-switch --test live_test -- --ignored --nocapture
 use std::path::Path;
 use codez_llm_switch::{load_testkey_config, Route};
 use codex_api::ResponseEvent;
@@ -11,8 +11,8 @@ fn testkey_path() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/testkey.toml")
 }
 
-/// 构造 Route + 调 run，断言流 Completed 且有非空文本。
-/// testkey.toml 缺失或 provider 不存在时打印 skip 并直接返回（不 fail）。
+/// Build a Route + call run, asserting the stream Completes and has non-empty text.
+/// Prints skip and returns directly (no fail) when testkey.toml is missing or the provider does not exist.
 async fn run_text_roundtrip(provider_id: &str) {
     let path = testkey_path();
     if !path.exists() {
@@ -26,7 +26,7 @@ async fn run_text_roundtrip(provider_id: &str) {
     };
     let rt = Route { provider_id: provider_id.to_string(), cfg: pcfg.clone() };
 
-    // 最小请求：一句 user 文本，不带任何工具
+    // minimal request: one user text, no tools
     let mut req = codez_llm_switch::testing::sample_request();
     req.model = pcfg.model.clone().unwrap_or_default();
     req.input = vec![codex_protocol::models::ResponseItem::Message {
@@ -38,9 +38,9 @@ async fn run_text_roundtrip(provider_id: &str) {
         phase: None,
         metadata: None,
     }];
-    req.tools = vec![]; // 关闭所有工具，避免 namespace/web_search 等触发硬失败
+    req.tools = vec![]; // disable all tools, to avoid namespace/web_search etc. triggering hard fail
 
-    // testkey 自带 auth_key，noop provider 仅作占位退路
+    // testkey carries its own auth_key; the noop provider is just a placeholder fallback
     let api_auth = codez_llm_switch::testing::noop_auth_provider();
     let stream = codez_llm_switch::run(rt, req, api_auth)
         .await
@@ -59,7 +59,7 @@ async fn run_text_roundtrip(provider_id: &str) {
     }
     assert!(completed, "stream must complete");
     assert!(!text.trim().is_empty(), "got some assistant text");
-    // 只打印回复长度，不打印 key 或回复内容
+    // only print the reply length, not the key or reply content
     eprintln!("[{provider_id}] reply len = {}", text.len());
 }
 
@@ -75,8 +75,8 @@ async fn claude_anthropic_live() {
     run_text_roundtrip("claude").await;
 }
 
-/// 构造 Route + 调 run，断言流中出现标准 function 工具调用（OutputItemDone(FunctionCall{..})）且流 Completed。
-/// testkey.toml 缺失或 provider 不存在时打印 skip 并直接返回（不 fail）。
+/// Build a Route + call run, asserting a standard function tool call (OutputItemDone(FunctionCall{..})) appears in the stream and the stream Completes.
+/// Prints skip and returns directly (no fail) when testkey.toml is missing or the provider does not exist.
 async fn run_tool_roundtrip(provider_id: &str) {
     let path = testkey_path();
     if !path.exists() {
@@ -90,7 +90,7 @@ async fn run_tool_roundtrip(provider_id: &str) {
     };
     let rt = Route { provider_id: provider_id.to_string(), cfg: pcfg.clone() };
 
-    // 请求：提示模型调用 get_weather 工具；req.tools 是 Vec<serde_json::Value>，直接构造
+    // request: prompt the model to call the get_weather tool; req.tools is Vec<serde_json::Value>, built directly
     let mut req = codez_llm_switch::testing::sample_request();
     req.model = pcfg.model.clone().unwrap_or_default();
     req.input = vec![ResponseItem::Message {
@@ -102,7 +102,7 @@ async fn run_tool_roundtrip(provider_id: &str) {
         phase: None,
         metadata: None,
     }];
-    // 标准 function 工具：type="function"，与 map_tools 在 chat_req.rs 中期望的输入格式一致
+    // standard function tool: type="function", matching the input format map_tools expects in chat_req.rs
     req.tools = vec![json!({
         "type": "function",
         "name": "get_weather",

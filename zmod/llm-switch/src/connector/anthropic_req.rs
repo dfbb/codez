@@ -1,41 +1,41 @@
-//! anthropic 出站请求构造（Task 06）
+//! anthropic outbound request construction (Task 06)
 //!
-//! 把 codex `ResponsesApiRequest` 翻译成 Anthropic Messages 请求 JSON。
+//! Translates a codex `ResponsesApiRequest` into Anthropic Messages request JSON.
 //!
-//! # 与 chat_req 的关键差异
+//! # Key differences from chat_req
 //!
-//! - `system` 走顶层字段（不是 messages 里的 role=system）
-//! - 消息 role 仅 user / assistant
-//! - `FunctionCall` → assistant content[tool_use]，arguments 字符串 parse 成对象
-//! - `FunctionCallOutput` → user content[tool_result]，`is_error` 原生字段
-//! - `max_tokens` 必填，用 default_max_tokens 兜底（缺省 4096）
+//! - `system` goes to a top-level field (not a role=system message in messages)
+//! - message role is only user / assistant
+//! - `FunctionCall` → assistant content[tool_use], arguments string parsed into an object
+//! - `FunctionCallOutput` → user content[tool_result], `is_error` native field
+//! - `max_tokens` is required, defaulted via default_max_tokens (fallback 4096)
 //! - `parallel_tool_calls==false` → `tool_choice.disable_parallel_tool_use=true`
-//! - 无 tool 消息扁平重排（content block 按回合归组；连续同 role block 合并）
-//! - 工具定义：`{name, description, input_schema}` 格式（无顶层 type 字段）；
-//!   `web_search` 工具 → Anthropic 原生 `web_search_20250305` server tool
+//! - no tool-message flattening/reordering (content blocks grouped by turn; consecutive same-role blocks merged)
+//! - tool definitions: `{name, description, input_schema}` format (no top-level type field);
+//!   `web_search` tool → Anthropic native `web_search_20250305` server tool
 //!
-//! # Step 0 复用的类型（Task 04 钉死）
+//! # Types reused from Step 0 (pinned by Task 04)
 //!
 //! ## ContentItem
 //! - `InputText { text: String }`
-//! - `InputImage { image_url: String, detail: Option<ImageDetail> }` → image content block（识图）
+//! - `InputImage { image_url: String, detail: Option<ImageDetail> }` → image content block (vision)
 //! - `OutputText { text: String }`
 //!
 //! ## FunctionCallOutputContentItem
 //! - `InputText { text: String }`
-//! - `InputImage { .. }` → image content block（识图）
-//! - `EncryptedContent { .. }` → 硬失败
+//! - `InputImage { .. }` → image content block (vision)
+//! - `EncryptedContent { .. }` → hard fail
 //!
 //! ## FunctionCallOutputBody
 //! - `Text(String)`
 //! - `ContentItems(Vec<FunctionCallOutputContentItem>)`
 //!
-//! ## ResponseItem（16 变体）
-//! - 出站丢弃：`Reasoning`、`CompactionTrigger`
-//! - 硬失败：`LocalShellCall`、`ToolSearchCall`、`CustomToolCall`、`CustomToolCallOutput`、
-//!   `ToolSearchOutput`、`WebSearchCall`、`ImageGenerationCall`、`Compaction`、
-//!   `ContextCompaction`、`Other`
-//! - 普通映射：`Message`、`FunctionCall`（无 namespace）、`FunctionCallOutput`、`AgentMessage`
+//! ## ResponseItem (16 variants)
+//! - dropped on egress: `Reasoning`, `CompactionTrigger`
+//! - hard fail: `LocalShellCall`, `ToolSearchCall`, `CustomToolCall`, `CustomToolCallOutput`,
+//!   `ToolSearchOutput`, `WebSearchCall`, `ImageGenerationCall`, `Compaction`,
+//!   `ContextCompaction`, `Other`
+//! - normal mapping: `Message`, `FunctionCall` (no namespace), `FunctionCallOutput`, `AgentMessage`
 
 use std::collections::HashSet;
 
@@ -48,32 +48,32 @@ use codex_protocol::models::{
 
 use crate::connector::{ConnError, EgressCtx};
 
-/// max_tokens 兜底值（Anthropic Messages API 必填）
+/// max_tokens fallback value (required by the Anthropic Messages API)
 const DEFAULT_MAX_TOKENS: u32 = 4096;
 
-/// 构造 Anthropic Messages 请求 JSON。
+/// Build the Anthropic Messages request JSON.
 ///
-/// 覆盖 spec §4.3、§4.0/§4.0b、§4.6、§4.8、§4.9、§4.10（孤儿修复，无重排）、§4.11、§7.1。
+/// Covers spec §4.3, §4.0/§4.0b, §4.6, §4.8, §4.9, §4.10 (orphan repair, no reordering), §4.11, §7.1.
 pub(crate) fn build_anthropic_request(
     req: &codex_api::ResponsesApiRequest,
     ctx: &EgressCtx,
 ) -> Result<Value, ConnError> {
-    // ── 工具定义分级（§4.0b）──────────────────────────────────────────
+    // ── Tool definition grading (§4.0b) ──────────────────────────────────────────
     let tools = map_tools(&req.tools)?;
 
-    // ── messages 构造 ──────────────────────────────────────────────────
-    // Anthropic 要求连续同 role 的 content block 合并进同一条消息。
-    // 用 (role, Vec<content block>) 有序列来积累，新 role 时新开一条。
+    // ── messages construction ──────────────────────────────────────────────────
+    // Anthropic requires consecutive same-role content blocks to be merged into one message.
+    // Accumulate with an ordered list of (role, Vec<content block>), opening a new entry on a new role.
     let mut turns: Vec<(String, Vec<Value>)> = Vec::new();
 
-    // call_id 追踪：已见调用集合（O(1) 查找）、待补结果列表（按出现顺序，保证注入顺序确定）
+    // call_id tracking: set of seen calls (O(1) lookup), list of calls awaiting results (in appearance order, for deterministic injection order)
     let mut seen_calls: HashSet<String> = HashSet::new();
     let mut calls_needing_result: Vec<String> = Vec::new();
 
     for item in &req.input {
         match item {
             ResponseItem::Message { role, content, .. } => {
-                // system 已走顶层；role 映射仅 user/assistant
+                // system already goes to top level; role mapping is only user/assistant
                 let r = if role == "assistant" { "assistant" } else { "user" };
                 for c in content {
                     let block = content_item_to_block(c)?;
@@ -107,13 +107,13 @@ pub(crate) fn build_anthropic_request(
                 call_id,
                 ..
             } => {
-                // 命名空间函数调用 v1 不支持（§4.0）
+                // namespaced function calls are not supported in v1 (§4.0)
                 if namespace.is_some() {
                     return Err(ConnError::HardFail(format!(
                         "命名空间函数调用 '{name}' 在 v1 anthropic connector 中不支持"
                     )));
                 }
-                // arguments 字符串 parse 成 JSON 对象（§4.6）
+                // parse the arguments string into a JSON object (§4.6)
                 let input: Value = serde_json::from_str(arguments).map_err(|e| {
                     ConnError::HardFail(format!("FunctionCall arguments 非法 JSON: {e}"))
                 })?;
@@ -135,7 +135,7 @@ pub(crate) fn build_anthropic_request(
                 call_id, output, ..
             } => {
                 if !seen_calls.contains(call_id) {
-                    // 孤儿结果 → 丢弃（§4.10）
+                    // orphan result → drop (§4.10)
                     tracing::warn!(
                         call_id = %call_id,
                         "丢弃孤儿 tool result（无对应 FunctionCall）"
@@ -147,15 +147,15 @@ pub(crate) fn build_anthropic_request(
                 push_block("user", block, &mut turns);
             }
 
-            // ── 出站丢弃（§4.0 / §4.4）────────────────────────────────
+            // ── dropped on egress (§4.0 / §4.4) ────────────────────────────────
             ResponseItem::Reasoning { .. } => {
-                // Reasoning 历史项出站丢弃，不动本地历史
+                // Reasoning history items are dropped on egress, local history untouched
             }
             ResponseItem::CompactionTrigger { .. } => {
-                // CompactionTrigger 出站丢弃
+                // CompactionTrigger dropped on egress
             }
 
-            // ── v1 硬失败变体（§4.0）─────────────────────────────────
+            // ── v1 hard-fail variants (§4.0) ─────────────────────────────────
             ResponseItem::LocalShellCall { .. }
             | ResponseItem::ToolSearchCall { .. }
             | ResponseItem::ToolSearchOutput { .. }
@@ -174,8 +174,8 @@ pub(crate) fn build_anthropic_request(
         }
     }
 
-    // ── 孤儿调用修复：注入占位 tool_result（§4.10）────────────────────
-    // 注意：Anthropic 无重排步骤，孤儿 tool_result 注入到 user 消息末尾。
+    // ── Orphan call repair: inject placeholder tool_result (§4.10) ────────────────────
+    // Note: Anthropic has no reordering step; orphan tool_results are injected at the end of the user message.
     for call_id in &calls_needing_result {
         tracing::warn!(
             call_id = %call_id,
@@ -192,16 +192,16 @@ pub(crate) fn build_anthropic_request(
         );
     }
 
-    // ── 把 turns 转成 messages ──────────────────────────────────────────
+    // ── Convert turns into messages ──────────────────────────────────────────
     let messages: Vec<Value> = turns
         .into_iter()
         .map(|(role, blocks)| json!({"role": role, "content": blocks}))
         .collect();
 
-    // ── max_tokens（必填，§4.6）──────────────────────────────────────
+    // ── max_tokens (required, §4.6) ──────────────────────────────────────
     let max_tokens = ctx.default_max_tokens.unwrap_or(DEFAULT_MAX_TOKENS);
 
-    // ── 组装顶层 body ──────────────────────────────────────────────────
+    // ── Assemble top-level body ──────────────────────────────────────────────────
     let mut body = json!({
         "model": ctx.model,
         "messages": messages,
@@ -209,20 +209,20 @@ pub(crate) fn build_anthropic_request(
         "stream": true,
     });
 
-    // instructions → 顶层 system（§4.3）
+    // instructions → top-level system (§4.3)
     if !req.instructions.is_empty() {
         body["system"] = json!(req.instructions);
     }
 
-    // ── 工具 + tool_choice（§4.11）──────────────────────────────────
+    // ── tools + tool_choice (§4.11) ──────────────────────────────────
     if let Some(tools_arr) = tools {
         body["tools"] = Value::Array(tools_arr);
 
-        // 构造 tool_choice，合并 disable_parallel_tool_use
+        // Build tool_choice, merging in disable_parallel_tool_use
         let mut tc = map_tool_choice(&req.tool_choice)?;
 
         if !req.parallel_tool_calls {
-            // disable_parallel_tool_use 追加到 tool_choice 对象（§4.11）
+            // append disable_parallel_tool_use to the tool_choice object (§4.11)
             let obj = tc.get_or_insert_with(|| json!({"type": "auto"}));
             obj["disable_parallel_tool_use"] = json!(true);
         }
@@ -232,7 +232,7 @@ pub(crate) fn build_anthropic_request(
         }
     }
 
-    // ── §7.1 字段降级 ─────────────────────────────────────────────────
+    // ── §7.1 field downgrade ─────────────────────────────────────────────────
     apply_field_downgrade(&mut body, req);
 
     Ok(body)
@@ -240,8 +240,8 @@ pub(crate) fn build_anthropic_request(
 
 // ── push_block ────────────────────────────────────────────────────────────────
 
-/// 把 content block 追加到 turns 列。
-/// 若末尾已有相同 role 的条目，追加到其 blocks；否则新开一条。
+/// Append a content block to the turns list.
+/// If the last entry already has the same role, append to its blocks; otherwise open a new entry.
 fn push_block(role: &str, block: Value, turns: &mut Vec<(String, Vec<Value>)>) {
     if let Some(last) = turns.last_mut() {
         if last.0 == role {
@@ -254,8 +254,8 @@ fn push_block(role: &str, block: Value, turns: &mut Vec<(String, Vec<Value>)>) {
 
 // ── content_item_to_block ──────────────────────────────────────────────────────
 
-/// 把 `ContentItem` 转成 Anthropic content block。
-/// 图片 → Anthropic image content block（识图，§4.9）。
+/// Convert a `ContentItem` into an Anthropic content block.
+/// Image → Anthropic image content block (vision, §4.9).
 fn content_item_to_block(c: &ContentItem) -> Result<Value, ConnError> {
     match c {
         ContentItem::InputText { text } | ContentItem::OutputText { text } => {
@@ -265,11 +265,11 @@ fn content_item_to_block(c: &ContentItem) -> Result<Value, ConnError> {
     }
 }
 
-/// 把 codex 的 `image_url`（data URL 或 http(s) URL）转成 Anthropic image
-/// content block。`detail` 字段 Anthropic 无对应字段，丢弃（分辨率由服务端自动处理）。
+/// Convert codex's `image_url` (data URL or http(s) URL) into an Anthropic image
+/// content block. Anthropic has no field for `detail`, so it's dropped (resolution handled server-side).
 /// - `data:<media_type>;base64,<data>` → `source.type = base64`
 /// - `http(s)://...` → `source.type = url`
-/// - 其他形态 → 硬失败（无法表达为 Anthropic image source）
+/// - other forms → hard fail (cannot be expressed as an Anthropic image source)
 fn image_block(image_url: &str) -> Result<Value, ConnError> {
     if let Some(rest) = image_url.strip_prefix("data:") {
         // data:<media_type>;base64,<data>
@@ -304,9 +304,9 @@ fn image_block(image_url: &str) -> Result<Value, ConnError> {
 
 // ── tool_result_block ─────────────────────────────────────────────────────────
 
-/// 把 `FunctionCallOutput` 转成 Anthropic tool_result content block。
-/// - `success == Some(false)` → `is_error: true`（Anthropic 原生字段，§4.6）
-/// - ContentItems 含图片 → 翻译为 image content block；纯文本仍用字符串形式
+/// Convert a `FunctionCallOutput` into an Anthropic tool_result content block.
+/// - `success == Some(false)` → `is_error: true` (Anthropic native field, §4.6)
+/// - ContentItems containing images → translated into image content blocks; plain text still uses the string form
 fn tool_result_block(
     call_id: &str,
     output: &FunctionCallOutputPayload,
@@ -331,10 +331,10 @@ fn tool_result_block(
 
 // ── tool_result_items_to_content ────────────────────────────────────────────────
 
-/// 把 `FunctionCallOutputContentItem` 列表转成 Anthropic tool_result content。
-/// - 全为文本 → 合并为单个字符串（保持原 v1 行为）
-/// - 含图片 → 返回 content block 数组（text / image 块，识图）
-/// - 加密内容 → 硬失败（§4.6）
+/// Convert a list of `FunctionCallOutputContentItem` into Anthropic tool_result content.
+/// - all text → merged into a single string (preserves the original v1 behavior)
+/// - containing images → returns an array of content blocks (text / image blocks, vision)
+/// - encrypted content → hard fail (§4.6)
 fn tool_result_items_to_content(
     items: &[FunctionCallOutputContentItem],
 ) -> Result<Value, ConnError> {
@@ -379,12 +379,12 @@ fn tool_result_items_to_content(
 
 // ── map_tools ─────────────────────────────────────────────────────────────────
 
-/// 把工具定义列表从 Responses 格式转成 Anthropic Messages 格式。
+/// Convert the tool definition list from Responses format into Anthropic Messages format.
 ///
-/// Anthropic 工具格式：`{name, description, input_schema}` — 无顶层 `type` 字段。
-/// 标准 `function` → Anthropic function 工具；`web_search` → Anthropic 原生
-/// `web_search_20250305` server tool（codex 侧能力门控对 anthropic provider 放开）。
-/// 其他类型 → 硬失败（§4.0b）。
+/// Anthropic tool format: `{name, description, input_schema}` — no top-level `type` field.
+/// standard `function` → Anthropic function tool; `web_search` → Anthropic native
+/// `web_search_20250305` server tool (codex-side capability gating allows it for anthropic providers).
+/// other types → hard fail (§4.0b).
 fn map_tools(tools: &[Value]) -> Result<Option<Vec<Value>>, ConnError> {
     if tools.is_empty() {
         return Ok(None);
@@ -403,15 +403,15 @@ fn map_tools(tools: &[Value]) -> Result<Option<Vec<Value>>, ConnError> {
                     "name": name,
                     "input_schema": input_schema,
                 });
-                // description 只在非 null 时写入
+                // description is only written when non-null
                 if description != Value::Null {
                     tool["description"] = description;
                 }
                 out.push(tool);
             }
-            // codex 的 web_search 托管工具 → Anthropic 原生 server tool。
-            // Responses 侧的 external_web_access / filters / user_location 等参数
-            // 与 Anthropic 不对应，丢弃；仅声明类型与名字，按 Anthropic 默认行为运行。
+            // codex's web_search hosted tool → Anthropic native server tool.
+            // The Responses-side params external_web_access / filters / user_location etc.
+            // have no Anthropic counterpart and are dropped; only the type and name are declared, running on Anthropic defaults.
             Some("web_search") => {
                 out.push(json!({
                     "type": "web_search_20250305",
@@ -431,13 +431,13 @@ fn map_tools(tools: &[Value]) -> Result<Option<Vec<Value>>, ConnError> {
 
 // ── map_tool_choice ───────────────────────────────────────────────────────────
 
-/// 把 codex 的 `tool_choice` 字符串映射成 Anthropic tool_choice 对象（§4.11）。
+/// Map codex's `tool_choice` string into an Anthropic tool_choice object (§4.11).
 ///
 /// - `"auto"` → `{"type":"auto"}`
-/// - `"none"` → `{"type":"none"}`  （Anthropic Messages 现支持 none，禁止调用任何工具）
+/// - `"none"` → `{"type":"none"}`  (Anthropic Messages now supports none, forbidding any tool call)
 /// - `"required"` → `{"type":"any"}`
-/// - JSON 字符串 `{"type":"function","name":"..."}` → `{"type":"tool","name":"..."}`
-/// - 其他 → `ConnError::HardFail`
+/// - JSON string `{"type":"function","name":"..."}` → `{"type":"tool","name":"..."}`
+/// - other → `ConnError::HardFail`
 fn map_tool_choice(tc: &str) -> Result<Option<Value>, ConnError> {
     match tc {
         "auto" => Ok(Some(json!({"type": "auto"}))),
@@ -464,19 +464,19 @@ fn map_tool_choice(tc: &str) -> Result<Option<Value>, ConnError> {
 
 // ── apply_field_downgrade ─────────────────────────────────────────────────────
 
-/// §7.1 字段降级：把 Responses API 特有字段降级或丢弃。
+/// §7.1 field downgrade: downgrade or drop Responses-API-specific fields.
 ///
-/// - `reasoning` → `thinking`（按 effort 映射；Anthropic extended thinking）
-/// - `text.format` 含 json_schema → 降级为追加系统指令（anthropic 无原生 response_format）
-/// - `store`/`include`/`prompt_cache_key`/`service_tier`/`client_metadata` → 静默丢弃
+/// - `reasoning` → `thinking` (mapped by effort; Anthropic extended thinking)
+/// - `text.format` containing json_schema → downgraded to an appended system instruction (anthropic has no native response_format)
+/// - `store`/`include`/`prompt_cache_key`/`service_tier`/`client_metadata` → silently dropped
 fn apply_field_downgrade(body: &mut Value, req: &codex_api::ResponsesApiRequest) {
-    // reasoning → thinking（Anthropic Extended Thinking，§7.1）
+    // reasoning → thinking (Anthropic Extended Thinking, §7.1)
     if let Some(reasoning) = &req.reasoning {
         if reasoning.effort.is_some() {
-            // 近似映射：有 effort 即开启 thinking（v1 不按 low/medium/high 区分 budget，
-            // effort 级别语义在 v1 丢失——anthropic budget 是 token 数而非档位）。
-            // Anthropic thinking 格式：{"type":"enabled","budget_tokens":N}
-            // 上限 8000：参考 Anthropic Extended Thinking 文档建议，保守值避免超出 max_tokens
+            // Approximate mapping: any effort enables thinking (v1 does not distinguish budget by low/medium/high,
+            // the effort-level semantics are lost in v1 — anthropic budget is a token count, not a tier).
+            // Anthropic thinking format: {"type":"enabled","budget_tokens":N}
+            // Cap 8000: per Anthropic Extended Thinking docs recommendation, a conservative value to avoid exceeding max_tokens
             let budget = body["max_tokens"]
                 .as_u64()
                 .map(|m| (m / 2).clamp(1024, 8000))
@@ -485,27 +485,27 @@ fn apply_field_downgrade(body: &mut Value, req: &codex_api::ResponsesApiRequest)
         } else if reasoning.summary.is_some() || reasoning.context.is_some() {
             tracing::warn!("reasoning.summary/context 在 v1 anthropic connector 中不支持，已丢弃");
         } else {
-            // effort/summary/context 均为 None，reasoning 对象存在但无可映射字段，丢弃并 warn
+            // effort/summary/context all None: reasoning object exists but has no mappable fields, drop and warn
             tracing::warn!("reasoning 对象存在但 effort/summary/context 均为 None，已丢弃（v1 anthropic connector 无法映射）");
         }
     }
 
-    // text.format → 降级为系统指令追加（Anthropic 无原生 response_format）
-    // 统一策略：对所有结构化输出 format（json_schema/json_object 等）追加系统指令，不静默丢弃
+    // text.format → downgrade to an appended system instruction (Anthropic has no native response_format)
+    // Unified strategy: for all structured-output formats (json_schema/json_object etc.) append a system instruction, never silently drop
     if let Some(text_controls) = &req.text {
         if let Some(format) = &text_controls.format {
             if let Ok(fmt_val) = serde_json::to_value(format) {
                 let hint = if fmt_val.get("type").and_then(|t| t.as_str()) == Some("json_schema") {
-                    // json_schema：追加 schema 说明
+                    // json_schema: append the schema description
                     format!(
                         "\n\nYou must respond with valid JSON matching this schema: {}",
                         serde_json::to_string(&fmt_val).unwrap_or_default()
                     )
                 } else {
-                    // json_object 等其他结构化输出 format：追加通用 JSON 提示
+                    // json_object and other structured-output formats: append a generic JSON hint
                     "\n\nRespond with valid JSON.".to_string()
                 };
-                // 追加到 system（若存在）或设置新 system
+                // append to system (if present) or set a new system
                 let existing_system = body
                     .get("system")
                     .and_then(|s| s.as_str())
@@ -520,5 +520,5 @@ fn apply_field_downgrade(body: &mut Value, req: &codex_api::ResponsesApiRequest)
         }
     }
 
-    // store/include/prompt_cache_key/service_tier/client_metadata 静默丢弃（§7.1 可安全忽略级）
+    // store/include/prompt_cache_key/service_tier/client_metadata silently dropped (§7.1 safe-to-ignore tier)
 }

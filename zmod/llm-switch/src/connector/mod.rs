@@ -10,9 +10,9 @@ use thiserror::Error;
 
 use crate::config::{AuthKind, Connector as ConnectorKind};
 
-/// 连接器内部错误。
-/// - `HardFail`：v1 不支持/结构无法表达（§4.0 等），映射成 `ApiError::InvalidRequest`。
-/// - `Http`：已是 codex `ApiError`（建连/状态码/流错误）。
+/// Connector-internal error.
+/// - `HardFail`: unsupported in v1 / cannot be expressed structurally (§4.0 etc.), maps to `ApiError::InvalidRequest`.
+/// - `Http`: already a codex `ApiError` (connection / status code / stream error).
 #[derive(Debug, Error)]
 pub enum ConnError {
     #[error("llm-switch unsupported: {0}")]
@@ -30,7 +30,7 @@ impl From<ConnError> for codex_api::ApiError {
     }
 }
 
-/// 出口上下文：由 Task 08 的 `run()` 从 `Route` + `resolve_key` 组装。
+/// Egress context: assembled by Task 08's `run()` from `Route` + `resolve_key`.
 pub struct EgressCtx {
     pub base_url: String,
     pub model: String,
@@ -40,24 +40,24 @@ pub struct EgressCtx {
     pub path_override: Option<String>,
     pub default_max_tokens: Option<u32>,
     pub http: reqwest::Client,
-    /// bearer 密钥退路（§5.3 item 3）：key 为 None 且 auth 为 Bearer 时借用。
+    /// Bearer key fallback (§5.3 item 3): borrowed when key is None and auth is Bearer.
     pub auth_fallback: Option<codex_api::SharedAuthProvider>,
 }
 
-/// SSE 状态机抽象：chat 与 anthropic 各实现一次，由 `run_egress` 驱动。
-/// `pub` 是为了让 `testing` 模块可以在集成测试中暴露此 trait（类型不透明，仅传 Box）。
+/// SSE state-machine abstraction: implemented once each by chat and anthropic, driven by `run_egress`.
+/// `pub` so the `testing` module can expose this trait in integration tests (the type is opaque, only passed as a Box).
 pub trait SseTranslator: Send {
     fn push(&mut self, data: &serde_json::Value) -> Result<Vec<codex_api::ResponseEvent>, ConnError>;
     fn finish(&mut self) -> Vec<codex_api::ResponseEvent>;
 }
 
-/// 重导出 `run_egress`，供 chat/anthropic connector 直接用。
+/// Re-export `run_egress`, for direct use by the chat/anthropic connectors.
 pub(crate) use crate::sse::run_egress;
 
 #[async_trait]
 pub trait Connector: Send + Sync {
-    /// 同步完成 HTTP+状态码校验+SSE 建立后才 spawn（§4.7）；
-    /// 返回与 `stream_request` 同型的流。
+    /// Complete HTTP + status-code check + SSE setup synchronously before spawning (§4.7);
+    /// returns a stream of the same shape as `stream_request`.
     async fn run(
         &self,
         req: codex_api::ResponsesApiRequest,
@@ -65,7 +65,7 @@ pub trait Connector: Send + Sync {
     ) -> Result<codex_api::ResponseStream, codex_api::ApiError>;
 }
 
-/// 工厂：按 `config::Connector` 枚举选择具体连接器实现。
+/// Factory: select the concrete connector implementation by the `config::Connector` enum.
 pub fn make_connector(kind: ConnectorKind) -> Box<dyn Connector> {
     match kind {
         ConnectorKind::Chat => Box::new(chat::ChatConnector),
@@ -73,8 +73,8 @@ pub fn make_connector(kind: ConnectorKind) -> Box<dyn Connector> {
     }
 }
 
-/// 组装出口头。key 存在时走 `build_headers`；key 为 None 且 auth 为 Bearer 时走
-/// `auth_fallback`（§5.3）；其余情况返回 `InvalidRequest` 错误。
+/// Assemble egress headers. When key exists, use `build_headers`; when key is None and auth is Bearer, use
+/// `auth_fallback` (§5.3); otherwise return an `InvalidRequest` error.
 pub(crate) fn egress_headers(
     ctx: &EgressCtx,
     anthropic_version: Option<&str>,
@@ -83,7 +83,7 @@ pub(crate) fn egress_headers(
         return crate::http::build_headers(ctx.auth, Some(key.as_str()), anthropic_version)
             .map_err(|e| codex_api::ApiError::InvalidRequest { message: e.to_string() });
     }
-    // 无原始 key：仅 Bearer 可借 codex auth（§5.3）
+    // No raw key: only Bearer can borrow codex auth (§5.3)
     match (ctx.auth, &ctx.auth_fallback) {
         (AuthKind::Bearer, Some(provider)) => {
             let mut h = reqwest::header::HeaderMap::new();
@@ -100,7 +100,7 @@ pub(crate) fn egress_headers(
     }
 }
 
-/// 返回 `ResponseItem` 变体名字符串（供 HardFail 错误信息使用）。
+/// Return the `ResponseItem` variant name string (for use in HardFail error messages).
 pub(crate) fn variant_name(item: &codex_protocol::models::ResponseItem) -> &'static str {
     use codex_protocol::models::ResponseItem::*;
     match item {

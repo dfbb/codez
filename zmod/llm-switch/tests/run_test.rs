@@ -37,7 +37,7 @@ async fn happy_path_streams_events() {
 #[tokio::test]
 async fn happy_path_chinese_content_not_corrupted() {
     let server = MockServer::start().await;
-    // delta content 含中文，验证字节缓冲路径不会产生 U+FFFD 替换字符
+    // delta content contains Chinese, verifying the byte-buffer path does not produce U+FFFD replacement characters
     let sse = "data: {\"id\":\"r\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"你好世界\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":4,\"total_tokens\":5}}\n\ndata: [DONE]\n\n";
     Mock::given(method("POST")).and(path("/chat/completions"))
         .respond_with(ResponseTemplate::new(200)
@@ -52,7 +52,7 @@ async fn happy_path_chinese_content_not_corrupted() {
         let ev = item.unwrap();
         kinds.push(format!("{ev:?}"));
     }
-    // 中文内容必须原样透传，不得被替换字符破坏
+    // the Chinese content must pass through verbatim, undamaged by replacement characters
     assert!(kinds.iter().any(|k| k.contains("OutputTextDelta")));
     assert!(kinds.iter().any(|k| k.contains("你好")), "中文内容应原样透传，实际 kinds: {kinds:?}");
 }
