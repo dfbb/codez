@@ -19,8 +19,10 @@ impl CommandHint {
         matches!(self.program.rsplit('/').next(), Some("ls") | Some("tree") | Some("find"))
     }
     pub fn is_test_runner(&self) -> bool {
-        let p = self.program.rsplit('/').next().unwrap_or("");
-        matches!(p, "pytest" | "jest" | "vitest" | "cargo" | "go" | "rspec")
+        matches!(
+            self.program.rsplit('/').next(),
+            Some("pytest") | Some("jest") | Some("vitest") | Some("cargo") | Some("go") | Some("rspec")
+        )
     }
 }
 

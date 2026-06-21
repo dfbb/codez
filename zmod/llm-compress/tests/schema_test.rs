@@ -19,6 +19,7 @@ fn heterogeneous_keys_return_none() {
 fn non_array_returns_none() {
     assert!(to_schema_form(&json!({"a":1})).is_none());
     assert!(to_schema_form(&json!("str")).is_none());
+    assert!(to_schema_form(&json!([])).is_none());
 }
 
 #[test]

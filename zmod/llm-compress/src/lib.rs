@@ -99,6 +99,8 @@ fn compress_in_place(s: &mut String, router: &ContentRouter, budget: &Budget, mi
         return;
     }
     if let Some((new, _lossy, _kind)) = router.compress_text(s, budget) {
+        // router 已保证 saved_bytes>0;此处 `<=` 是防御性二次体积闸门,
+        // 防止压缩器被直接调用绕过 router 时破坏「压后≤压前」不变量。
         if new.len() <= s.len() {
             *s = new;
         }
