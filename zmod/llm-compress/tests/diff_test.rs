@@ -139,3 +139,32 @@ index aaa..bbb 100644
         "无可折叠上下文时应 Unchanged"
     );
 }
+
+#[test]
+fn diff_fold_marks_lossy_text_kind() {
+    use codez_llm_compress::compress::diff::DiffCompressor;
+    use codez_llm_compress::config::Config;
+    use codez_llm_compress::router::{Budget, CompressOutcome, Compressor, ContentKind};
+
+    let mut cfg = Config::disabled();
+    cfg.diff.context_lines = 1;
+    let c = DiffCompressor;
+    // 构造一个有多余上下文可折叠的 diff
+    let mut lines = vec!["diff --git a/f b/f".to_string(), "--- a/f".to_string(), "+++ b/f".to_string(), "@@ -1,20 +1,20 @@".to_string()];
+    for i in 0..10 {
+        lines.push(format!(" ctx{i}"));
+    }
+    lines.push("-old".to_string());
+    lines.push("+new".to_string());
+    for i in 0..10 {
+        lines.push(format!(" ctx{}", 10 + i));
+    }
+    let text = lines.join("\n");
+    let b = Budget { cfg: &cfg, cmd: None, query: &[] };
+    if let CompressOutcome::Compressed { lossy, kind, .. } = c.compress(&text, &b) {
+        assert!(lossy, "diff 折叠上下文 → lossy=true");
+        assert_eq!(kind, ContentKind::Text);
+    } else {
+        panic!("expected compressed diff");
+    }
+}

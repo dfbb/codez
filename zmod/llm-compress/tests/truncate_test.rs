@@ -125,3 +125,17 @@ fn over_byte_limit_triggers_hard_truncate() {
     assert!(saved_bytes > 0);
     assert!(text.len() < input.len());
 }
+
+#[test]
+fn truncate_marks_lossy_text_kind() {
+    use codez_llm_compress::router::ContentKind;
+    let cfg = cfg_with(2, 2, 1_000_000);
+    let lines: Vec<String> = (0..200).map(|i| format!("line{i:04}_payload_xxxxxxxxxxxxxxxxxxxx")).collect();
+    let input = lines.join("\n");
+    let out = TruncateCompressor.compress(&input, &budget(&cfg));
+    let CompressOutcome::Compressed { lossy, kind, .. } = out else {
+        panic!("expected Compressed");
+    };
+    assert!(lossy, "截断删内容 → lossy=true");
+    assert_eq!(kind, ContentKind::Text);
+}
