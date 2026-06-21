@@ -5,3 +5,4 @@ pub mod truncate;
 pub mod json;
 pub mod diff;
 pub mod log;
+pub mod schema;

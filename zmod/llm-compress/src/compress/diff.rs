@@ -7,7 +7,7 @@
 //! - hunk 内上下文行(以单空格开头)仅保留紧邻变更行前后各 `context_lines` 行,
 //!   中间折叠为一行裸占位 `[llm-compress: 略 N 行上下文]`。
 
-use crate::router::{Budget, CompressOutcome, Compressor};
+use crate::router::{Budget, CompressOutcome, Compressor, ContentKind};
 
 /// unified diff 压缩器。
 pub struct DiffCompressor;
@@ -85,7 +85,7 @@ impl Compressor for DiffCompressor {
         "diff"
     }
 
-    fn detect(&self, text: &str) -> bool {
+    fn detect(&self, text: &str, _budget: &Budget) -> bool {
         let mut has_minus_header = false;
         let mut has_plus_header = false;
         for line in text.lines() {
@@ -187,9 +187,6 @@ impl Compressor for DiffCompressor {
         }
 
         let saved_bytes = text.len() - result.len();
-        CompressOutcome::Compressed {
-            text: result,
-            saved_bytes,
-        }
+        CompressOutcome::Compressed { text: result, saved_bytes, lossy: true, kind: ContentKind::Text }
     }
 }

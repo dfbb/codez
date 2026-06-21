@@ -3,7 +3,7 @@ use codez_llm_compress::config::Config;
 use codez_llm_compress::router::{Budget, CompressOutcome, Compressor};
 
 fn budget(cfg: &Config) -> Budget<'_> {
-    Budget { cfg }
+    Budget { cfg, cmd: None, query: &[] }
 }
 
 /// 构造一段真实风格、带时间戳的多行日志(≥8 行)。
@@ -22,13 +22,17 @@ fn timestamped_log(lines: usize) -> String {
 #[test]
 fn detect_true_for_timestamped_multiline_log() {
     let c = LogCompressor;
+    let cfg = Config::disabled();
+    let b = budget(&cfg);
     let log = timestamped_log(12);
-    assert!(c.detect(&log), "带时间戳的多行日志应被认领");
+    assert!(c.detect(&log, &b), "带时间戳的多行日志应被认领");
 }
 
 #[test]
 fn detect_true_for_stacktrace() {
     let c = LogCompressor;
+    let cfg = Config::disabled();
+    let b = budget(&cfg);
     let trace = "\
 thread 'main' panicked at 'boom'
 stack backtrace:
@@ -40,35 +44,41 @@ stack backtrace:
    3: std::rt::lang_start
    4: main
    5: __libc_start_main";
-    assert!(c.detect(trace), "含 `at file:line` 的栈跟踪应被认领");
+    assert!(c.detect(trace, &b), "含 `at file:line` 的栈跟踪应被认领");
 }
 
 #[test]
 fn detect_false_for_plain_short_text() {
     let c = LogCompressor;
+    let cfg = Config::disabled();
+    let b = budget(&cfg);
     let txt = "Hello world.\nThis is a short note.\nNothing log-like here.";
-    assert!(!c.detect(txt), "普通短文本不应被认领");
+    assert!(!c.detect(txt, &b), "普通短文本不应被认领");
 }
 
 #[test]
 fn detect_false_for_long_plain_text_without_log_features() {
     // ≥8 行但无任何日志特征 / 无连续重复 → 不认领。
     let c = LogCompressor;
+    let cfg = Config::disabled();
+    let b = budget(&cfg);
     let mut s = String::new();
     for i in 0..12 {
         s.push_str(&format!("paragraph line number {i} talking about cats\n"));
     }
-    assert!(!c.detect(&s), "多行但无日志特征的普通文本不应被认领");
+    assert!(!c.detect(&s, &b), "多行但无日志特征的普通文本不应被认领");
 }
 
 #[test]
 fn detect_true_for_consecutive_repeats() {
     let c = LogCompressor;
+    let cfg = Config::disabled();
+    let b = budget(&cfg);
     let mut s = String::new();
     for _ in 0..10 {
         s.push_str("retrying connection...\n");
     }
-    assert!(c.detect(&s), "存在连续重复行应被认领");
+    assert!(c.detect(&s, &b), "存在连续重复行应被认领");
 }
 
 #[test]
@@ -83,7 +93,7 @@ fn dedup_collapses_consecutive_repeats() {
     }
     s.push_str("done\n");
     match c.compress(&s, &budget(&cfg)) {
-        CompressOutcome::Compressed { text, saved_bytes } => {
+        CompressOutcome::Compressed { text, saved_bytes, .. } => {
             assert!(text.contains("retrying connection..."));
             assert!(
                 text.contains("[llm-compress: 上一行 ×5]"),
@@ -127,7 +137,7 @@ fn head_tail_truncates_long_log_with_placeholder() {
     cfg.truncate.tail_lines = 3;
     let log = timestamped_log(50); // 50 行,各不相同
     match c.compress(&log, &budget(&cfg)) {
-        CompressOutcome::Compressed { text, saved_bytes } => {
+        CompressOutcome::Compressed { text, saved_bytes, .. } => {
             // 中间被省略:50 - 3 - 3 = 44 行。
             assert!(
                 text.contains("[llm-compress: 略 44 行]"),
@@ -159,7 +169,7 @@ fn dedup_then_head_tail_combined() {
     s.push_str("2026-06-20T12:00:03 INFO ok line b\n");
     s.push_str("2026-06-20T12:00:04 INFO ok line c\n");
     match c.compress(&s, &budget(&cfg)) {
-        CompressOutcome::Compressed { text, saved_bytes } => {
+        CompressOutcome::Compressed { text, saved_bytes, .. } => {
             // dedup 后行数 = boot(1) + retrying(1) + 占位(1) + 3 行 ok = 6 行;
             // 6 > head(2)+tail(2)=4 → 仍会再截断为 head(2) + 占位(1) + tail(2)。
             // 此时 dedup 占位可能被 head/tail 的中间省略所吞;产物只有 head/tail 占位。
@@ -196,7 +206,7 @@ fn dedup_two_line_repeat_compresses() {
     s.push_str("2026-06-20T12:00:07 INFO line 8\n");
     s.push_str("2026-06-20T12:00:08 INFO done\n");
     match c.compress(&s, &budget(&cfg)) {
-        CompressOutcome::Compressed { text, saved_bytes } => {
+        CompressOutcome::Compressed { text, saved_bytes, .. } => {
             assert!(
                 text.contains("[llm-compress: 上一行 ×2]"),
                 "count=2 重复行应折叠为 ×2 占位,实际:\n{text}"

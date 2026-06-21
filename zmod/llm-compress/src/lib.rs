@@ -1,6 +1,7 @@
 //! codez-llm-compress:在 codex LLM 请求边界压缩请求。
 //! 入口 transform() 在 Task 08 加入;本任务先建 config 地基。
 
+pub mod command;
 pub mod config;
 pub mod router;
 pub mod compress;
@@ -49,7 +50,8 @@ pub fn transform(request: &mut ResponsesApiRequest, _api_provider: &ApiProvider,
     }
 
     let router = build_router();
-    let budget = Budget { cfg: &cfg };
+    let empty_query: Vec<String> = Vec::new();
+    let budget = Budget { cfg: &cfg, cmd: None, query: &empty_query };
 
     // Layer 1:遍历 input,只处理两个工具输出变体,逐文本片段压缩
     for item in request.input.iter_mut() {
@@ -96,8 +98,10 @@ fn compress_in_place(s: &mut String, router: &ContentRouter, budget: &Budget, mi
     if s.len() < min_bytes {
         return;
     }
-    if let Some(new) = router.compress_text(s, budget) {
-        *s = new;
+    if let Some((new, _lossy, _kind)) = router.compress_text(s, budget) {
+        if new.len() <= s.len() {
+            *s = new;
+        }
     }
 }
 

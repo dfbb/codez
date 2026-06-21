@@ -5,7 +5,7 @@
 //! parse 校验,失败或无收益则回退原文。
 
 use crate::config::JsonCfg;
-use crate::router::{Budget, CompressOutcome, Compressor};
+use crate::router::{Budget, CompressOutcome, Compressor, ContentKind};
 use serde_json::Value;
 
 /// 无状态单元结构。
@@ -17,8 +17,11 @@ impl Compressor for JsonCompressor {
     }
 
     /// 能被 serde_json 解析即认领。
-    fn detect(&self, text: &str) -> bool {
-        serde_json::from_str::<Value>(text).is_ok()
+    fn detect(&self, text: &str, _budget: &Budget) -> bool {
+        matches!(
+            serde_json::from_str::<Value>(text),
+            Ok(Value::Object(_)) | Ok(Value::Array(_))
+        )
     }
 
     fn compress(&self, text: &str, budget: &Budget) -> CompressOutcome {
@@ -46,7 +49,7 @@ impl Compressor for JsonCompressor {
         // 5. 仅在确有收益时返回 Compressed。
         let saved_bytes = text.len().saturating_sub(new.len());
         if saved_bytes > 0 {
-            CompressOutcome::Compressed { text: new, saved_bytes }
+            CompressOutcome::Compressed { text: new, saved_bytes, lossy: false, kind: ContentKind::Json }
         } else {
             CompressOutcome::Unchanged
         }

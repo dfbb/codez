@@ -45,32 +45,38 @@ index 1234567..89abcde 100644
 #[test]
 fn detect_true_for_real_git_diff() {
     let c = DiffCompressor;
-    assert!(c.detect(REAL_DIFF), "真实 git diff 应被识别");
+    let cfg = Config::default();
+    let budget = Budget { cfg: &cfg, cmd: None, query: &[] };
+    assert!(c.detect(REAL_DIFF, &budget), "真实 git diff 应被识别");
 }
 
 #[test]
 fn detect_true_for_bare_hunk_header() {
     let c = DiffCompressor;
+    let cfg = Config::default();
+    let budget = Budget { cfg: &cfg, cmd: None, query: &[] };
     let text = "@@ -1,3 +1,4 @@\n a\n-b\n+c\n d\n";
-    assert!(c.detect(text), "含 hunk 头应被识别");
+    assert!(c.detect(text, &budget), "含 hunk 头应被识别");
 }
 
 #[test]
 fn detect_false_for_plain_text() {
     let c = DiffCompressor;
+    let cfg = Config::default();
+    let budget = Budget { cfg: &cfg, cmd: None, query: &[] };
     let text = "这是一段普通文本。\n没有任何 diff 特征。\n+ 这不是变更行只是个加号开头的句子\n";
     // 注意:仅靠单独的 '+' 开头一行不构成 diff(无 hunk 头、无 diff --git、无 '--- '+'+++ ' 配对)。
-    assert!(!c.detect(text), "普通文本不应被识别");
+    assert!(!c.detect(text, &budget), "普通文本不应被识别");
 }
 
 #[test]
 fn compress_folds_large_context_and_keeps_changes() {
     let c = DiffCompressor;
     let cfg = cfg_with_context(2);
-    let budget = Budget { cfg: &cfg };
+    let budget = Budget { cfg: &cfg, cmd: None, query: &[] };
 
     let outcome = c.compress(REAL_DIFF, &budget);
-    let CompressOutcome::Compressed { text, saved_bytes } = outcome else {
+    let CompressOutcome::Compressed { text, saved_bytes, .. } = outcome else {
         panic!("大段上下文应被压缩");
     };
 
@@ -114,9 +120,7 @@ fn compress_folds_large_context_and_keeps_changes() {
 fn compress_small_diff_unchanged() {
     let c = DiffCompressor;
     let cfg = cfg_with_context(3);
-    let budget = Budget { cfg: &cfg };
-
-    // 上下文本就 ≤ context_lines,无可折叠。
+    let budget = Budget { cfg: &cfg, cmd: None, query: &[] };
     let small = "\
 diff --git a/a.txt b/a.txt
 index aaa..bbb 100644

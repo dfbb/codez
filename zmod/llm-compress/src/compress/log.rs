@@ -1,7 +1,7 @@
 //! LogCompressor:文本型日志压缩器。
 //! 两步保守压缩:① 连续重复行折叠 ② head/tail 保留。占位为裸文本标记 [llm-compress: …]。
 
-use crate::router::{Budget, CompressOutcome, Compressor};
+use crate::router::{Budget, CompressOutcome, Compressor, ContentKind};
 
 /// 识别多行日志 / 栈跟踪文本并做保守压缩。
 pub struct LogCompressor;
@@ -14,7 +14,7 @@ impl Compressor for LogCompressor {
         "log"
     }
 
-    fn detect(&self, text: &str) -> bool {
+    fn detect(&self, text: &str, _budget: &Budget) -> bool {
         let lines: Vec<&str> = text.lines().collect();
         if lines.len() < MIN_LINES {
             return false;
@@ -51,10 +51,7 @@ impl Compressor for LogCompressor {
             let new_text = final_lines.join("\n");
             let saved = text.len().saturating_sub(new_text.len());
             if saved > 0 {
-                CompressOutcome::Compressed {
-                    text: new_text,
-                    saved_bytes: saved,
-                }
+                CompressOutcome::Compressed { text: new_text, saved_bytes: saved, lossy: true, kind: ContentKind::Text }
             } else {
                 CompressOutcome::Unchanged
             }

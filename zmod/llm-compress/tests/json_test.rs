@@ -12,20 +12,23 @@ fn cfg_small() -> Config {
 }
 
 fn budget(cfg: &Config) -> Budget<'_> {
-    Budget { cfg }
+    Budget { cfg, cmd: None, query: &[] }
 }
 
 #[test]
 fn detect_accepts_valid_json_rejects_garbage() {
     let c = JsonCompressor;
-    assert!(c.detect(r#"{"a":1,"b":[1,2,3]}"#));
-    assert!(c.detect("[1, 2, 3]"));
-    assert!(c.detect("\"a quoted string is valid json\""));
-    assert!(c.detect("123"));
+    let cfg = Config::disabled();
+    let b = budget(&cfg);
+    assert!(c.detect(r#"{"a":1,"b":[1,2,3]}"#, &b));
+    assert!(c.detect("[1, 2, 3]", &b));
+    // 新 detect:仅认领 object/array,scalar 不再认领
+    assert!(!c.detect("\"a quoted string is valid json\"", &b));
+    assert!(!c.detect("123", &b));
     // 非 JSON
-    assert!(!c.detect("not json {"));
-    assert!(!c.detect("{unquoted: key}"));
-    assert!(!c.detect(""));
+    assert!(!c.detect("not json {", &b));
+    assert!(!c.detect("{unquoted: key}", &b));
+    assert!(!c.detect("", &b));
 }
 
 #[test]
@@ -38,7 +41,7 @@ fn long_array_is_sampled_with_placeholder_element() {
 
     let out = c.compress(&text, &budget(&cfg));
     let new = match out {
-        CompressOutcome::Compressed { text, saved_bytes } => {
+        CompressOutcome::Compressed { text, saved_bytes, .. } => {
             assert!(saved_bytes > 0);
             text
         }
@@ -130,7 +133,7 @@ fn saved_bytes_equals_len_delta() {
     let c = JsonCompressor;
     let arr: Vec<i64> = (0..50).collect();
     let text = serde_json::to_string(&arr).unwrap();
-    if let CompressOutcome::Compressed { text: new, saved_bytes } = c.compress(&text, &budget(&cfg)) {
+    if let CompressOutcome::Compressed { text: new, saved_bytes, .. } = c.compress(&text, &budget(&cfg)) {
         assert_eq!(saved_bytes, text.len() - new.len());
         assert!(new.len() < text.len());
     } else {
