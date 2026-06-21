@@ -308,8 +308,9 @@ pub fn attach(compressed: String, original: &str, ctx: &RequestCtx,
               call_id: &str, cfg: &CcrCfg) -> String
 ```
 
+- **核心总则(#2/#6 写死,不可被实现弱化)**:在 `cfg.enabled=true` 下,**有损压缩与可取回是绑定的**——`attach` 的结果只有两种合法形态:① 成功落盘 → 返回"有损产物 + 含路径占位"(可取回);② **任何原因无法落盘**(磁盘失败/权限/超 `max_file_bytes`/路径异常)→ **返回原文(放弃本次有损压缩)**。**绝不允许出现"有损产物但无可取回路径"的第三种结果。** 这保证"`enabled=true` 下凡有损必可取回"(§9.2 判据 4)恒成立。仅 `cfg.enabled=false` 才允许"有损但不可取回"(下条)。
 - **只对 Text 产物(#2/#3)**:`attach` 仅在 `lossy=true` 时调用,而 `lossy=true ⟹ kind=Text`(§4.0/§4.1)。故 `attach` **只产出 Text 裸占位,无 JSON 注入分支**,彻底回避数组变对象/保留字段覆盖。`kind` 不传入 attach。
-- **cfg 门控(#5 统一语义)**:`cfg.enabled=false` 时 `attach` 不落盘、**不追加 CCR 取回路径**,直接返回传入的 `compressed`——`compressed` 里压缩器**自身的省略占位**(如 `[llm-compress: 略 N 行]`)**保留**,只是没有"原文: <path>"那段。即 disabled = "有省略提示但不可取回"(等价 v1)。`enabled=true` 才落盘并在占位中追加路径。
+- **cfg 门控(#5 统一语义,仅此路径允许"有损不可取回")**:`cfg.enabled=false` 时 `attach` 不落盘、**不追加 CCR 取回路径**,直接返回传入的 `compressed`——`compressed` 里压缩器**自身的省略占位**(如 `[llm-compress: 略 N 行]`)**保留**,只是没有"原文: <path>"那段。即 disabled = "有省略提示但不可取回"(等价 v1)。`enabled=true` 才落盘并在占位中追加路径。
 - **粒度:每文本片段一文件(#3)**:registry key = `(call_id, fragment_hash)`,`fragment_hash`=该片段原文 SHA256 前 12 hex。ContentItems 内同一 call_id 的多个 InputText 各自落盘,不指错。`ctx.ccr`(`RefCell<CcrRegistry>`)避免同片段重复落盘。
 - **路径组件 sanitize(#4)**:`thread_id`(=ctx.queryid)与 `call_id` **均不直接入路径**——二者都来自请求内容,不能假设是安全文件名(可能含 `/`、`..`、超长)。规则:`thread_dir = sanitize(queryid)`(非 `[A-Za-z0-9_-]` 字符替换为 `_`,超 64 字节则取其 SHA256 前 16 hex);文件名 = `<sanitize(call_id 截断 32)>-<fragment_hash>.txt`。最终路径 `~/.codex/llm-compress/ccr/<thread_dir>/<filename>`,保证无路径穿越、无超长。
 - **清理双限(#5)**:写前对该 thread 目录:① 文件数超 `cfg.max_files_per_thread`(默认 200)→ 按 mtime 删最旧;② 目录总字节超 `cfg.max_thread_bytes`(默认 64 MiB)→ 继续按 mtime 删最旧直到达标。
@@ -344,11 +345,12 @@ pub fn to_schema_form(value: &Value) -> Option<Value>
    - **保留字段碰撞(#3 统一规则)**:原数组若本就含 `{"_llm_dup_prev":...}` 形态对象,**跳过对其折叠**(原样保留),与 §4.6 dedup 的"遇保留前缀即跳过"同源——不改名、不 escape、不 envelope。
 2. **csv-schema 内表达(不删内容)**:对象数组各项同构时,调 `schema::to_schema_form` 重写为 `{"_schema":[...],"_rows":[...]}`。数据全保留 → **lossy=false 不挂 CCR**(§4.8)。`cfg.json.csv_schema=false` 可关。
 
-- **detect 决定让渡(#1/#4 修正,适配 router first-match)**:router 是 first-match——一旦 detect 命中,即便 compress 返回 Unchanged 也不再尝试后续压缩器(`zmod/llm-compress/src/router.rs:36`)。故 JSON **不能**靠"compress 返回 Unchanged 让 Truncate 接管"。改为在 **`JsonCompressor::detect(text, budget)` 内 parse 后预判**:
-  - 能 parse 为 JSON,且 RLE/csv-schema **足以**(无损步骤即可压缩或本就不需压)→ detect 返回 **true**,JSON 压缩器处理(产 `kind=Json,lossy=false`)。
-  - 能 parse,但数组超 `cfg.json.max_array_items` 或嵌套超 `cfg.json.max_depth`,**需删内容才能达标**(无损步骤不够)→ detect 返回 **false**,让位给后续 Truncate 按文本抽样/截断(裸占位 + CCR,`kind=Text`)。
+- **detect 决定让渡(#1/#4 修正,适配 router first-match)**:router 是 first-match——一旦 detect 命中,即便 compress 返回 Unchanged 也不再尝试后续压缩器(`zmod/llm-compress/src/router.rs:36`)。故 JSON **不能**靠"compress 返回 Unchanged 让 Truncate 接管"。改为在 **`JsonCompressor::detect(text, budget)` 内 parse 后预判**,判据是"**无损步骤(RLE/csv-schema)是否预计产生有效压缩**":
+  - 能 parse 为 JSON,且 RLE/csv-schema 预计**有效压缩**(检测到相邻重复项可折叠,或存在同构对象数组可转 schema)→ detect 返回 **true**,JSON 压缩器处理(产 `kind=Json,lossy=false`)。
+  - 能 parse,但无损步骤**预计无有效收益**(无相邻重复、无同构数组),**且**文本仍超 `cfg.truncate.max_bytes`(即放着不管会超限,需删内容)→ detect 返回 **false**,让位给后续 Truncate 按文本抽样/截断(裸占位 + CCR,`kind=Text`)。数组超 `max_array_items` / 嵌套超 `max_depth` 是"无损不够、需删内容"的典型情形,归入此分支。
+  - 能 parse,无损步骤无收益,但文本**未超** `truncate.max_bytes`(小 JSON,无需压)→ detect 返回 **false**(无收益不认领,Truncate detect 永真但因未超阈也会 Unchanged,最终原样保留)。
   - 不能 parse → detect 返回 false(本就不认领)。
-- **不在 JSON 压缩器内做任何删内容步骤**:v1 的"长数组抽样 / 超深截断"移除。`cfg.json.max_array_items`/`max_depth` 在 **detect 阶段**用于判定让渡,不在 compress 内删元素。
+- **不在 JSON 压缩器内做任何删内容步骤**:v1 的"长数组抽样 / 超深截断"移除。`cfg.json.max_array_items`/`max_depth` 与 `truncate.max_bytes` 在 **detect 阶段**共同用于判定让渡,不在 compress 内删元素。
 - 产物必经 `serde_json` 重新 parse 校验,失败回退原文(现有不变量)。RLE/csv-schema 产物天然合法 JSON。
 
 ### ② Search(新 search.rs)— 删匹配,挂 CCR
@@ -405,8 +407,8 @@ tail_lines = 50
 max_bytes = 16384
 
 [llm_compress.json]
-max_array_items = 20           # detect 阶段:数组超此长度且无损步骤不足 → JSON detect 返回 false,让 Truncate 接管
-max_depth = 6                  # detect 阶段:嵌套超此深度同上
+max_array_items = 20           # detect 阶段:数组超此长度且无损步骤无收益、又超 truncate.max_bytes → detect false 让 Truncate 接管
+max_depth = 6                  # detect 阶段:嵌套超此深度同上(判据见 §5①,统一以"无损无收益+超截断阈值"让位)
 csv_schema = true              # 对象数组转 csv-schema(格式重构,不删内容,不挂 CCR)
 # 注:JSON 压缩器只做不删内容步骤(RLE/csv-schema);需删内容时由 detect 让渡给 Truncate(§5①),JSON 内不删元素
 
@@ -519,10 +521,10 @@ tests/
   snapshots/                                      # insta 固化我方 expected
 ```
 
-- 各新模块单测:query(提取/无 user)、command(解析 `shell_command.command`/`exec_command.cmd` 字符串→program/argv、非 JSON 跳过、is_* 判别)、score(错误行高分/查询加权)、protect(错误且小→保护、大→不保护)、preprocess(各段独立+组合、删内容段[strip_progress/blob_fold/truncate_line]返回 lossy=true、格式重构段 lossy=false、遇 `[llm-compress:` 前缀行跳过折叠)、schema(同构→重写、异构→None、嵌套值保留)、ccr(只产 Text 占位、路径组件 sanitize[含 `/`、`..`、超长]、每片段一文件 key=(call_id,fragment_hash)、文件数/总字节双限 LRU、单文件超限不落盘、cfg.enabled=false 不落盘、二次体积检查降级/放弃、落盘失败退化)。
+- 各新模块单测:query(提取/无 user)、command(解析 `shell_command.command`/`exec_command.cmd` 字符串→program/argv、非 JSON 跳过、is_* 判别)、score(错误行高分/查询加权)、protect(错误且小→保护、大→不保护)、preprocess(各段独立+组合、删内容段[strip_progress/blob_fold/truncate_line]返回 lossy=true、格式重构段 lossy=false、遇 `[llm-compress:` 前缀行跳过折叠)、schema(同构→重写、异构→None、嵌套值保留)、ccr(只产 Text 占位、路径组件 sanitize[含 `/`、`..`、超长]、每片段一文件 key=(call_id,fragment_hash)、文件数/总字节双限 LRU、**enabled 下单文件超 max_file_bytes → 返回原文**、**enabled 下落盘失败 → 返回原文/放弃本次有损压缩**、cfg.enabled=false → 不落盘且保留压缩器省略占位、二次体积检查降级/放弃)。
 - 新压缩器:search(分组/保首尾/超文件折叠/查询加权/`is_grep` 命中 detect、lossy=true 挂 CCR)、tabular(满足严格前提→schema 产物可 parse、lossy=false 不挂 CCR;**无header/重复列名/空列名/列不齐/转义分隔符/单元格换行→detect 返回 false,Truncate 命中**[#1])。
 - router:detect 吃 budget;`compress_text` 返回 `Option<(String,bool,ContentKind)>`;`is_git_diff`/`is_grep` 命中时候选重排到最前。
-- 升级回归:json(连续 RLE 去重不删内容 + csv-schema 不删内容 + 产物合法 JSON + `kind=Json` 恒 `lossy=false` 不挂 CCR + **数组超 max_array_items/嵌套超 max_depth 时 `detect` 返回 false,Truncate 命中处理**[#1])、log(模板折叠不删+级别评分删行挂 CCR+中段 ERROR 不丢)。
+- 升级回归:json(连续 RLE 去重不删内容 + csv-schema 不删内容 + 产物合法 JSON + `kind=Json` 恒 `lossy=false` 不挂 CCR + **detect 让位:无损步骤预计有收益→认领;无损无收益且超 `truncate.max_bytes`(含数组超 max_array_items/嵌套超 max_depth)→ detect 返回 false 让 Truncate 命中;无损无收益且未超阈→ detect false 原样保留**[#1])、log(模板折叠不删+级别评分删行挂 CCR+中段 ERROR 不丢)。
 - lossy 与 kind 不变量:`kind=Json ⟹ lossy=false`(JSON/Tabular 永不挂 CCR);`lossy=true ⟹ kind=Text`(attach 只产 Text 占位)。RLE/csv-schema/空行归一/连续折叠 lossy=false;删匹配/删行/截断/blob/strip_progress lossy=true。
 - 编排:预处理删内容段也挂 CCR、纯格式重构预处理不挂但保留结果、**保护门命中整段逐字节不变(含 ANSI/空行/blob/重复行也不处理,#7)**、最终写回统一过 candidate≤original 闸门(#4),小输入计数占位变长则回退原文。
 - 不变量(保留 + #3/#4/#5):`enabled=false` 逐字节不变、**压后 ≤ 压前(attach 内 + 编排层最终两道闸门)**、UTF-8 安全、JSON 产物可 parse(JSON 压缩器无 CCR 注入,产物天然合法)、只碰两变体、ContentItems 图片不动、CCR 双限不超磁盘。
