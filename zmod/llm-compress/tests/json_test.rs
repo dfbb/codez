@@ -118,17 +118,45 @@ fn detect_accepts_when_small_enough() {
 }
 
 #[test]
-fn rle_skips_existing_marker_objects() {
+fn rle_folds_run_but_skips_existing_marker_objects() {
+    // 输入: 6 个相同对象({"a":1}) + 已存在的 marker({"_llm_dup_prev":3}) + 再一个 {"a":1}
+    // 预期:
+    //   (a) 6 个相同对象折叠为 [{"a":1}, {"_llm_dup_prev":5}](extra=5)
+    //   (b) 已有 marker {"_llm_dup_prev":3} 原样保留(value=3,未被改写)
+    //   (c) marker 后的最后一个 {"a":1} 不跨越 marker 与前面合并
+    // 输入 77 字节,折叠后 57 字节,saved=20 → 必然 Compressed
     let mut cfg = Config::disabled();
     cfg.truncate.max_bytes = 100_000;
     let c = JsonCompressor;
-    // 原数组已含 _llm_dup_prev 形态对象,不应被折叠改写
-    let text = r#"[{"_llm_dup_prev":5},{"_llm_dup_prev":5}]"#;
+    let text =
+        r#"[{"a":1},{"a":1},{"a":1},{"a":1},{"a":1},{"a":1},{"_llm_dup_prev":3},{"a":1}]"#;
     let b = budget_t05(&cfg);
-    if let CompressOutcome::Compressed { text: new, .. } = c.compress(text, &b) {
-        // 不混淆:两个 _llm_dup_prev 对象不被当作 RLE 折叠产物
-        let v: serde_json::Value = serde_json::from_str(&new).unwrap();
-        assert!(v.is_array() || v.is_object());
-    }
-    // 也允许 Unchanged(无收益);关键是不 panic、产物合法
+    let CompressOutcome::Compressed { text: new, lossy, .. } = c.compress(text, &b) else {
+        panic!("expected Compressed: 6 连续重复应触发 RLE 折叠以节省字节");
+    };
+    assert!(!lossy, "RLE 不删内容,lossy 必须为 false");
+
+    let v: serde_json::Value = serde_json::from_str(&new).expect("压缩产物必须是合法 JSON");
+    let arr = v.as_array().expect("压缩产物必须是数组");
+
+    // (a) 前两项:首项 {"a":1} + 折叠计数对象 {"_llm_dup_prev":5}
+    assert_eq!(arr[0], serde_json::json!({"a": 1}), "首项必须是 {{\"a\":1}}");
+    assert_eq!(
+        arr[1],
+        serde_json::json!({"_llm_dup_prev": 5}),
+        "折叠 6 个重复应产生 extra=5 的 marker"
+    );
+
+    // (b) 已有 marker 原样保留:value 仍为 3(非 5、非其他)
+    assert_eq!(
+        arr[2],
+        serde_json::json!({"_llm_dup_prev": 3}),
+        "原输入中的 marker(value=3)必须原样保留,不得被改写"
+    );
+
+    // (c) marker 之后的孤立 {"a":1} 未被合并进前面的折叠
+    assert_eq!(arr[3], serde_json::json!({"a": 1}), "marker 后的 {{\"a\":1}} 应独立保留");
+
+    // 结果恰好是这 4 项
+    assert_eq!(arr.len(), 4, "输出数组长度应为 4");
 }
