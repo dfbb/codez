@@ -1,5 +1,6 @@
 //! TabularCompressor —— CSV/TSV/Markdown 表格 → csv-schema(spec §5④)。
 //! 严格前提在 detect 内判定;满足才认领。kind=Json, lossy=false,不挂 CCR。
+//! detect 内同时预判 schema-form 是否比原文小,不小则让位给 Truncate。
 
 use crate::compress::schema::to_schema_form;
 use crate::router::{Budget, CompressOutcome, Compressor, ContentKind};
@@ -16,38 +17,38 @@ impl Compressor for TabularCompressor {
         if !budget.cfg.tabular.enabled {
             return false;
         }
-        parse_table(text).is_some()
+        matches!(try_build(text), Some(s) if s.len() < text.len())
     }
 
     fn compress(&self, text: &str, _budget: &Budget) -> CompressOutcome {
-        let table = match parse_table(text) {
-            Some(t) => t,
-            None => return CompressOutcome::Unchanged,
-        };
-        // 转对象数组
-        let header = &table[0];
-        let mut arr: Vec<Value> = Vec::with_capacity(table.len() - 1);
-        for row in &table[1..] {
-            let mut m = Map::new();
-            for (i, key) in header.iter().enumerate() {
-                m.insert(key.clone(), Value::String(row[i].clone()));
-            }
-            arr.push(Value::Object(m));
+        match try_build(text) {
+            Some(s) if s.len() < text.len() => CompressOutcome::Compressed {
+                saved_bytes: text.len() - s.len(),
+                text: s,
+                lossy: false,
+                kind: ContentKind::Json,
+            },
+            _ => CompressOutcome::Unchanged,
         }
-        let snapshot = Value::Array(arr);
-        let schema_form = match to_schema_form(&snapshot) {
-            Some(v) => v,
-            None => return CompressOutcome::Unchanged,
-        };
-        let new = match serde_json::to_string(&schema_form) {
-            Ok(s) => s,
-            Err(_) => return CompressOutcome::Unchanged,
-        };
-        // 格式转换(→ csv-schema):即使字节数未减少也视为 Compressed(lossy=false 的格式重构)。
-        // router 的 saved_bytes>0 过滤由调用方 ContentRouter 处理;此处忠实上报实际节省量。
-        let saved = text.len().saturating_sub(new.len());
-        CompressOutcome::Compressed { text: new, saved_bytes: saved.max(1), lossy: false, kind: ContentKind::Json }
     }
+}
+
+/// 解析表格、构建 schema-form JSON 字符串;任一步骤失败返回 None。
+/// detect 与 compress 共用此函数,保证判定一致。
+fn try_build(text: &str) -> Option<String> {
+    let table = parse_table(text)?;
+    let header = &table[0];
+    let mut arr: Vec<Value> = Vec::with_capacity(table.len() - 1);
+    for row in &table[1..] {
+        let mut m = Map::new();
+        for (i, key) in header.iter().enumerate() {
+            m.insert(key.clone(), Value::String(row[i].clone()));
+        }
+        arr.push(Value::Object(m));
+    }
+    let snapshot = Value::Array(arr);
+    let schema_form = to_schema_form(&snapshot)?;
+    serde_json::to_string(&schema_form).ok()
 }
 
 /// 解析 CSV/TSV/Markdown 表格为 Vec<行>(行 = Vec<单元格>),含 header。
