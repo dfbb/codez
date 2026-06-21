@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use codex_api::ResponseEvent;
-use codex_protocol::models::{ContentItem, ResponseItem};
+use codex_protocol::models::{ContentItem, ReasoningItemContent, ResponseItem};
 use codex_protocol::protocol::TokenUsage;
 use serde_json::Value;
 
@@ -37,6 +37,8 @@ struct ToolAcc {
 pub(crate) struct ChatSseState {
     /// 累计文本（用于合成 assistant message）。
     text: String,
+    /// 累计 reasoning_content（thinking 模型的思考流，回传时还给 codex 存住）。
+    reasoning: String,
     /// 本次响应 ID（取第一个 chunk 的 `id` 字段）。
     response_id: Option<String>,
     /// 最后一个 `finish_reason`。
@@ -102,6 +104,22 @@ impl ChatSseState {
             }
         }
 
+        // reasoning_content delta（DeepSeek 等 thinking 模型的思考流）。
+        // 累计后在 finish() 合成 Reasoning 项交还 codex，使其能展示并在下一轮回传
+        // （满足上游「tool_calls 的 assistant 消息必须带 reasoning_content」约束）。
+        if let Some(rc) = delta
+            .and_then(|d| d.get("reasoning_content"))
+            .and_then(Value::as_str)
+        {
+            if !rc.is_empty() {
+                self.reasoning.push_str(rc);
+                out.push(ResponseEvent::ReasoningContentDelta {
+                    delta: rc.to_string(),
+                    content_index: 0,
+                });
+            }
+        }
+
         // tool_calls delta（按 index 聚合）
         if let Some(tcs) = delta
             .and_then(|d| d.get("tool_calls"))
@@ -140,6 +158,20 @@ impl ChatSseState {
     /// 3. `Completed`
     pub(crate) fn finish(&mut self) -> Vec<ResponseEvent> {
         let mut out = Vec::new();
+
+        // 0. Reasoning 项（若有思考流）：放在 FunctionCall / Message 之前，
+        //    使 codex 历史中 Reasoning 紧挨其后的 tool_call，下一轮出站可正确回传。
+        if !self.reasoning.is_empty() {
+            out.push(ResponseEvent::OutputItemDone(ResponseItem::Reasoning {
+                id: None,
+                summary: Vec::new(),
+                content: Some(vec![ReasoningItemContent::ReasoningText {
+                    text: std::mem::take(&mut self.reasoning),
+                }]),
+                encrypted_content: None,
+                metadata: None,
+            }));
+        }
 
         // 1. FunctionCall 完成项
         for (_idx, acc) in std::mem::take(&mut self.tool_calls) {

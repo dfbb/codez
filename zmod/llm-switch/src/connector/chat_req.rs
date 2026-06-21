@@ -31,7 +31,7 @@ use serde_json::{json, Value};
 
 use codex_protocol::models::{
     AgentMessageInputContent, ContentItem, FunctionCallOutputBody,
-    FunctionCallOutputContentItem, FunctionCallOutputPayload, ResponseItem,
+    FunctionCallOutputContentItem, FunctionCallOutputPayload, ReasoningItemContent, ResponseItem,
 };
 
 use crate::connector::{ConnError, EgressCtx};
@@ -57,10 +57,15 @@ pub(crate) fn build_chat_request(
     // call_id 追踪：已见调用集合、待补结果集合
     let mut seen_calls: HashSet<String> = HashSet::new();
     let mut calls_needing_result: HashSet<String> = HashSet::new();
+    // thinking 模型（DeepSeek 等）要求每条带 tool_calls 的 assistant 消息回传时附上
+    // 产生它的 `reasoning_content`，否则上游 400。codex 历史里 Reasoning 项紧挨其后的
+    // FunctionCall，这里缓存最近一次 Reasoning 文本，挂到下一条 assistant tool_calls 上。
+    let mut pending_reasoning: Option<String> = None;
 
     for item in &req.input {
         match item {
             ResponseItem::Message { role, content, .. } => {
+                pending_reasoning = None;
                 messages.push(map_message(role, content)?);
             }
 
@@ -79,8 +84,15 @@ pub(crate) fn build_chat_request(
                 }
                 seen_calls.insert(call_id.clone());
                 calls_needing_result.insert(call_id.clone());
+                // reasoning_content：取缓存的 Reasoning 文本；缺失时占位（thinking 模型
+                // 硬性要求非空，复刻 cc-switch 的 "tool call" 兜底）。
+                let reasoning = pending_reasoning
+                    .take()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| "tool call".to_string());
                 messages.push(json!({
                     "role": "assistant",
+                    "reasoning_content": reasoning,
                     "tool_calls": [{
                         "id": call_id,
                         "type": "function",
@@ -112,8 +124,13 @@ pub(crate) fn build_chat_request(
             }
 
             // ── 出站丢弃（§4.0 / §4.4）────────────────────────────────
-            ResponseItem::Reasoning { .. } => {
-                // Reasoning 历史项出站丢弃，不动本地历史
+            ResponseItem::Reasoning { content, .. } => {
+                // 不再单纯丢弃：缓存 reasoning 文本，挂到紧随其后的 assistant
+                // tool_calls 消息上（thinking 模型回传要求）。本身不产生独立消息，
+                // 也不写入 codex 本地历史（只改请求副本）。
+                if let Some(text) = reasoning_items_to_text(content.as_deref()) {
+                    pending_reasoning = Some(text);
+                }
             }
             ResponseItem::CompactionTrigger { .. } => {
                 // CompactionTrigger 出站丢弃
@@ -215,6 +232,20 @@ pub(crate) fn build_chat_request(
 }
 
 // ── map_message ───────────────────────────────────────────────────────────────
+
+/// 把 Reasoning 项的 content 块拼成纯文本（`ReasoningText` / `Text` 两种变体都取 text）。
+/// 无 content 或全空 → None。
+fn reasoning_items_to_text(content: Option<&[ReasoningItemContent]>) -> Option<String> {
+    let items = content?;
+    let mut text = String::new();
+    for c in items {
+        match c {
+            ReasoningItemContent::ReasoningText { text: t }
+            | ReasoningItemContent::Text { text: t } => text.push_str(t),
+        }
+    }
+    if text.trim().is_empty() { None } else { Some(text) }
+}
 
 /// 把 `Message` 变体的 content 列表转成 Chat 消息。
 /// 图片内容 → 硬失败（§4.9，v1 无能力标志）。

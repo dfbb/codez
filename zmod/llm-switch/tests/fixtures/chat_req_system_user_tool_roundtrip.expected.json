@@ -8,6 +8,7 @@
     { "role": "user", "content": "What is the weather in SF?" },
     {
       "role": "assistant",
+      "reasoning_content": "tool call",
       "tool_calls": [
         {
           "id": "call_weather_1",

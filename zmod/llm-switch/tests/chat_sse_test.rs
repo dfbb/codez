@@ -71,6 +71,29 @@ fn aggregates_tool_call_arguments_by_index() {
 }
 
 #[test]
+fn reasoning_content_delta_aggregates_into_reasoning_item() {
+    // DeepSeek thinking 模型在 delta.reasoning_content 里流式输出思考，
+    // 回程应聚合成 ReasoningContentDelta（展示）+ finish 时一条 Reasoning 项（回传）。
+    let chunks = vec![
+        json!({"id":"r","choices":[{"index":0,"delta":{"reasoning_content":"think "},"finish_reason":null}]}),
+        json!({"id":"r","choices":[{"index":0,"delta":{"reasoning_content":"harder"},"finish_reason":null}]}),
+        json!({"id":"r","choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":"stop"}],
+               "usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}),
+    ];
+    let events = run(&chunks, true).unwrap();
+    // 展示用的 ReasoningContentDelta
+    let rdeltas: Vec<&String> = events.iter().filter_map(|e| match e {
+        ResponseEvent::ReasoningContentDelta { delta, .. } => Some(delta), _ => None }).collect();
+    assert_eq!(rdeltas, vec!["think ", "harder"]);
+    // finish 时合成 Reasoning 项（交还 codex 存住）
+    let reasoning = events.iter().find_map(|e| match e {
+        ResponseEvent::OutputItemDone(ResponseItem::Reasoning { content, .. }) => content.clone(),
+        _ => None }).expect("Reasoning item present");
+    assert!(matches!(&reasoning[0],
+        codex_protocol::models::ReasoningItemContent::ReasoningText { text } if text == "think harder"));
+}
+
+#[test]
 fn missing_id_synthesizes_response_id() {
     let chunks = vec![json!({"choices":[{"index":0,"delta":{"content":"x"},"finish_reason":"stop"}]})];
     let events = run(&chunks, true).unwrap();

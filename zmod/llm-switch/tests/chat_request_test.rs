@@ -344,6 +344,61 @@ fn reasoning_item_is_discarded_silently() {
 }
 
 #[test]
+fn reasoning_before_tool_call_attaches_reasoning_content() {
+    // thinking 模型要求：带 tool_calls 的 assistant 消息须回传产生它的 reasoning_content。
+    let mut req = base_req();
+    req.tools = vec![json!({"type": "function", "name": "f"})];
+    req.tool_choice = "auto".into();
+    req.input = vec![
+        ResponseItem::Reasoning {
+            id: None,
+            summary: vec![],
+            content: Some(vec![codex_protocol::models::ReasoningItemContent::ReasoningText {
+                text: "let me call f".into(),
+            }]),
+            encrypted_content: None,
+            metadata: None,
+        },
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "f".into(),
+            namespace: None,
+            arguments: "{}".into(),
+            call_id: "c1".into(),
+            metadata: None,
+        },
+    ];
+    let v = build(&req, &ctx()).unwrap();
+    let msgs = v["messages"].as_array().unwrap();
+    let asst = msgs.iter().find(|m| m["role"] == "assistant").unwrap();
+    assert_eq!(
+        asst["reasoning_content"], "let me call f",
+        "缓存的 Reasoning 文本应挂到 assistant tool_calls 消息"
+    );
+    assert_eq!(asst["tool_calls"][0]["function"]["name"], "f");
+}
+
+#[test]
+fn tool_call_without_reasoning_gets_placeholder() {
+    // 无前置 Reasoning 时占位 "tool call"，避免上游 400（缺 reasoning_content）。
+    let mut req = base_req();
+    req.tools = vec![json!({"type": "function", "name": "f"})];
+    req.tool_choice = "auto".into();
+    req.input = vec![ResponseItem::FunctionCall {
+        id: None,
+        name: "f".into(),
+        namespace: None,
+        arguments: "{}".into(),
+        call_id: "c1".into(),
+        metadata: None,
+    }];
+    let v = build(&req, &ctx()).unwrap();
+    let msgs = v["messages"].as_array().unwrap();
+    let asst = msgs.iter().find(|m| m["role"] == "assistant").unwrap();
+    assert_eq!(asst["reasoning_content"], "tool call", "缺 reasoning 应占位");
+}
+
+#[test]
 fn compaction_trigger_is_discarded_silently() {
     let mut req = base_req();
     req.input = vec![
