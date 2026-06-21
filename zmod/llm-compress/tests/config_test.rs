@@ -26,9 +26,6 @@ max_depth = 4
 
 [llm_compress.diff]
 context_lines = 1
-
-[llm_compress.log]
-dedup_repeats = false
 "#,
     );
     let cfg = load_from(f.path());
@@ -40,7 +37,6 @@ dedup_repeats = false
     assert_eq!(cfg.json.max_array_items, 7);
     assert_eq!(cfg.json.max_depth, 4);
     assert_eq!(cfg.diff.context_lines, 1);
-    assert!(!cfg.log.dedup_repeats);
 }
 
 #[test]
@@ -70,5 +66,4 @@ fn default_config_is_disabled_with_known_thresholds() {
     assert!(!cfg.enabled);
     assert_eq!(cfg.per_item_min_bytes, 1024);
     assert_eq!(cfg.truncate.tail_lines, 50);
-    assert!(cfg.log.dedup_repeats);
 }

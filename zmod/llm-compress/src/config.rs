@@ -14,6 +14,11 @@ pub struct Config {
     pub json: JsonCfg,
     pub diff: DiffCfg,
     pub log: LogCfg,
+    pub preprocess: PreprocessCfg,
+    pub search: SearchCfg,
+    pub tabular: TabularCfg,
+    pub protect: ProtectCfg,
+    pub ccr: CcrCfg,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -29,6 +34,7 @@ pub struct TruncateCfg {
 pub struct JsonCfg {
     pub max_array_items: usize,
     pub max_depth: usize,
+    pub csv_schema: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -40,7 +46,45 @@ pub struct DiffCfg {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct LogCfg {
-    pub dedup_repeats: bool,
+    pub keep_levels: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct PreprocessCfg {
+    pub strip_progress: bool,
+    pub collapse_blank: bool,
+    pub truncate_line_bytes: usize,
+    pub dedup_consecutive: bool,
+    pub blob_min_bytes: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SearchCfg {
+    pub max_per_file: usize,
+    pub max_files: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct TabularCfg {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ProtectCfg {
+    pub error_max_bytes: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct CcrCfg {
+    pub enabled: bool,
+    pub max_files_per_thread: usize,
+    pub max_thread_bytes: u64,
+    pub max_file_bytes: usize,
 }
 
 impl Default for Config {
@@ -53,6 +97,11 @@ impl Default for Config {
             json: JsonCfg::default(),
             diff: DiffCfg::default(),
             log: LogCfg::default(),
+            preprocess: PreprocessCfg::default(),
+            search: SearchCfg::default(),
+            tabular: TabularCfg::default(),
+            protect: ProtectCfg::default(),
+            ccr: CcrCfg::default(),
         }
     }
 }
@@ -65,7 +114,7 @@ impl Default for TruncateCfg {
 
 impl Default for JsonCfg {
     fn default() -> Self {
-        Self { max_array_items: 20, max_depth: 6 }
+        Self { max_array_items: 20, max_depth: 6, csv_schema: true }
     }
 }
 
@@ -77,13 +126,39 @@ impl Default for DiffCfg {
 
 impl Default for LogCfg {
     fn default() -> Self {
-        Self { dedup_repeats: true }
+        Self { keep_levels: vec!["error".to_string(), "warn".to_string()] }
     }
 }
 
 impl Config {
     pub fn disabled() -> Self {
         Self::default()
+    }
+}
+
+impl Default for PreprocessCfg {
+    fn default() -> Self {
+        Self { strip_progress: true, collapse_blank: true, truncate_line_bytes: 2000, dedup_consecutive: true, blob_min_bytes: 256 }
+    }
+}
+impl Default for SearchCfg {
+    fn default() -> Self {
+        Self { max_per_file: 5, max_files: 15 }
+    }
+}
+impl Default for TabularCfg {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+impl Default for ProtectCfg {
+    fn default() -> Self {
+        Self { error_max_bytes: 8192 }
+    }
+}
+impl Default for CcrCfg {
+    fn default() -> Self {
+        Self { enabled: true, max_files_per_thread: 200, max_thread_bytes: 67_108_864, max_file_bytes: 4_194_304 }
     }
 }
 

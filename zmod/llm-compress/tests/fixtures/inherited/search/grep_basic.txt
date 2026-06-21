@@ -1,0 +1,11 @@
+src/main.rs:10:fn main() {
+src/main.rs:11:    println!("hello world");
+src/main.rs:12:}
+src/lib.rs:5:pub fn add(a: i32, b: i32) -> i32 {
+src/lib.rs:6:    a + b
+src/lib.rs:7:}
+src/lib.rs:20:pub fn subtract(a: i32, b: i32) -> i32 {
+src/lib.rs:21:    a - b
+src/lib.rs:22:}
+tests/test_lib.rs:3:use mylib::add;
+tests/test_lib.rs:7:    assert_eq!(add(2, 3), 5);

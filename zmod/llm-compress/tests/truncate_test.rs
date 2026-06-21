@@ -10,7 +10,7 @@ fn cfg_with(head_lines: usize, tail_lines: usize, max_bytes: usize) -> Config {
 }
 
 fn budget(cfg: &Config) -> Budget<'_> {
-    Budget { cfg }
+    Budget { cfg, cmd: None, query: &[] }
 }
 
 #[test]
@@ -20,8 +20,10 @@ fn name_is_truncate() {
 
 #[test]
 fn detect_is_always_true() {
-    assert!(TruncateCompressor.detect(""));
-    assert!(TruncateCompressor.detect("anything at all"));
+    let cfg = Config::disabled();
+    let b = budget(&cfg);
+    assert!(TruncateCompressor.detect("", &b));
+    assert!(TruncateCompressor.detect("anything at all", &b));
 }
 
 #[test]
@@ -40,7 +42,7 @@ fn large_input_keeps_head_and_tail_with_marker() {
     let lines: Vec<String> = (0..200).map(|i| format!("line{i:04}_payload_xxxxxxxxxxxxxxxxxxxx")).collect();
     let input = lines.join("\n");
     let out = TruncateCompressor.compress(&input, &budget(&cfg));
-    let CompressOutcome::Compressed { text, saved_bytes } = out else {
+    let CompressOutcome::Compressed { text, saved_bytes, .. } = out else {
         panic!("expected Compressed");
     };
     // 头 2 行在;
@@ -82,7 +84,7 @@ fn hard_truncate_does_not_split_utf8() {
     // 多行中文,字节数远超 12。
     let input = "甲乙丙丁\n戊己庚辛\n壬癸子丑\n寅卯辰巳";
     let out = TruncateCompressor.compress(input, &budget(&cfg));
-    let CompressOutcome::Compressed { text, saved_bytes } = out else {
+    let CompressOutcome::Compressed { text, saved_bytes, .. } = out else {
         panic!("expected Compressed");
     };
     // 关键:String 天然保证 UTF-8;若硬截断切坏边界,实现里会 panic 或产出非法字节。
@@ -100,7 +102,7 @@ fn saved_bytes_is_original_minus_new() {
     let lines: Vec<String> = (0..100).map(|i| format!("row{i:03}_{}", "z".repeat(40))).collect();
     let input = lines.join("\n");
     let out = TruncateCompressor.compress(&input, &budget(&cfg));
-    let CompressOutcome::Compressed { text, saved_bytes } = out else {
+    let CompressOutcome::Compressed { text, saved_bytes, .. } = out else {
         panic!("expected Compressed");
     };
     assert_eq!(saved_bytes, input.len() - text.len());
@@ -116,10 +118,24 @@ fn over_byte_limit_triggers_hard_truncate() {
     let big_line_b = "B".repeat(4000);
     let input = format!("{big_line_a}\n{big_line_b}"); // ~8001 字节,2 行
     let out = TruncateCompressor.compress(&input, &budget(&cfg));
-    let CompressOutcome::Compressed { text, saved_bytes } = out else {
+    let CompressOutcome::Compressed { text, saved_bytes, .. } = out else {
         panic!("expected Compressed (byte limit exceeded)");
     };
     assert!(text.contains("[llm-compress: 截断至 max_bytes]"));
     assert!(saved_bytes > 0);
     assert!(text.len() < input.len());
+}
+
+#[test]
+fn truncate_marks_lossy_text_kind() {
+    use codez_llm_compress::router::ContentKind;
+    let cfg = cfg_with(2, 2, 1_000_000);
+    let lines: Vec<String> = (0..200).map(|i| format!("line{i:04}_payload_xxxxxxxxxxxxxxxxxxxx")).collect();
+    let input = lines.join("\n");
+    let out = TruncateCompressor.compress(&input, &budget(&cfg));
+    let CompressOutcome::Compressed { lossy, kind, .. } = out else {
+        panic!("expected Compressed");
+    };
+    assert!(lossy, "截断删内容 → lossy=true");
+    assert_eq!(kind, ContentKind::Text);
 }

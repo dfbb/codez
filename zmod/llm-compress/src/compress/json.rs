@@ -1,14 +1,12 @@
-//! JsonCompressor —— JSON 结构内压缩,绝不破坏 JSON。
-//!
-//! 只认领可被 serde_json 解析的文本;在 Value 结构内部递归抽样长数组、
-//! 裁剪超深子树,占位一律用合法 JSON 值承载;序列化回紧凑 JSON 后再次
-//! parse 校验,失败或无收益则回退原文。
+//! JsonCompressor —— 只做不删内容步骤(连续 RLE 去重 + csv-schema),kind=Json 恒 lossy=false。
+//! detect 内预判:无损压缩后是否仍超 truncate.max_bytes;超则让位 Truncate(spec §5①)。
 
-use crate::config::JsonCfg;
-use crate::router::{Budget, CompressOutcome, Compressor};
+use crate::compress::schema::to_schema_form;
+use crate::router::{Budget, CompressOutcome, Compressor, ContentKind};
 use serde_json::Value;
 
-/// 无状态单元结构。
+const DUP_KEY: &str = "_llm_dup_prev";
+
 pub struct JsonCompressor;
 
 impl Compressor for JsonCompressor {
@@ -16,84 +14,103 @@ impl Compressor for JsonCompressor {
         "json"
     }
 
-    /// 能被 serde_json 解析即认领。
-    fn detect(&self, text: &str) -> bool {
-        serde_json::from_str::<Value>(text).is_ok()
+    /// 让位判据:能 parse 为对象/数组,且无损压缩后体积 ≤ truncate.max_bytes 才认领。
+    /// 否则(含 parse 失败 / 无损压不下来)返回 false,让 Truncate 兜底。
+    fn detect(&self, text: &str, budget: &Budget) -> bool {
+        let value: Value = match serde_json::from_str(text) {
+            Ok(v @ Value::Object(_)) | Ok(v @ Value::Array(_)) => v,
+            _ => return false,
+        };
+        let compressed = lossless_compress(value, budget);
+        match serde_json::to_string(&compressed) {
+            Ok(s) => s.len() <= budget.cfg.truncate.max_bytes,
+            Err(_) => false,
+        }
     }
 
     fn compress(&self, text: &str, budget: &Budget) -> CompressOutcome {
-        // 1. parse(失败 → Unchanged;detect 已保证,这里是防御性回退)。
-        let mut value: Value = match serde_json::from_str(text) {
+        let value: Value = match serde_json::from_str(text) {
             Ok(v) => v,
             Err(_) => return CompressOutcome::Unchanged,
         };
-
-        // 2. 结构内递归压缩。
-        let cfg = &budget.cfg.json;
-        compress_value(&mut value, 0, cfg);
-
-        // 3. 序列化回紧凑 JSON。
-        let new = match serde_json::to_string(&value) {
+        let compressed = lossless_compress(value, budget);
+        let new = match serde_json::to_string(&compressed) {
             Ok(s) => s,
             Err(_) => return CompressOutcome::Unchanged,
         };
-
-        // 4. 校验:产物必须能被重新解析,否则丢弃、回退原文。
+        // 校验产物可 parse(现有不变量)
         if serde_json::from_str::<Value>(&new).is_err() {
             return CompressOutcome::Unchanged;
         }
-
-        // 5. 仅在确有收益时返回 Compressed。
-        let saved_bytes = text.len().saturating_sub(new.len());
-        if saved_bytes > 0 {
-            CompressOutcome::Compressed { text: new, saved_bytes }
+        let saved = text.len().saturating_sub(new.len());
+        if saved > 0 {
+            CompressOutcome::Compressed { text: new, saved_bytes: saved, lossy: false, kind: ContentKind::Json }
         } else {
             CompressOutcome::Unchanged
         }
     }
 }
 
-/// 原地递归压缩一个 Value。
-///
-/// - `depth`:当前节点所在深度(顶层为 0)。
-/// - 超深(`depth > max_depth`)的容器(对象/数组)整体替换为 `"…"`。
-/// - 长数组(`len > max_array_items`)抽样:留头 ceil、留尾 floor,中间插一个 `"…(N more)"`。
-/// - 对象键全保留,逐值递归;数组逐元素递归。标量原样保留。
-fn compress_value(v: &mut Value, depth: usize, cfg: &JsonCfg) {
-    // 超深:仅裁容器,标量留着(替换标量为 "…" 无收益且可能更长)。
-    if depth > cfg.max_depth && (v.is_object() || v.is_array()) {
-        *v = Value::String("…".to_string());
-        return;
-    }
+/// 无损压缩:递归对每个数组先做连续 RLE 去重,再尝试 csv-schema。均不删数据。
+fn lossless_compress(mut value: Value, budget: &Budget) -> Value {
+    transform_value(&mut value, budget);
+    value
+}
 
+fn transform_value(v: &mut Value, budget: &Budget) {
     match v {
         Value::Array(items) => {
-            // 先抽样(如超长),再对保留下来的元素递归(深度 +1)。
-            if items.len() > cfg.max_array_items {
-                let len = items.len();
-                let keep_head = (cfg.max_array_items + 1) / 2; // ceil
-                let keep_tail = cfg.max_array_items / 2; // floor
-                let omitted = len.saturating_sub(keep_head + keep_tail);
-
-                // 取尾段(后 keep_tail 个),再取头段(前 keep_head 个),
-                // 用 [头…] + 占位 + [尾…] 重组。
-                let tail: Vec<Value> = items.split_off(len - keep_tail);
-                items.truncate(keep_head);
-                items.push(Value::String(format!("…({omitted} more)")));
-                items.extend(tail);
-            }
-
+            // 先递归子元素
             for child in items.iter_mut() {
-                // 占位字符串元素也会被这层递归扫到,但它是标量,不受影响。
-                compress_value(child, depth + 1, cfg);
+                transform_value(child, budget);
+            }
+            // 连续 RLE 去重(就地)
+            rle_dedup(items);
+            // csv-schema:整段数组同构 → 替换为 schema 形态
+            if budget.cfg.json.csv_schema {
+                let snapshot = Value::Array(items.clone());
+                if let Some(schema_form) = to_schema_form(&snapshot) {
+                    *v = schema_form;
+                }
             }
         }
         Value::Object(map) => {
             for (_k, child) in map.iter_mut() {
-                compress_value(child, depth + 1, cfg);
+                transform_value(child, budget);
             }
         }
-        // 标量:原样保留。
         _ => {}
     }
+}
+
+/// 连续相邻相等项折叠为:首项 + {"_llm_dup_prev": N}(N=额外重复次数)。
+/// 本身即含 _llm_dup_prev 键的对象不参与折叠(避免占位混淆)。
+fn rle_dedup(items: &mut Vec<Value>) {
+    let mut out: Vec<Value> = Vec::with_capacity(items.len());
+    let mut i = 0;
+    while i < items.len() {
+        let cur = &items[i];
+        if is_dup_marker(cur) {
+            out.push(cur.clone());
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < items.len() && items[j] == *cur && !is_dup_marker(&items[j]) {
+            j += 1;
+        }
+        let extra = j - i - 1; // 额外重复次数
+        out.push(cur.clone());
+        if extra >= 1 {
+            let mut m = serde_json::Map::new();
+            m.insert(DUP_KEY.to_string(), Value::from(extra));
+            out.push(Value::Object(m));
+        }
+        i = j;
+    }
+    *items = out;
+}
+
+fn is_dup_marker(v: &Value) -> bool {
+    v.as_object().is_some_and(|o| o.contains_key(DUP_KEY))
 }

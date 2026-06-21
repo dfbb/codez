@@ -1,7 +1,8 @@
 //! LogCompressor:文本型日志压缩器。
-//! 两步保守压缩:① 连续重复行折叠 ② head/tail 保留。占位为裸文本标记 [llm-compress: …]。
+//! 级别评分保留(删行):保 head/tail + keep_levels + 高分行 + 栈帧,删低价值行。
+//! 占位为裸文本标记 [llm-compress: …]。
 
-use crate::router::{Budget, CompressOutcome, Compressor};
+use crate::router::{Budget, CompressOutcome, Compressor, ContentKind};
 
 /// 识别多行日志 / 栈跟踪文本并做保守压缩。
 pub struct LogCompressor;
@@ -14,7 +15,7 @@ impl Compressor for LogCompressor {
         "log"
     }
 
-    fn detect(&self, text: &str) -> bool {
+    fn detect(&self, text: &str, _budget: &Budget) -> bool {
         let lines: Vec<&str> = text.lines().collect();
         if lines.len() < MIN_LINES {
             return false;
@@ -25,41 +26,28 @@ impl Compressor for LogCompressor {
     fn compress(&self, text: &str, budget: &Budget) -> CompressOutcome {
         let lines: Vec<&str> = text.lines().collect();
 
-        // ① 连续重复行折叠(可选)。
-        let dedup_repeats = budget.cfg.log.dedup_repeats;
-        let after_dedup: Vec<String> = if dedup_repeats {
-            dedup_consecutive(&lines)
-        } else {
-            lines.iter().map(|s| s.to_string()).collect()
-        };
-
-        // dedup 是否产生实质变化:内容比较(行数判据对 count=2 失效)。
-        let dedup_changed = dedup_repeats
-            && (after_dedup.len() != lines.len()
-                || after_dedup.iter().zip(lines.iter()).any(|(a, b)| a.as_str() != *b));
-
-        // ② head/tail 保留。
+        // 级别评分保留(删行):保 head/tail + keep_levels + 高分行 + 栈帧
         let head = budget.cfg.truncate.head_lines;
         let tail = budget.cfg.truncate.tail_lines;
-        let final_lines = head_tail(&after_dedup, head, tail);
+        let lines_owned: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+        let keep_levels = &budget.cfg.log.keep_levels;
+        let (after_score, dropped) = score_keep(&lines_owned, head, tail, keep_levels, budget);
 
-        // head/tail 是否产生了实质截断。
-        let head_tail_changed = final_lines.len() < after_dedup.len();
-
-        // 仅当有实质折叠时才视为压缩,避免尾换行副作用产生假阳性。
-        if dedup_changed || head_tail_changed {
-            let new_text = final_lines.join("\n");
-            let saved = text.len().saturating_sub(new_text.len());
-            if saved > 0 {
-                CompressOutcome::Compressed {
-                    text: new_text,
-                    saved_bytes: saved,
-                }
-            } else {
-                CompressOutcome::Unchanged
-            }
-        } else {
-            CompressOutcome::Unchanged
+        // 无删行 → Unchanged
+        if !dropped {
+            return CompressOutcome::Unchanged;
+        }
+        let new_text = after_score.join("\n");
+        let saved = text.len().saturating_sub(new_text.len());
+        // 防御性:删行后体积理论上必缩小,但保留守卫
+        if saved == 0 {
+            return CompressOutcome::Unchanged;
+        }
+        CompressOutcome::Compressed {
+            text: new_text,
+            saved_bytes: saved,
+            lossy: true,
+            kind: ContentKind::Text,
         }
     }
 }
@@ -153,37 +141,65 @@ fn has_consecutive_repeat(lines: &[&str]) -> bool {
     lines.windows(2).any(|w| w[0] == w[1])
 }
 
-/// 把连续完全相同的行折叠为:该行 + 裸占位 `[llm-compress: 上一行 ×N]`(N≥2)。
-/// N==1 的行原样保留(不加占位)。
-fn dedup_consecutive(lines: &[&str]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::with_capacity(lines.len());
-    let mut i = 0;
-    while i < lines.len() {
-        let cur = lines[i];
-        let mut j = i + 1;
-        while j < lines.len() && lines[j] == cur {
-            j += 1;
-        }
-        let count = j - i; // 该行连续出现的总次数
-        out.push(cur.to_string());
-        if count >= 2 {
-            out.push(format!("[llm-compress: 上一行 ×{count}]"));
-        }
-        i = j;
-    }
-    out
+/// 行是否属于 keep_levels 中的某个级别(大小写不敏感的子串匹配)。
+fn line_has_keep_level(line: &str, keep_levels: &[String]) -> bool {
+    let lower = line.to_lowercase();
+    keep_levels.iter().any(|lvl| lower.contains(lvl.as_str()))
 }
 
-/// head/tail 保留:总行数 > head+tail 时,保留前 head 行 + `[llm-compress: 略 N 行]` + 后 tail 行。
-/// 否则原样返回。
-fn head_tail(lines: &[String], head: usize, tail: usize) -> Vec<String> {
-    if lines.len() <= head + tail {
-        return lines.to_vec();
+/// 级别评分保留:保 head/tail + keep_levels行 + 高分行(≥1.0) + 栈帧;
+/// 丢弃的连续段折叠为 [llm-compress: 略 N 行]。返回 (新行, 是否删了行)。
+fn score_keep(
+    lines: &[String],
+    head: usize,
+    tail: usize,
+    keep_levels: &[String],
+    budget: &Budget,
+) -> (Vec<String>, bool) {
+    let n = lines.len();
+    if n <= head + tail {
+        return (lines.to_vec(), false);
     }
-    let omitted = lines.len() - head - tail;
-    let mut out: Vec<String> = Vec::with_capacity(head + tail + 1);
-    out.extend_from_slice(&lines[..head]);
-    out.push(format!("[llm-compress: 略 {omitted} 行]"));
-    out.extend_from_slice(&lines[lines.len() - tail..]);
-    out
+    let query = budget.query;
+    let mut keep = vec![false; n];
+    // head/tail 必留
+    keep[..head.min(n)].fill(true);
+    keep[n.saturating_sub(tail)..].fill(true);
+    // 必留:[llm-compress: 开头的占位行 + 高分行 + keep_levels行 + 栈帧
+    for (i, line) in lines.iter().enumerate() {
+        if line.starts_with("[llm-compress: ")
+            || crate::score::line_score(line, query) >= 1.0
+            || line_has_keep_level(line, keep_levels)
+            || is_stack_frame(line)
+        {
+            keep[i] = true;
+        }
+    }
+    // 输出,丢弃连续段折叠
+    let mut out: Vec<String> = Vec::new();
+    let mut dropped = false;
+    let mut i = 0;
+    while i < n {
+        if keep[i] {
+            out.push(lines[i].clone());
+            i += 1;
+        } else {
+            let start = i;
+            while i < n && !keep[i] {
+                i += 1;
+            }
+            out.push(format!("[llm-compress: 略 {} 行]", i - start));
+            dropped = true;
+        }
+    }
+    (out, dropped)
+}
+
+/// 栈帧行特征:含 " at " 且其后有 :数字(复用 colon_then_digit)。
+fn is_stack_frame(line: &str) -> bool {
+    if let Some(pos) = line.find(" at ") {
+        colon_then_digit(&line[pos + 4..])
+    } else {
+        false
+    }
 }

@@ -1,10 +1,16 @@
 //! codez-llm-compress:在 codex LLM 请求边界压缩请求。
-//! 入口 transform() 在 Task 08 加入;本任务先建 config 地基。
+//! 入口 transform() 接线全部编排链:命令识别→保护门→预处理→路由压缩→CCR挂载→体积闸门。
 
+pub mod ccr;
+pub mod command;
 pub mod config;
+pub mod query;
 pub mod router;
+pub mod score;
 pub mod compress;
 pub mod stats;
+pub mod protect;
+pub mod preprocess;
 
 /// 是否启用压缩(读 ~/.codex/config-zmod.toml 的 [llm_compress].enabled)。
 pub fn enabled() -> bool {
@@ -17,16 +23,18 @@ use codex_protocol::models::{
     FunctionCallOutputBody, FunctionCallOutputContentItem, ResponseItem,
 };
 
-use crate::compress::{
-    diff::DiffCompressor, json::JsonCompressor, log::LogCompressor, truncate::TruncateCompressor,
-};
-use crate::router::{Budget, ContentRouter};
+use crate::router::{Budget, ContentKind, ContentRouter};
 
-/// 装配四压缩器,固定优先级 Json → Diff → Log → Truncate(Truncate 兜底)。
 fn build_router() -> ContentRouter {
+    use crate::compress::{
+        diff::DiffCompressor, json::JsonCompressor, log::LogCompressor,
+        search::SearchCompressor, tabular::TabularCompressor, truncate::TruncateCompressor,
+    };
     ContentRouter::new(vec![
         Box::new(JsonCompressor),
+        Box::new(SearchCompressor),
         Box::new(DiffCompressor),
+        Box::new(TabularCompressor),
         Box::new(LogCompressor),
         Box::new(TruncateCompressor),
     ])
@@ -36,68 +44,107 @@ fn build_router() -> ContentRouter {
 /// fail-open:任何环节出问题都退回原文,绝不阻断请求(返回 () 而非 Result)。
 pub fn transform(request: &mut ResponsesApiRequest, _api_provider: &ApiProvider, queryid: &str) {
     let cfg = config::load();
-
-    // Layer 0:开关
     if !cfg.enabled {
         return;
     }
+    // 一次性请求上下文
+    let ctx = crate::ccr::RequestCtx {
+        queryid,
+        query_terms: crate::query::extract(request),
+        cmd_index: crate::command::index(request),
+        ccr: std::cell::RefCell::new(crate::ccr::CcrRegistry::new()),
+    };
+    let router = build_router();
 
-    // Layer 0:预算门——input 文本总量低于 min_total_bytes 不折腾
     let total_before = total_text_bytes(&request.input);
     if total_before < cfg.min_total_bytes {
         return;
     }
-
-    let router = build_router();
-    let budget = Budget { cfg: &cfg };
-
-    // Layer 1:遍历 input,只处理两个工具输出变体,逐文本片段压缩
     for item in request.input.iter_mut() {
-        compress_item(item, &router, &budget, cfg.per_item_min_bytes);
+        compress_item(item, &ctx, &router, &cfg);
     }
-
-    // 出口:整体确有压缩才写日志
     let total_after = total_text_bytes(&request.input);
     if total_after < total_before {
         stats::log_compression(queryid, total_before, total_after);
     }
 }
 
-/// 对单个 ResponseItem:仅 FunctionCallOutput / CustomToolCallOutput 的 body 文本被压缩。
 fn compress_item(
     item: &mut ResponseItem,
+    ctx: &crate::ccr::RequestCtx,
     router: &ContentRouter,
-    budget: &Budget,
-    per_item_min_bytes: usize,
+    cfg: &config::Config,
 ) {
+    let call_id = match item {
+        ResponseItem::FunctionCallOutput { call_id, .. } => call_id.clone(),
+        ResponseItem::CustomToolCallOutput { call_id, .. } => call_id.clone(),
+        _ => return,
+    };
     let body = match item {
         ResponseItem::FunctionCallOutput { output, .. } => &mut output.body,
         ResponseItem::CustomToolCallOutput { output, .. } => &mut output.body,
-        _ => return, // 其它变体一律不动
+        _ => return,
     };
-
     match body {
-        FunctionCallOutputBody::Text(s) => {
-            compress_in_place(s, router, budget, per_item_min_bytes);
-        }
+        FunctionCallOutputBody::Text(s) => compress_in_place(s, ctx, router, cfg, &call_id),
         FunctionCallOutputBody::ContentItems(items) => {
             for ci in items.iter_mut() {
-                // 仅压 InputText.text;InputImage / EncryptedContent 不读不改
                 if let FunctionCallOutputContentItem::InputText { text } = ci {
-                    compress_in_place(text, router, budget, per_item_min_bytes);
+                    compress_in_place(text, ctx, router, cfg, &call_id);
                 }
             }
         }
     }
 }
 
-/// 单个文本片段:低于阈值跳过;否则经 router 压缩,成功则原地替换。
-fn compress_in_place(s: &mut String, router: &ContentRouter, budget: &Budget, min_bytes: usize) {
-    if s.len() < min_bytes {
+fn compress_in_place(
+    s: &mut String,
+    ctx: &crate::ccr::RequestCtx,
+    router: &ContentRouter,
+    cfg: &config::Config,
+    call_id: &str,
+) {
+    if s.len() < cfg.per_item_min_bytes {
         return;
     }
-    if let Some(new) = router.compress_text(s, budget) {
-        *s = new;
+    let cmd = ctx.cmd_index.get(call_id);
+    // ② 保护门:命中即整段逐字节不变
+    if crate::protect::should_protect(s, cmd, cfg) {
+        return;
+    }
+    // ③ 预处理
+    let (pre, pre_lossy) = crate::preprocess::run(s, &cfg.preprocess);
+    // ④⑤ 路由压缩
+    let budget = Budget { cfg, cmd, query: &ctx.query_terms };
+    let mut candidate_is_json = false;
+    let candidate = match router.compress_text(&pre, &budget) {
+        Some((new, comp_lossy, kind)) => {
+            // kind=Json ⟹ 产物是合法 JSON,绝不追加 CCR(§4.0/§4.7 铁律)。
+            // pre_lossy 仅表示预处理删了内容;但若路由器产出 JSON,写回 JSON
+            // 不可再追加"[llm-compress: 原文 /path]"——那会破坏 JSON 合法性。
+            // 规则:只有 kind==Text 且(pre_lossy 或 comp_lossy)才 attach CCR。
+            if kind == ContentKind::Json {
+                candidate_is_json = true;
+                new
+            } else if pre_lossy || comp_lossy {
+                crate::ccr::attach(new, s, ctx, call_id, &cfg.ccr)
+            } else {
+                new
+            }
+        }
+        None => {
+            if pre_lossy {
+                crate::ccr::attach(pre, s, ctx, call_id, &cfg.ccr)
+            } else {
+                pre
+            }
+        }
+    };
+    // ⑥ 最终写回闸门(体积 + JSON 保卫:Json 产物必须仍可 parse)
+    let json_valid = !candidate_is_json
+        || serde_json::from_str::<serde_json::Value>(&candidate).is_ok();
+    if candidate.len() <= s.len() && json_valid {
+        *s = candidate;
     }
 }
 

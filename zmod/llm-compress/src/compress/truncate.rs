@@ -2,7 +2,7 @@
 //! 在 UTF-8 字符边界硬截断。detect() 永真,作为 ContentRouter 链尾兜底。
 //! 不可逆但保守:小输入直接 Unchanged。
 
-use crate::router::{Budget, CompressOutcome, Compressor};
+use crate::router::{Budget, CompressOutcome, Compressor, ContentKind};
 
 /// 兜底文本压缩器。无状态,单元结构体。
 pub struct TruncateCompressor;
@@ -13,7 +13,7 @@ impl Compressor for TruncateCompressor {
     }
 
     /// 永真:认领一切内容(链尾兜底)。
-    fn detect(&self, _text: &str) -> bool {
+    fn detect(&self, _text: &str, _budget: &Budget) -> bool {
         true
     }
 
@@ -46,7 +46,7 @@ impl Compressor for TruncateCompressor {
         // ⑥ 计算 saved_bytes;须确有缩减。
         if result.len() < original_len {
             let saved_bytes = original_len - result.len();
-            CompressOutcome::Compressed { text: result, saved_bytes }
+            CompressOutcome::Compressed { text: result, saved_bytes, lossy: true, kind: ContentKind::Text }
         } else {
             CompressOutcome::Unchanged
         }
