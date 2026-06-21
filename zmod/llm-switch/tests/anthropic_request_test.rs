@@ -212,7 +212,7 @@ fn tool_output_success_no_is_error_field() {
 }
 
 #[test]
-fn tool_result_image_content_hard_fails() {
+fn tool_result_image_content_becomes_image_block() {
     let mut req = base_req();
     req.input = vec![
         ResponseItem::FunctionCall {
@@ -228,8 +228,11 @@ fn tool_result_image_content_hard_fails() {
             call_id: "c".into(),
             output: FunctionCallOutputPayload {
                 body: FunctionCallOutputBody::ContentItems(vec![
+                    FunctionCallOutputContentItem::InputText {
+                        text: "见图：".into(),
+                    },
                     FunctionCallOutputContentItem::InputImage {
-                        image_url: "data:...".into(),
+                        image_url: "data:image/png;base64,iVBORw0KGgo=".into(),
                         detail: None,
                     },
                 ]),
@@ -238,10 +241,15 @@ fn tool_result_image_content_hard_fails() {
             metadata: None,
         },
     ];
-    assert!(
-        build(&req, &ctx()).is_err(),
-        "tool_result 含图片应硬失败（§4.9）"
-    );
+    let v = build(&req, &ctx()).expect("含图片的 tool_result 应翻译成功");
+    let tr = find_block(&v, "tool_result").expect("tool_result present");
+    let content = tr["content"].as_array().expect("含图片时 content 应为 block 数组");
+    assert_eq!(content[0]["type"], "text");
+    assert_eq!(content[0]["text"], "见图：");
+    assert_eq!(content[1]["type"], "image");
+    assert_eq!(content[1]["source"]["type"], "base64");
+    assert_eq!(content[1]["source"]["media_type"], "image/png");
+    assert_eq!(content[1]["source"]["data"], "iVBORw0KGgo=");
 }
 
 #[test]
@@ -327,6 +335,39 @@ fn non_function_tool_definition_hard_fails() {
         build(&req, &ctx()).is_err(),
         "非 function 工具类型应硬失败（§4.0b）"
     );
+}
+
+#[test]
+fn web_search_tool_becomes_anthropic_server_tool() {
+    let mut req = base_req();
+    // codex 的 web_search 托管工具序列化形态（含 Responses 侧参数，应被丢弃）
+    req.tools = vec![json!({
+        "type": "web_search",
+        "external_web_access": true,
+    })];
+    let v = build(&req, &ctx()).expect("web_search 工具应翻译成功");
+    let ws = v["tools"]
+        .as_array()
+        .and_then(|arr| arr.iter().find(|t| t["type"] == "web_search_20250305"))
+        .expect("应有 web_search_20250305 server tool");
+    assert_eq!(ws["name"], "web_search");
+    // Responses 侧参数不应泄漏到 Anthropic 工具定义
+    assert_eq!(ws.get("external_web_access"), None);
+}
+
+#[test]
+fn function_and_web_search_tools_coexist() {
+    let mut req = base_req();
+    req.tools = vec![
+        json!({"type":"function","name":"f","parameters":{"type":"object"}}),
+        json!({"type":"web_search"}),
+    ];
+    let v = build(&req, &ctx()).unwrap();
+    let tools = v["tools"].as_array().expect("tools array");
+    assert_eq!(tools.len(), 2);
+    assert_eq!(tools[0]["name"], "f");
+    assert_eq!(tools[0].get("type"), None, "function 工具无顶层 type");
+    assert_eq!(tools[1]["type"], "web_search_20250305");
 }
 
 // ============================================================
@@ -474,13 +515,52 @@ fn namespaced_function_call_hard_fails() {
 }
 
 #[test]
-fn input_image_hard_fails() {
+fn input_image_base64_becomes_image_block() {
     let mut req = base_req();
     req.input = vec![ResponseItem::Message {
         id: None,
         role: "user".into(),
         content: vec![ContentItem::InputImage {
-            image_url: "data:...".into(),
+            image_url: "data:image/jpeg;base64,/9j/4AAQ".into(),
+            detail: None,
+        }],
+        phase: None,
+        metadata: None,
+    }];
+    let v = build(&req, &ctx()).expect("base64 图片输入应翻译成功");
+    let img = find_block(&v, "image").expect("image block present");
+    assert_eq!(img["source"]["type"], "base64");
+    assert_eq!(img["source"]["media_type"], "image/jpeg");
+    assert_eq!(img["source"]["data"], "/9j/4AAQ");
+}
+
+#[test]
+fn input_image_url_becomes_image_block() {
+    let mut req = base_req();
+    req.input = vec![ResponseItem::Message {
+        id: None,
+        role: "user".into(),
+        content: vec![ContentItem::InputImage {
+            image_url: "https://example.com/cat.png".into(),
+            detail: None,
+        }],
+        phase: None,
+        metadata: None,
+    }];
+    let v = build(&req, &ctx()).expect("URL 图片输入应翻译成功");
+    let img = find_block(&v, "image").expect("image block present");
+    assert_eq!(img["source"]["type"], "url");
+    assert_eq!(img["source"]["url"], "https://example.com/cat.png");
+}
+
+#[test]
+fn input_image_malformed_hard_fails() {
+    let mut req = base_req();
+    req.input = vec![ResponseItem::Message {
+        id: None,
+        role: "user".into(),
+        content: vec![ContentItem::InputImage {
+            image_url: "ftp://nope".into(),
             detail: None,
         }],
         phase: None,
@@ -488,7 +568,7 @@ fn input_image_hard_fails() {
     }];
     assert!(
         build(&req, &ctx()).is_err(),
-        "图片输入应硬失败（§4.9）"
+        "无法识别的 image_url 形态应硬失败"
     );
 }
 

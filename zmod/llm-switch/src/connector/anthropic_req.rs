@@ -11,18 +11,19 @@
 //! - `max_tokens` 必填，用 default_max_tokens 兜底（缺省 4096）
 //! - `parallel_tool_calls==false` → `tool_choice.disable_parallel_tool_use=true`
 //! - 无 tool 消息扁平重排（content block 按回合归组；连续同 role block 合并）
-//! - 工具定义：`{name, description, input_schema}` 格式（无顶层 type 字段）
+//! - 工具定义：`{name, description, input_schema}` 格式（无顶层 type 字段）；
+//!   `web_search` 工具 → Anthropic 原生 `web_search_20250305` server tool
 //!
 //! # Step 0 复用的类型（Task 04 钉死）
 //!
 //! ## ContentItem
 //! - `InputText { text: String }`
-//! - `InputImage { image_url: String, detail: Option<ImageDetail> }` → 硬失败
+//! - `InputImage { image_url: String, detail: Option<ImageDetail> }` → image content block（识图）
 //! - `OutputText { text: String }`
 //!
 //! ## FunctionCallOutputContentItem
 //! - `InputText { text: String }`
-//! - `InputImage { .. }` → 硬失败
+//! - `InputImage { .. }` → image content block（识图）
 //! - `EncryptedContent { .. }` → 硬失败
 //!
 //! ## FunctionCallOutputBody
@@ -254,15 +255,50 @@ fn push_block(role: &str, block: Value, turns: &mut Vec<(String, Vec<Value>)>) {
 // ── content_item_to_block ──────────────────────────────────────────────────────
 
 /// 把 `ContentItem` 转成 Anthropic content block。
-/// 图片 → 硬失败（§4.9，v1 无能力判定标志）。
+/// 图片 → Anthropic image content block（识图，§4.9）。
 fn content_item_to_block(c: &ContentItem) -> Result<Value, ConnError> {
     match c {
         ContentItem::InputText { text } | ContentItem::OutputText { text } => {
             Ok(json!({"type": "text", "text": text}))
         }
-        ContentItem::InputImage { .. } => Err(ConnError::HardFail(
-            "图片输入在 v1 anthropic connector 中不支持（无能力判定标志）".into(),
-        )),
+        ContentItem::InputImage { image_url, .. } => image_block(image_url),
+    }
+}
+
+/// 把 codex 的 `image_url`（data URL 或 http(s) URL）转成 Anthropic image
+/// content block。`detail` 字段 Anthropic 无对应字段，丢弃（分辨率由服务端自动处理）。
+/// - `data:<media_type>;base64,<data>` → `source.type = base64`
+/// - `http(s)://...` → `source.type = url`
+/// - 其他形态 → 硬失败（无法表达为 Anthropic image source）
+fn image_block(image_url: &str) -> Result<Value, ConnError> {
+    if let Some(rest) = image_url.strip_prefix("data:") {
+        // data:<media_type>;base64,<data>
+        let (media_type, data) = rest.split_once(";base64,").ok_or_else(|| {
+            ConnError::HardFail(
+                "图片 data URL 非 base64 编码，anthropic connector 无法翻译".into(),
+            )
+        })?;
+        Ok(json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": data,
+            }
+        }))
+    } else if image_url.starts_with("http://") || image_url.starts_with("https://") {
+        Ok(json!({
+            "type": "image",
+            "source": {
+                "type": "url",
+                "url": image_url,
+            }
+        }))
+    } else {
+        Err(ConnError::HardFail(format!(
+            "图片 image_url 形态无法翻译为 Anthropic image source: {}",
+            &image_url[..image_url.len().min(32)]
+        )))
     }
 }
 
@@ -270,22 +306,20 @@ fn content_item_to_block(c: &ContentItem) -> Result<Value, ConnError> {
 
 /// 把 `FunctionCallOutput` 转成 Anthropic tool_result content block。
 /// - `success == Some(false)` → `is_error: true`（Anthropic 原生字段，§4.6）
-/// - ContentItems 含图片/加密 → 硬失败
+/// - ContentItems 含图片 → 翻译为 image content block；纯文本仍用字符串形式
 fn tool_result_block(
     call_id: &str,
     output: &FunctionCallOutputPayload,
 ) -> Result<Value, ConnError> {
-    let content_text = match &output.body {
-        FunctionCallOutputBody::Text(t) => t.clone(),
-        FunctionCallOutputBody::ContentItems(items) => {
-            tool_result_items_to_text(items)?
-        }
+    let content = match &output.body {
+        FunctionCallOutputBody::Text(t) => Value::String(t.clone()),
+        FunctionCallOutputBody::ContentItems(items) => tool_result_items_to_content(items)?,
     };
 
     let mut block = json!({
         "type": "tool_result",
         "tool_use_id": call_id,
-        "content": content_text,
+        "content": content,
     });
 
     if output.success == Some(false) {
@@ -295,32 +329,52 @@ fn tool_result_block(
     Ok(block)
 }
 
-// ── tool_result_items_to_text ──────────────────────────────────────────────────
+// ── tool_result_items_to_content ────────────────────────────────────────────────
 
-/// 把 `FunctionCallOutputContentItem` 列表转成纯文本。
-/// 遇到图片或加密内容 → 硬失败（§4.6）。
-fn tool_result_items_to_text(
+/// 把 `FunctionCallOutputContentItem` 列表转成 Anthropic tool_result content。
+/// - 全为文本 → 合并为单个字符串（保持原 v1 行为）
+/// - 含图片 → 返回 content block 数组（text / image 块，识图）
+/// - 加密内容 → 硬失败（§4.6）
+fn tool_result_items_to_content(
     items: &[FunctionCallOutputContentItem],
-) -> Result<String, ConnError> {
-    let mut text = String::new();
+) -> Result<Value, ConnError> {
+    let has_image = items
+        .iter()
+        .any(|i| matches!(i, FunctionCallOutputContentItem::InputImage { .. }));
+
+    if !has_image {
+        let mut text = String::new();
+        for item in items {
+            match item {
+                FunctionCallOutputContentItem::InputText { text: t } => text.push_str(t),
+                FunctionCallOutputContentItem::EncryptedContent { .. } => {
+                    return Err(ConnError::HardFail(
+                        "工具结果含加密内容（EncryptedContent），anthropic connector 不支持".into(),
+                    ));
+                }
+                FunctionCallOutputContentItem::InputImage { .. } => unreachable!(),
+            }
+        }
+        return Ok(Value::String(text));
+    }
+
+    let mut blocks = Vec::new();
     for item in items {
         match item {
             FunctionCallOutputContentItem::InputText { text: t } => {
-                text.push_str(t);
+                blocks.push(json!({"type": "text", "text": t}));
             }
-            FunctionCallOutputContentItem::InputImage { .. } => {
-                return Err(ConnError::HardFail(
-                    "工具结果含图片内容（InputImage），v1 anthropic connector 不支持".into(),
-                ));
+            FunctionCallOutputContentItem::InputImage { image_url, .. } => {
+                blocks.push(image_block(image_url)?);
             }
             FunctionCallOutputContentItem::EncryptedContent { .. } => {
                 return Err(ConnError::HardFail(
-                    "工具结果含加密内容（EncryptedContent），v1 anthropic connector 不支持".into(),
+                    "工具结果含加密内容（EncryptedContent），anthropic connector 不支持".into(),
                 ));
             }
         }
     }
-    Ok(text)
+    Ok(Value::Array(blocks))
 }
 
 // ── map_tools ─────────────────────────────────────────────────────────────────
@@ -328,7 +382,9 @@ fn tool_result_items_to_text(
 /// 把工具定义列表从 Responses 格式转成 Anthropic Messages 格式。
 ///
 /// Anthropic 工具格式：`{name, description, input_schema}` — 无顶层 `type` 字段。
-/// v1 只支持标准 `function` 类型；其他类型 → 硬失败（§4.0b）。
+/// 标准 `function` → Anthropic function 工具；`web_search` → Anthropic 原生
+/// `web_search_20250305` server tool（codex 侧能力门控对 anthropic provider 放开）。
+/// 其他类型 → 硬失败（§4.0b）。
 fn map_tools(tools: &[Value]) -> Result<Option<Vec<Value>>, ConnError> {
     if tools.is_empty() {
         return Ok(None);
@@ -353,9 +409,18 @@ fn map_tools(tools: &[Value]) -> Result<Option<Vec<Value>>, ConnError> {
                 }
                 out.push(tool);
             }
+            // codex 的 web_search 托管工具 → Anthropic 原生 server tool。
+            // Responses 侧的 external_web_access / filters / user_location 等参数
+            // 与 Anthropic 不对应，丢弃；仅声明类型与名字，按 Anthropic 默认行为运行。
+            Some("web_search") => {
+                out.push(json!({
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                }));
+            }
             other => {
                 return Err(ConnError::HardFail(format!(
-                    "工具定义类型 {:?} 在 v1 anthropic connector 中不支持（仅支持标准 function）",
+                    "工具定义类型 {:?} 在 anthropic connector 中不支持（仅支持 function / web_search）",
                     other
                 )));
             }

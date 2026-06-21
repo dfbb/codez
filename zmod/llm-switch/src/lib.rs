@@ -253,6 +253,21 @@ pub fn suppress_hosted_tools(model_provider_id: &str) -> bool {
     suppress_hosted_tools_in(loaded(), model_provider_id)
 }
 
+fn allow_anthropic_web_search_in(cfg: &Config, model_provider_id: &str) -> bool {
+    route_in(cfg, model_provider_id)
+        .is_some_and(|rt| rt.cfg.connector == Connector::Anthropic)
+}
+
+/// codex 侧能力门控用:即便 `suppress_hosted_tools` 为真(captype=chat),只要
+/// 该 provider 走 anthropic 连接器,就允许 codex 发出 web_search 托管工具——
+/// anthropic 连接器会把它翻译成 Anthropic 原生 `web_search_20250305` server tool。
+/// 仅放开 web_search;namespace / image_generation 仍随 suppress 关闭(Anthropic
+/// 不支持图片生成,namespace 函数调用 v1 连接器无法表达)。
+/// 非 anthropic 连接器 / 未接管 → false(过滤行为不变)。
+pub fn allow_anthropic_web_search(model_provider_id: &str) -> bool {
+    allow_anthropic_web_search_in(loaded(), model_provider_id)
+}
+
 fn context_window_in(cfg: &Config, model_provider_id: &str) -> Option<i64> {
     route_in(cfg, model_provider_id).and_then(|rt| rt.cfg.context_window)
 }
@@ -305,6 +320,23 @@ mod tests {
     fn unrouted_provider_never_suppresses() {
         let cfg = load_config_from_str("[llm-switch]\nenabled=true\n[llm-switch.providers.x]\nconnector=\"chat\"\nauth=\"bearer\"\n", false).unwrap();
         assert!(!suppress_hosted_tools_in(&cfg, "unknown"));
+    }
+    #[test]
+    fn anthropic_connector_allows_web_search_even_when_chat() {
+        // captype 缺省 chat → suppress 为真,但 anthropic 连接器仍放开 web_search
+        let cfg = load_config_from_str("[llm-switch]\nenabled=true\n[llm-switch.providers.x]\nconnector=\"anthropic\"\nauth=\"x-api-key\"\n", false).unwrap();
+        assert!(suppress_hosted_tools_in(&cfg, "x"));
+        assert!(allow_anthropic_web_search_in(&cfg, "x"));
+    }
+    #[test]
+    fn chat_connector_never_allows_web_search() {
+        let cfg = load_config_from_str("[llm-switch]\nenabled=true\n[llm-switch.providers.x]\nconnector=\"chat\"\nauth=\"bearer\"\n", false).unwrap();
+        assert!(!allow_anthropic_web_search_in(&cfg, "x"));
+    }
+    #[test]
+    fn unrouted_provider_never_allows_web_search() {
+        let cfg = load_config_from_str("[llm-switch]\nenabled=true\n[llm-switch.providers.x]\nconnector=\"anthropic\"\nauth=\"x-api-key\"\n", false).unwrap();
+        assert!(!allow_anthropic_web_search_in(&cfg, "unknown"));
     }
     #[test]
     fn context_window_read_when_configured() {

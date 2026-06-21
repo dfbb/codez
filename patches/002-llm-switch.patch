@@ -172,7 +172,7 @@ index af7acf17a..9fffb9e77 100644
          .then_some(turn_context.config.web_search_mode.value());
      let web_search_config = web_search_mode
          .as_ref()
-@@ -337,7 +337,26 @@ pub(crate) fn tool_suggest_enabled(turn_context: &TurnContext) -> bool {
+@@ -337,7 +337,30 @@ pub(crate) fn tool_suggest_enabled(turn_context: &TurnContext) -> bool {
  }
  
  fn namespace_tools_enabled(turn_context: &TurnContext) -> bool {
@@ -193,7 +193,11 @@ index af7acf17a..9fffb9e77 100644
 +        return codex_model_provider::ProviderCapabilities {
 +            namespace_tools: false,
 +            image_generation: false,
-+            web_search: false,
++            // anthropic 连接器能把 web_search 翻译成 Anthropic 原生 server tool，
++            // 故对走 anthropic 连接器的 provider 放开（其余仍随 suppress 关闭）。
++            web_search: codez_llm_switch::allow_anthropic_web_search(
++                &turn_context.config.model_provider_id,
++            ),
 +        };
 +    }
 +    turn_context.provider.capabilities()

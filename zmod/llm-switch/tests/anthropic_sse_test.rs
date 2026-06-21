@@ -114,6 +114,51 @@ fn tool_use_aggregates_partial_json_to_arguments_string() {
 }
 
 #[test]
+fn web_search_server_tool_blocks_are_ignored_text_flows_through() {
+    // Anthropic 在服务端执行 web_search,流回 server_tool_use + web_search_tool_result
+    // content block(type 既非 text 也非 tool_use)。connector 应忽略它们,不产生
+    // 多余 FunctionCall,模型基于检索结果的最终文本正常透传。
+    let events = vec![
+        json!({"type":"message_start","message":{"id":"msg_ws","usage":{"input_tokens":10}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"rust\"}"}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[{"type":"web_search_result","url":"https://rust-lang.org","title":"Rust"}]}}),
+        json!({"type":"content_block_stop","index":1}),
+        json!({"type":"content_block_start","index":2,"content_block":{"type":"text"}}),
+        json!({"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Rust 是一门系统语言。"}}),
+        json!({"type":"content_block_stop","index":2}),
+        json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":8}}),
+        json!({"type":"message_stop"}),
+    ];
+    let out = run(&events, true).unwrap();
+
+    // 不应产生任何 FunctionCall(server tool 由 Anthropic 侧执行,不回传 codex)
+    let has_fc = out.iter().any(|e| {
+        matches!(
+            e,
+            ResponseEvent::OutputItemDone(ResponseItem::FunctionCall { .. })
+        )
+    });
+    assert!(!has_fc, "web_search server tool 不应产生 FunctionCall 项");
+
+    // 模型最终文本正常合成 assistant Message
+    let msg_text = out
+        .iter()
+        .find_map(|e| match e {
+            ResponseEvent::OutputItemDone(ResponseItem::Message { content, .. }) => {
+                content.iter().find_map(|c| match c {
+                    ContentItem::OutputText { text } => Some(text.clone()),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .expect("应有 assistant Message");
+    assert_eq!(msg_text, "Rust 是一门系统语言。");
+}
+
+#[test]
 fn max_tokens_stop_reason_maps_end_turn_to_none() {
     // 截断（max_tokens）既非模型主动结束也非工具调用 → end_turn 三态取 None。
     let events = vec![

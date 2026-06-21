@@ -36,12 +36,21 @@ codex (Responses) ──run()──▶ ① 变换层(v1 直通) ──▶ ② Co
 
 v1 **只支持标准 `function` 工具**与纯文本对话。下列情形连接器一律**硬失败**返回 `ApiError`（绝不静默丢、绝不强译成函数）：
 
-- 非标准工具：`namespace` / `custom` / freeform / `tool_search` / `web_search` / `image_generation` 等工具定义或对应历史项。
-- 图片输入 / 工具图片输出（无能力判定字段，不猜测）。
+- 非标准工具：`namespace` / `custom` / freeform / `tool_search` / `image_generation` 等工具定义或对应历史项。
 - 加密内容：`EncryptedContent` / `Compaction` / `ContextCompaction`。
 - 目标协议无法等价表达的强制 `tool_choice`。
 
+> **anthropic 连接器的额外能力（仅 `connector = "anthropic"`）**：Anthropic Messages API 原生支持联网搜索与图片识别，故 anthropic 连接器对这两项不再硬失败、而是翻译：
+>
+> - **web_search**：codex 的 `{"type":"web_search"}` 托管工具 → Anthropic 原生 `{"type":"web_search_20250305","name":"web_search"}` server tool（Responses 侧的 `external_web_access`/`filters`/`user_location` 等参数与 Anthropic 不对应，丢弃）。该 server tool 由 Anthropic 服务端执行并流回 `server_tool_use` / `web_search_tool_result` content block，连接器在 SSE 回程忽略它们（不产生多余 `FunctionCall`），模型基于检索结果的最终文本正常透传。**无需 anthropic-beta header**。
+> - **图片识别（识图）**：`InputImage { image_url }`（用户消息或工具结果里）→ Anthropic image content block。`data:<media_type>;base64,<data>` → `source.type=base64`；`http(s)://...` → `source.type=url`；其他形态仍硬失败。`detail` 字段丢弃（Anthropic 无对应字段，分辨率由服务端自动处理）。Anthropic **不支持**图片生成（`image_generation`），该能力对 anthropic 仍关闭。
+> - **tool_search 暂不支持**：codex 的 `tool_search` 是本地执行器，与 Anthropic 服务端的 `tool_search_tool_*` + `defer_loading` 机制不兼容，强行翻译会得到不工作的工具，故 anthropic 连接器对 codex `tool_search` 仍按硬失败处理。
+>
+> chat 连接器与未接管 provider 的过滤行为完全不变（图片输入 / web_search 等仍硬失败）。
+
 > **托管工具的源头降级**：codex 默认 `namespace_tools` / `web_search` / `image_generation` 能力均为 `true`，会把多智能体/协作、联网搜索、图片生成等工具打包进 Responses 请求（`{"type":"namespace"}` / `{"type":"web_search"}` 等），撞上面的硬失败。为此 `002-llm-switch.patch` 在 `core/src/tools/spec_plan.rs` 加了 `provider_capabilities()` 包装——当被接管的 provider 配 `captype = "chat"`（缺省）时按「无任何托管能力」处理（三项能力全 `false`），复用 codex 原生的能力门控从源头不产生这些托管工具。连接器里的硬失败保留作兜底安全网。因此实跑标准第三方 provider 时**无需**再手动关多智能体 / 搜索 / 图片等特性。
+>
+> **例外——anthropic 连接器放开 web_search**：走 `connector = "anthropic"` 的 provider 即便 `captype = "chat"`（缺省 suppress），`provider_capabilities()` 仍把 `web_search` 设为 `true`（其余 `namespace_tools` / `image_generation` 仍关）——因为 anthropic 连接器能把 web_search 翻译成 Anthropic 原生 server tool。判定见 `codez_llm_switch::allow_anthropic_web_search()`。chat 连接器与未接管 provider 不受影响。
 >
 > 若某上游出口仍走 Responses 协议、能自行处理这些托管工具，给它配 `captype = "response"` 即可透传 codex 原生能力，不做屏蔽。
 
