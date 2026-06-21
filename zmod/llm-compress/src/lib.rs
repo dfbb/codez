@@ -3,7 +3,9 @@
 
 pub mod command;
 pub mod config;
+pub mod query;
 pub mod router;
+pub mod score;
 pub mod compress;
 pub mod stats;
 
