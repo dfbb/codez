@@ -41,6 +41,9 @@ pub struct ProviderCfg {
     pub model: Option<String>,
     pub anthropic_version: Option<String>,
     pub default_max_tokens: Option<u32>,
+    /// 覆盖 codex 对该 provider 模型的上下文窗口（token）。被接管的第三方模型
+    /// 通常不在 codex 内置表里、走 fallback（硬上限 272k），配此值可绕过。
+    pub context_window: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +80,7 @@ struct RawProvider {
     model: Option<String>,
     anthropic_version: Option<String>,
     default_max_tokens: Option<u32>,
+    context_window: Option<i64>,
 }
 
 /// 解析 config-zmod 文本。`allow_inline_key=false` 为运行时主路径(出现 auth_key 直接报错);
@@ -122,6 +126,7 @@ pub fn load_config_from_str(toml_text: &str, allow_inline_key: bool) -> Result<C
             model: raw.model,
             anthropic_version: raw.anthropic_version,
             default_max_tokens: raw.default_max_tokens,
+            context_window: raw.context_window,
         });
     }
     Ok(Config { enabled: sw.enabled, providers })

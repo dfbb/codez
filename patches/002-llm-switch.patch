@@ -77,6 +77,20 @@ index 1d0c4c48c..e64588f6a 100644
      );
      (model_client, attestation_calls)
  }
+diff --git a/codex-rs/core/src/config/mod.rs b/codex-rs/core/src/config/mod.rs
+index 8e9ccc6c2..2ed124547 100644
+--- a/codex-rs/core/src/config/mod.rs
++++ b/codex-rs/core/src/config/mod.rs
+@@ -1425,6 +1425,9 @@ impl Config {
+     pub fn to_models_manager_config(&self) -> ModelsManagerConfig {
+         ModelsManagerConfig {
+             model_context_window: self.model_context_window,
++            // codez llm-switch:被接管 provider 配了 context_window 时，强制覆盖模型
++            // 上下文窗口（连带抬高 max，绕过未知模型 fallback 的 272k 硬上限）。
++            force_context_window: codez_llm_switch::context_window(&self.model_provider_id),
+             model_auto_compact_token_limit: self.model_auto_compact_token_limit,
+             tool_output_token_limit: self.tool_output_token_limit,
+             base_instructions: self.base_instructions.clone(),
 diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
 index 0c07f5e95..313837acc 100644
 --- a/codex-rs/core/src/session/session.rs
@@ -239,3 +253,82 @@ index 0835e1552..750a88a1d 100644
          );
  
          let mut client_session = model_client.new_session();
+diff --git a/codex-rs/models-manager/src/config.rs b/codex-rs/models-manager/src/config.rs
+index b64add40f..6ccf77c40 100644
+--- a/codex-rs/models-manager/src/config.rs
++++ b/codex-rs/models-manager/src/config.rs
+@@ -3,6 +3,10 @@ use codex_protocol::openai_models::ModelsResponse;
+ #[derive(Debug, Clone, Default)]
+ pub struct ModelsManagerConfig {
+     pub model_context_window: Option<i64>,
++    /// codez llm-switch:被接管 provider 配的 context_window 覆盖。与
++    /// `model_context_window` 不同——它**同时**抬高 `max_context_window`，绕过未知
++    /// 模型 fallback 的 272k 硬上限（普通 override 会被 clamp 到 max）。
++    pub force_context_window: Option<i64>,
+     pub model_auto_compact_token_limit: Option<i64>,
+     pub tool_output_token_limit: Option<usize>,
+     pub base_instructions: Option<String>,
+diff --git a/codex-rs/models-manager/src/model_info.rs b/codex-rs/models-manager/src/model_info.rs
+index 566953dfc..08c0b7e9f 100644
+--- a/codex-rs/models-manager/src/model_info.rs
++++ b/codex-rs/models-manager/src/model_info.rs
+@@ -35,6 +35,12 @@ pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig)
+                 }),
+         );
+     }
++    // codez llm-switch:force_context_window 抬高上限本身，再设 context_window，
++    // 绕过 fallback 的 max_context_window clamp（被接管的第三方大窗口模型用）。
++    if let Some(force) = config.force_context_window {
++        model.max_context_window = Some(force);
++        model.context_window = Some(force);
++    }
+     if let Some(auto_compact_token_limit) = config.model_auto_compact_token_limit {
+         model.auto_compact_token_limit = Some(auto_compact_token_limit);
+     }
+diff --git a/codex-rs/models-manager/src/model_info_overrides_tests.rs b/codex-rs/models-manager/src/model_info_overrides_tests.rs
+index c499938ed..a33e4e93f 100644
+--- a/codex-rs/models-manager/src/model_info_overrides_tests.rs
++++ b/codex-rs/models-manager/src/model_info_overrides_tests.rs
+@@ -43,3 +43,42 @@ async fn offline_model_info_with_tool_output_override() {
+         TruncationPolicyConfig::tokens(/*limit*/ 123)
+     );
+ }
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn force_context_window_bypasses_fallback_clamp() {
++    // codez llm-switch:未知 slug 走 fallback(max_context_window=272_000)；
++    // 普通 model_context_window 会被 clamp 到 272k，force_context_window 不会。
++    let codex_home = TempDir::new().expect("create temp dir");
++    let config = ModelsManagerConfig {
++        force_context_window: Some(1_000_000),
++        ..Default::default()
++    };
++    let manager = openai_manager_for_tests(
++        codex_home.path().to_path_buf(),
++        TestModelsEndpoint::new(Vec::new()),
++    );
++
++    let model_info = manager.get_model_info("deepseek-v4-pro", &config).await;
++
++    assert_eq!(model_info.context_window, Some(1_000_000));
++    assert_eq!(model_info.max_context_window, Some(1_000_000));
++    assert_eq!(model_info.resolved_context_window(), Some(1_000_000));
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn plain_model_context_window_is_clamped_to_fallback_max() {
++    // 对照：普通 override 仍被 fallback 的 272k clamp（force_context_window 才绕过）。
++    let codex_home = TempDir::new().expect("create temp dir");
++    let config = ModelsManagerConfig {
++        model_context_window: Some(1_000_000),
++        ..Default::default()
++    };
++    let manager = openai_manager_for_tests(
++        codex_home.path().to_path_buf(),
++        TestModelsEndpoint::new(Vec::new()),
++    );
++
++    let model_info = manager.get_model_info("deepseek-v4-pro", &config).await;
++
++    assert_eq!(model_info.context_window, Some(272_000));
++}

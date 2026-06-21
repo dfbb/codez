@@ -253,6 +253,17 @@ pub fn suppress_hosted_tools(model_provider_id: &str) -> bool {
     suppress_hosted_tools_in(loaded(), model_provider_id)
 }
 
+fn context_window_in(cfg: &Config, model_provider_id: &str) -> Option<i64> {
+    route_in(cfg, model_provider_id).and_then(|rt| rt.cfg.context_window)
+}
+
+/// codex 侧模型元数据用:被接管 provider 配了 `context_window` 时返回它,让 codex
+/// 用此值覆盖模型上下文窗口(绕过未知模型 fallback 的 272k 硬上限)。未接管 / 未配
+/// → None(codex 用自己的元数据)。
+pub fn context_window(model_provider_id: &str) -> Option<i64> {
+    context_window_in(loaded(), model_provider_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,5 +294,16 @@ mod tests {
     fn unrouted_provider_never_suppresses() {
         let cfg = load_config_from_str("[llm-switch]\nenabled=true\n[llm-switch.providers.x]\nconnector=\"chat\"\nauth=\"bearer\"\n", false).unwrap();
         assert!(!suppress_hosted_tools_in(&cfg, "unknown"));
+    }
+    #[test]
+    fn context_window_read_when_configured() {
+        let cfg = load_config_from_str("[llm-switch]\nenabled=true\n[llm-switch.providers.x]\nconnector=\"chat\"\nauth=\"bearer\"\ncontext_window=1000000\n", false).unwrap();
+        assert_eq!(context_window_in(&cfg, "x"), Some(1_000_000));
+    }
+    #[test]
+    fn context_window_none_when_unset_or_unrouted() {
+        let cfg = load_config_from_str("[llm-switch]\nenabled=true\n[llm-switch.providers.x]\nconnector=\"chat\"\nauth=\"bearer\"\n", false).unwrap();
+        assert_eq!(context_window_in(&cfg, "x"), None);
+        assert_eq!(context_window_in(&cfg, "unknown"), None);
     }
 }

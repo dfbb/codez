@@ -114,6 +114,9 @@ default_max_tokens = 8192                    # anthropic max_tokens 兜底（缺
 | `model` | 否 | 覆盖发往上游的模型名；缺省用 codex 请求里的 model |
 | `anthropic_version` | 否 | x-api-key 形态下的版本头，缺省 `2023-06-01` |
 | `default_max_tokens` | 否 | anthropic `max_tokens` 兜底，缺省 4096 |
+| `context_window` | 否 | 覆盖 codex 对该模型的上下文窗口（token）。被接管的第三方模型多不在 codex 内置表、走 fallback（硬上限 272k）；配此值经 patch 在 `with_config_overrides` 连同 `max_context_window` 一起抬高，绕过 clamp。例：`1000000` |
+
+> **`context_window` 的实施**：codex 对未知模型用 fallback 元数据（`max_context_window = 272_000`），其 `model_context_window` 顶层覆盖会被 clamp 到该上限。`002-llm-switch.patch` 给 `ModelsManagerConfig` 加了 `force_context_window`，由 `core` 的 `to_models_manager_config()` 从 `codez_llm_switch::context_window(provider_id)` 填充，在 `with_config_overrides` 里**同时**设 `context_window` 与 `max_context_window`（不 clamp），从而突破 272k。
 
 ### fail-safe 与开关
 
