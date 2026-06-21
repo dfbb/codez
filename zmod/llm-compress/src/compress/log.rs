@@ -1,5 +1,5 @@
 //! LogCompressor:文本型日志压缩器。
-//! 两步保守压缩:① 连续重复行折叠 ② head/tail 保留。占位为裸文本标记 [llm-compress: …]。
+//! 两步压缩:① 模板挖掘(不删内容)② 级别评分保留(删行)。占位为裸文本标记 [llm-compress: …]。
 
 use crate::router::{Budget, CompressOutcome, Compressor, ContentKind};
 
@@ -25,38 +25,30 @@ impl Compressor for LogCompressor {
     fn compress(&self, text: &str, budget: &Budget) -> CompressOutcome {
         let lines: Vec<&str> = text.lines().collect();
 
-        // ① 连续重复行折叠(可选)。
-        let dedup_repeats = budget.cfg.log.dedup_repeats;
-        let after_dedup: Vec<String> = if dedup_repeats {
-            dedup_consecutive(&lines)
-        } else {
-            lines.iter().map(|s| s.to_string()).collect()
-        };
-
-        // dedup 是否产生实质变化:内容比较(行数判据对 count=2 失效)。
-        let dedup_changed = dedup_repeats
-            && (after_dedup.len() != lines.len()
-                || after_dedup.iter().zip(lines.iter()).any(|(a, b)| a.as_str() != *b));
-
-        // ② head/tail 保留。
+        // ① 级别评分保留(删行):先裁掉低价值行,中段 ERROR/栈帧/高分行必留
         let head = budget.cfg.truncate.head_lines;
         let tail = budget.cfg.truncate.tail_lines;
-        let final_lines = head_tail(&after_dedup, head, tail);
+        let lines_owned: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+        let (after_score, dropped) = score_keep(&lines_owned, head, tail, budget);
 
-        // head/tail 是否产生了实质截断。
-        let head_tail_changed = final_lines.len() < after_dedup.len();
+        // ② 模板挖掘(不删内容):对留下的行做连续同模板折叠
+        let min_run = budget.cfg.log.template_min_run.max(2);
+        let after_score_refs: Vec<&str> = after_score.iter().map(String::as_str).collect();
+        let (final_lines, tpl_changed) = template_mine(&after_score_refs, min_run);
 
-        // 仅当有实质折叠时才视为压缩,避免尾换行副作用产生假阳性。
-        if dedup_changed || head_tail_changed {
-            let new_text = final_lines.join("\n");
-            let saved = text.len().saturating_sub(new_text.len());
-            if saved > 0 {
-                CompressOutcome::Compressed { text: new_text, saved_bytes: saved, lossy: true, kind: ContentKind::Text }
-            } else {
-                CompressOutcome::Unchanged
-            }
-        } else {
-            CompressOutcome::Unchanged
+        // 无实质变化:既无删行也无模板折叠 → Unchanged
+        if !dropped && !tpl_changed {
+            return CompressOutcome::Unchanged;
+        }
+        let new_text = final_lines.join("\n");
+        let saved = text.len().saturating_sub(new_text.len());
+        // 删行 → lossy=true;仅模板折叠(无删行)→ lossy=false
+        let lossy = dropped;
+        CompressOutcome::Compressed {
+            text: new_text,
+            saved_bytes: saved,
+            lossy,
+            kind: ContentKind::Text,
         }
     }
 }
@@ -150,37 +142,98 @@ fn has_consecutive_repeat(lines: &[&str]) -> bool {
     lines.windows(2).any(|w| w[0] == w[1])
 }
 
-/// 把连续完全相同的行折叠为:该行 + 裸占位 `[llm-compress: 上一行 ×N]`(N≥2)。
-/// N==1 的行原样保留(不加占位)。
-fn dedup_consecutive(lines: &[&str]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+/// 模板挖掘:连续 ≥ min_run 行,规范化(数字/hex→占位)后相等则折叠为模板头 + 变量表。
+/// 不删内容(变量全保留)。返回 (新行序列, 是否折叠过)。
+fn template_mine(lines: &[&str], min_run: usize) -> (Vec<String>, bool) {
+    let mut out: Vec<String> = Vec::new();
+    let mut changed = false;
     let mut i = 0;
     while i < lines.len() {
-        let cur = lines[i];
+        let tpl = normalize_template(lines[i]);
         let mut j = i + 1;
-        while j < lines.len() && lines[j] == cur {
+        while j < lines.len() && normalize_template(lines[j]) == tpl {
             j += 1;
         }
-        let count = j - i; // 该行连续出现的总次数
-        out.push(cur.to_string());
-        if count >= 2 {
-            out.push(format!("[llm-compress: 上一行 ×{count}]"));
+        let run = j - i;
+        if run >= min_run {
+            out.push(format!("[llm-compress: 模板] {tpl}"));
+            let vars: Vec<String> = lines[i..j].iter().map(|l| l.to_string()).collect();
+            out.push(format!("[llm-compress: 变量 ×{run}] {}", vars.join(" | ")));
+            changed = true;
+        } else {
+            for line in &lines[i..j] {
+                out.push(line.to_string());
+            }
         }
         i = j;
+    }
+    (out, changed)
+}
+
+/// 把行内数字串、十六进制串替换成占位,用于"同模板"判定。
+fn normalize_template(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_ascii_digit() {
+            while chars.peek().is_some_and(|c| c.is_ascii_digit() || *c == 'x' || c.is_ascii_hexdigit()) {
+                chars.next();
+            }
+            out.push('#');
+        } else {
+            out.push(c);
+            chars.next();
+        }
     }
     out
 }
 
-/// head/tail 保留:总行数 > head+tail 时,保留前 head 行 + `[llm-compress: 略 N 行]` + 后 tail 行。
-/// 否则原样返回。
-fn head_tail(lines: &[String], head: usize, tail: usize) -> Vec<String> {
-    if lines.len() <= head + tail {
-        return lines.to_vec();
+/// 级别评分保留:保 head/tail + 必留行(error/warn/栈帧/高分)+ 中段按分;
+/// 丢弃的连续段折叠为 [llm-compress: 略 N 行]。返回 (新行, 是否删了行)。
+fn score_keep(lines: &[String], head: usize, tail: usize, budget: &Budget) -> (Vec<String>, bool) {
+    let n = lines.len();
+    if n <= head + tail {
+        return (lines.to_vec(), false);
     }
-    let omitted = lines.len() - head - tail;
-    let mut out: Vec<String> = Vec::with_capacity(head + tail + 1);
-    out.extend_from_slice(&lines[..head]);
-    out.push(format!("[llm-compress: 略 {omitted} 行]"));
-    out.extend_from_slice(&lines[lines.len() - tail..]);
-    out
+    let query = budget.query;
+    let mut keep = vec![false; n];
+    // head/tail 必留
+    keep[..head.min(n)].fill(true);
+    keep[n.saturating_sub(tail)..].fill(true);
+    // 必留:模板行/变量行(以 [llm-compress: 开头)+ 高分行 + 栈帧
+    for (i, line) in lines.iter().enumerate() {
+        if line.starts_with("[llm-compress: ")
+            || crate::score::line_score(line, query) >= 1.0
+            || is_stack_frame(line)
+        {
+            keep[i] = true;
+        }
+    }
+    // 输出,丢弃连续段折叠
+    let mut out: Vec<String> = Vec::new();
+    let mut dropped = false;
+    let mut i = 0;
+    while i < n {
+        if keep[i] {
+            out.push(lines[i].clone());
+            i += 1;
+        } else {
+            let start = i;
+            while i < n && !keep[i] {
+                i += 1;
+            }
+            out.push(format!("[llm-compress: 略 {} 行]", i - start));
+            dropped = true;
+        }
+    }
+    (out, dropped)
+}
+
+/// 栈帧行特征:含 " at " 且其后有 :数字(复用 colon_then_digit)。
+fn is_stack_frame(line: &str) -> bool {
+    if let Some(pos) = line.find(" at ") {
+        colon_then_digit(&line[pos + 4..])
+    } else {
+        false
+    }
 }

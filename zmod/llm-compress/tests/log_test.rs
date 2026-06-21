@@ -1,6 +1,6 @@
 use codez_llm_compress::compress::log::LogCompressor;
 use codez_llm_compress::config::Config;
-use codez_llm_compress::router::{Budget, CompressOutcome, Compressor};
+use codez_llm_compress::router::{Budget, CompressOutcome, Compressor, ContentKind};
 
 fn budget(cfg: &Config) -> Budget<'_> {
     Budget { cfg, cmd: None, query: &[] }
@@ -81,154 +81,60 @@ fn detect_true_for_consecutive_repeats() {
     assert!(c.detect(&s, &b), "存在连续重复行应被认领");
 }
 
-#[test]
-fn dedup_collapses_consecutive_repeats() {
-    let c = LogCompressor;
-    let cfg = Config::disabled(); // dedup_repeats 默认 true
-    assert!(cfg.log.dedup_repeats);
-    let mut s = String::new();
-    s.push_str("start\n");
-    for _ in 0..5 {
-        s.push_str("retrying connection...\n");
-    }
-    s.push_str("done\n");
-    match c.compress(&s, &budget(&cfg)) {
-        CompressOutcome::Compressed { text, saved_bytes, .. } => {
-            assert!(text.contains("retrying connection..."));
-            assert!(
-                text.contains("[llm-compress: 上一行 ×5]"),
-                "应折叠为 ×5,实际:\n{text}"
-            );
-            // 折叠后 retrying 只出现一次正文 + 一行占位。
-            assert_eq!(text.matches("retrying connection...").count(), 1);
-            assert!(saved_bytes > 0);
-        }
-        CompressOutcome::Unchanged => panic!("应折叠重复行"),
-    }
+// ========== Task 08 新增 ==========
+
+fn budget_t08(cfg: &Config) -> Budget<'_> {
+    Budget { cfg, cmd: None, query: &[] }
 }
 
 #[test]
-fn dedup_disabled_keeps_repeats() {
-    let c = LogCompressor;
-    // 用 disabled() 再改字段构造 dedup_repeats=false 的 Config。
+fn middle_error_is_kept_not_folded() {
     let mut cfg = Config::disabled();
-    cfg.log.dedup_repeats = false;
-    // 给足 head/tail 余量,避免触发截断,纯验证 dedup 不发生。
-    cfg.truncate.head_lines = 100;
-    cfg.truncate.tail_lines = 100;
-    // 带尾换行的多行输入,覆盖尾换行场景。
-    let mut s = String::new();
-    for _ in 0..6 {
-        s.push_str("retrying connection...\n");
-    }
-    // dedup 关闭、行数 ≤ head+tail,无实质折叠 → 应 Unchanged。
-    assert!(
-        matches!(c.compress(&s, &budget(&cfg)), CompressOutcome::Unchanged),
-        "dedup 关闭且未超 head+tail 时,不应因尾换行副作用误报 Compressed"
-    );
-}
-
-#[test]
-fn head_tail_truncates_long_log_with_placeholder() {
-    let c = LogCompressor;
-    let mut cfg = Config::disabled();
-    cfg.log.dedup_repeats = false; // 隔离 head/tail 行为(各行互不相同)
-    cfg.truncate.head_lines = 3;
-    cfg.truncate.tail_lines = 3;
-    let log = timestamped_log(50); // 50 行,各不相同
-    match c.compress(&log, &budget(&cfg)) {
-        CompressOutcome::Compressed { text, saved_bytes, .. } => {
-            // 中间被省略:50 - 3 - 3 = 44 行。
-            assert!(
-                text.contains("[llm-compress: 略 44 行]"),
-                "应有 head/tail 占位,实际:\n{text}"
-            );
-            // 产物行数 = 3 + 1(占位) + 3 = 7 行。
-            assert_eq!(text.lines().count(), 7);
-            // 保留首行与末行。
-            assert!(text.lines().next().unwrap().contains("id=0"));
-            assert!(text.lines().last().unwrap().contains("id=49"));
-            assert!(saved_bytes > 0);
-        }
-        CompressOutcome::Unchanged => panic!("长日志应被截断"),
-    }
-}
-
-#[test]
-fn dedup_then_head_tail_combined() {
-    let c = LogCompressor;
-    let mut cfg = Config::disabled(); // dedup_repeats=true
     cfg.truncate.head_lines = 2;
     cfg.truncate.tail_lines = 2;
-    let mut s = String::new();
-    s.push_str("2026-06-20T12:00:00 INFO boot\n");
-    for _ in 0..30 {
-        s.push_str("2026-06-20T12:00:01 WARN retrying...\n");
+    let c = LogCompressor;
+    // 中段一条 ERROR,被大量 INFO 包围
+    let mut lines = Vec::new();
+    for i in 0..10 {
+        lines.push(format!("INFO step {i}"));
     }
-    s.push_str("2026-06-20T12:00:02 INFO ok line a\n");
-    s.push_str("2026-06-20T12:00:03 INFO ok line b\n");
-    s.push_str("2026-06-20T12:00:04 INFO ok line c\n");
-    match c.compress(&s, &budget(&cfg)) {
-        CompressOutcome::Compressed { text, saved_bytes, .. } => {
-            // dedup 后行数 = boot(1) + retrying(1) + 占位(1) + 3 行 ok = 6 行;
-            // 6 > head(2)+tail(2)=4 → 仍会再截断为 head(2) + 占位(1) + tail(2)。
-            // 此时 dedup 占位可能被 head/tail 的中间省略所吞;产物只有 head/tail 占位。
-            assert!(text.contains("[llm-compress: 略"));
-            // 验证产物行数 = 2 + 1(占位) + 2 = 5 行。
-            assert_eq!(text.lines().count(), 5);
-            // boot 行应保留(head 的第一行);ok line c 应保留(tail 的最后一行)。
-            assert!(text.contains("boot"));
-            assert!(text.contains("ok line c"));
-            assert!(saved_bytes > 0);
-        }
-        CompressOutcome::Unchanged => panic!("应有压缩"),
+    lines.push("ERROR critical failure at core".to_string());
+    for i in 0..10 {
+        lines.push(format!("INFO step {}", 10 + i));
+    }
+    let text = lines.join("\n");
+    if let CompressOutcome::Compressed { text: new, lossy, kind, .. } = c.compress(&text, &budget_t08(&cfg)) {
+        assert!(lossy, "删了 INFO 行");
+        assert_eq!(kind, ContentKind::Text);
+        assert!(new.contains("ERROR critical failure"), "中段 ERROR 必须保留");
+    } else {
+        panic!("expected compressed");
     }
 }
 
 #[test]
-fn dedup_two_line_repeat_compresses() {
-    // 守卫 count=2 不再漏压缩:第 3、4 行完全相同,其余行各不同。
-    // 带时间戳确保 detect 通过,共 10 行 ≥ MIN_LINES(8)。
-    let c = LogCompressor;
-    let mut cfg = Config::disabled(); // dedup_repeats=true
-    cfg.truncate.head_lines = 100;
-    cfg.truncate.tail_lines = 100;
-    let mut s = String::new();
-    s.push_str("2026-06-20T12:00:00 INFO start\n");
-    s.push_str("2026-06-20T12:00:01 INFO line 1\n");
-    // count=2 重复行:
-    s.push_str("2026-06-20T12:00:02 WARN duplicate\n");
-    s.push_str("2026-06-20T12:00:02 WARN duplicate\n");
-    s.push_str("2026-06-20T12:00:03 INFO line 4\n");
-    s.push_str("2026-06-20T12:00:04 INFO line 5\n");
-    s.push_str("2026-06-20T12:00:05 INFO line 6\n");
-    s.push_str("2026-06-20T12:00:06 INFO line 7\n");
-    s.push_str("2026-06-20T12:00:07 INFO line 8\n");
-    s.push_str("2026-06-20T12:00:08 INFO done\n");
-    match c.compress(&s, &budget(&cfg)) {
-        CompressOutcome::Compressed { text, saved_bytes, .. } => {
-            assert!(
-                text.contains("[llm-compress: 上一行 ×2]"),
-                "count=2 重复行应折叠为 ×2 占位,实际:\n{text}"
-            );
-            assert!(saved_bytes > 0, "应有节省字节数");
-        }
-        CompressOutcome::Unchanged => panic!("count=2 重复行不应漏压缩,应返回 Compressed"),
-    }
-}
-
-#[test]
-fn unchanged_when_nothing_to_do() {
-    let c = LogCompressor;
+fn template_mining_folds_similar_lines_lossless() {
     let mut cfg = Config::disabled();
-    cfg.log.dedup_repeats = false;
     cfg.truncate.head_lines = 100;
-    cfg.truncate.tail_lines = 100;
-    // 带尾换行的 10 行日志:各行不同、无重复、未超 head+tail。
-    let log = timestamped_log(10);
-    // 无实质折叠 → 应 Unchanged,不被尾换行副作用误导。
-    assert!(
-        matches!(c.compress(&log, &budget(&cfg)), CompressOutcome::Unchanged),
-        "无重复行、未超 head+tail 时,不应因尾换行副作用误报 Compressed"
-    );
+    cfg.truncate.tail_lines = 100; // 不触发评分删行,只看模板折叠
+    cfg.log.template_min_run = 3;
+    let c = LogCompressor;
+    // 连续同模板行(仅数字不同)
+    let text = "worker 1 done\nworker 2 done\nworker 3 done\nworker 4 done\nworker 5 done";
+    if let CompressOutcome::Compressed { text: new, lossy, .. } = c.compress(text, &budget_t08(&cfg)) {
+        // 模板折叠不删内容
+        assert!(!lossy, "纯模板折叠 → lossy=false");
+        assert!(new.contains("[llm-compress: 模板]") || new.contains("模板"));
+    } else {
+        // 也可能因无收益 Unchanged;但 5 行同模板应有收益
+        panic!("expected template fold");
+    }
+}
+
+#[test]
+fn detect_still_recognizes_multiline_logs() {
+    let cfg = Config::disabled();
+    let c = LogCompressor;
+    let text = "2026-06-21T08:15:30 INFO a\n2026-06-21T08:15:31 INFO b\n2026-06-21T08:15:32 INFO c\n2026-06-21T08:15:33 INFO d\n2026-06-21T08:15:34 INFO e\n2026-06-21T08:15:35 INFO f\n2026-06-21T08:15:36 INFO g\n2026-06-21T08:15:37 INFO h";
+    assert!(c.detect(text, &budget_t08(&cfg)));
 }
