@@ -37,3 +37,8 @@ testkey.toml
 /codex-rs/llm-switch
 
 /.worktrees
+
+# 工具生成的 AGENTS.md / CLAUDE.md(本地脚手架,不提交;锚定路径以免误伤 codex-rs 子树内同名文件)
+/AGENTS.md
+/CLAUDE.md
+/zmod/llm-switch/AGENTS.md
