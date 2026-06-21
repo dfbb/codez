@@ -1,40 +1,40 @@
-# Task 08 — run() 接线与 SSE reader
+# Task 08 — run() Wiring and SSE reader
 
-> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development 或 executing-plans。先读 [总索引](2026-06-20-llm-switch-00-index.md) Global Constraints,尤其 §4.7 错误/spawn 边界、§5.3 密钥退路。
+> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development or executing-plans. First read the [master index](2026-06-20-llm-switch-00-index.md) Global Constraints, especially §4.7 error/spawn boundary and §5.3 key fallback.
 
-**Goal:** 把前面各块接成真实流水线。实现:① `sse.rs` 的共享出口引擎 `run_egress`(同步 POST + 状态码校验 + 建 SSE,非 2xx 直接 `Err`;2xx 才 spawn 读取任务,逐 `data:` 喂状态机、把 `ResponseEvent` 塞进 channel,返回 `codex_api::ResponseStream`);② `lib.rs::run`(transform → 组装 `EgressCtx`(含密钥退路)→ 派发连接器);③ chat/anthropic 各自的 `run` 用 `build_*_request` + 对应 SSE 状态机调 `run_egress`。
+**Goal:** Wire the preceding blocks into a real pipeline. Implement: ① the shared egress engine `run_egress` in `sse.rs` (synchronous POST + status-code validation + SSE setup; non-2xx returns `Err` immediately, only 2xx spawns the reader task, feeds each `data:` line into the state machine, pushes `ResponseEvent`s into a channel, and returns a `codex_api::ResponseStream`); ② `lib.rs::run` (transform → assemble `EgressCtx` (including key fallback) → dispatch to the connector); ③ chat/anthropic each implement their own `run` using `build_*_request` + the corresponding SSE state machine to call `run_egress`.
 
-**覆盖 spec:** §2(run 内部)、§4.7(同步建连/spawn 边界、401/403 映射)、§5.3(bearer 退路)、§2.2(构造 `codex_api::ResponseStream`)。
+**Spec coverage:** §2 (run internals), §4.7 (synchronous connection setup / spawn boundary, 401/403 mapping), §5.3 (bearer fallback), §2.2 (constructing `codex_api::ResponseStream`).
 
 **Files:**
 - Create: `zmod/llm-switch/src/sse.rs`
-- Modify: `zmod/llm-switch/src/connector/mod.rs`(加 `SseTranslator` trait、`run_egress` 重导出、`EgressCtx` 增 `auth_fallback`)
-- Modify: `zmod/llm-switch/src/connector/chat.rs` / `chat_sse.rs`(impl `SseTranslator`,填 `run`)
-- Modify: `zmod/llm-switch/src/connector/anthropic.rs` / `anthropic_sse.rs`(同)
-- Modify: `zmod/llm-switch/src/lib.rs`(实现 `pub async fn run`)
-- Test: `zmod/llm-switch/tests/run_test.rs`(用本地 mock HTTP server 验证同步错误边界 + happy path)
+- Modify: `zmod/llm-switch/src/connector/mod.rs` (add `SseTranslator` trait, re-export `run_egress`, add `auth_fallback` to `EgressCtx`)
+- Modify: `zmod/llm-switch/src/connector/chat.rs` / `chat_sse.rs` (impl `SseTranslator`, fill in `run`)
+- Modify: `zmod/llm-switch/src/connector/anthropic.rs` / `anthropic_sse.rs` (same)
+- Modify: `zmod/llm-switch/src/lib.rs` (implement `pub async fn run`)
+- Test: `zmod/llm-switch/tests/run_test.rs` (use a local mock HTTP server to verify the synchronous error boundary + happy path)
 
 **Interfaces:**
-- Consumes:全部前序任务。
-- Produces(Task 09 patch 依赖,**这是 core 调用的最终签名**):
+- Consumes: all preceding tasks.
+- Produces (depended on by the Task 09 patch, **this is the final signature called by core**):
   - `pub async fn run(rt: Route, request: codex_api::ResponsesApiRequest, api_auth: codex_api::SharedAuthProvider) -> Result<codex_api::ResponseStream, codex_api::ApiError>`
   - `pub(crate) trait SseTranslator: Send { fn push(&mut self, data: &serde_json::Value) -> Result<Vec<codex_api::ResponseEvent>, ConnError>; fn finish(&mut self) -> Vec<codex_api::ResponseEvent>; }`
   - `pub(crate) async fn run_egress(url: String, headers: HeaderMap, body: serde_json::Value, http: reqwest::Client, translator: Box<dyn SseTranslator>) -> Result<codex_api::ResponseStream, codex_api::ApiError>`
 
-> 与设计 §6.3 的细化:`run` 只需 `api_auth`(用于 bearer 退路),**不需** `api_provider`/`transport`/`options`——连接器用自己的 `reqwest::Client`(进程级缓存)。patch 的接管臂因此更短:`Some(rt) => codez_llm_switch::run(rt, request, api_auth.clone()).await`。原生臂仍 move `api_provider`/`api_auth`/`transport` 进 `ApiResponsesClient::new`;两臂互斥,接管臂未用到的那几个值在该臂作用域结束时正常 drop,move 合法。Task 09 据此写 patch。
+> Refinement over design §6.3: `run` only needs `api_auth` (for the bearer fallback) and does **not** need `api_provider`/`transport`/`options`—the connector uses its own `reqwest::Client` (process-level cached). The patch's takeover arm is therefore shorter: `Some(rt) => codez_llm_switch::run(rt, request, api_auth.clone()).await`. The native arm still moves `api_provider`/`api_auth`/`transport` into `ApiResponsesClient::new`; the two arms are mutually exclusive, and the values the takeover arm doesn't use are dropped normally when that arm's scope ends, so the move is valid. Task 09 writes the patch accordingly.
 
 ---
 
-- [ ] **Step 0: 确认 `ResponseStream` 可直接构造**
+- [ ] **Step 0: Confirm `ResponseStream` can be constructed directly**
 
 Run: `grep -n "pub struct ResponseStream" -A 8 codex-rs/codex-api/src/common.rs`
-确认字段 `rx_event` / `upstream_request_id` 均为 `pub` 且无其它私有/`#[non_exhaustive]` 字段 → 可 `codex_api::ResponseStream { rx_event, upstream_request_id }` 直接构造。若发现有构造函数(如 `ResponseStream::new(rx, id)`),改用之并记录。
+Confirm that fields `rx_event` / `upstream_request_id` are both `pub` and that there are no other private / `#[non_exhaustive]` fields → it can be constructed directly as `codex_api::ResponseStream { rx_event, upstream_request_id }`. If you find a constructor (e.g. `ResponseStream::new(rx, id)`), use it instead and record it.
 
-- [ ] **Step 1: 写失败测试(错误边界 + happy path)**
+- [ ] **Step 1: Write the failing tests (error boundary + happy path)**
 
-用 `wiremock`(dev-dep)起本地 HTTP mock。在 `Cargo.toml` `[dev-dependencies]` 加 `wiremock = "0.6"`、`futures = "0.3"`。
+Use `wiremock` (dev-dep) to start a local HTTP mock. Add `wiremock = "0.6"` and `futures = "0.3"` under `[dev-dependencies]` in `Cargo.toml`.
 
-创建 `zmod/llm-switch/tests/run_test.rs`:
+Create `zmod/llm-switch/tests/run_test.rs`:
 
 ```rust
 use codez_llm_switch::testing::{run_egress_for_test, chat_translator, dummy_headers};
@@ -75,15 +75,15 @@ async fn happy_path_streams_events() {
 }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [ ] **Step 2: Run and confirm failure**
 
 Run: `cd zmod/llm-switch && cargo test --test run_test`
-Expected: 编译失败。
+Expected: compilation failure.
 
-- [ ] **Step 3: 实现 `sse.rs` 的 `run_egress`**
+- [ ] **Step 3: Implement `run_egress` in `sse.rs`**
 
 ```rust
-use bytes::Bytes; // 若未引入,reqwest 已传递 bytes,可用 &[u8] 手工处理避免新依赖
+use bytes::Bytes; // if not already imported, reqwest already passes bytes; you can handle &[u8] manually to avoid a new dependency
 use futures::StreamExt;
 use reqwest::header::HeaderMap;
 use tokio::sync::mpsc;
@@ -98,7 +98,7 @@ pub(crate) async fn run_egress(
     http: reqwest::Client,
     mut translator: Box<dyn SseTranslator>,
 ) -> Result<ResponseStream, ApiError> {
-    // ---- 同步阶段(§4.7):发请求 + 状态码校验 ----
+    // ---- Synchronous phase (§4.7): send request + validate status code ----
     let resp = http.post(&url).headers(headers).json(&body).send().await
         .map_err(|e| ApiError::Stream(format!("request failed: {e}")))?;
     let upstream_request_id = resp.headers().get("x-request-id")
@@ -106,11 +106,11 @@ pub(crate) async fn run_egress(
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
-        // 第三方 401/403 映射成普通 Api 错误(非 Transport::Http UNAUTHORIZED),避免 OpenAI recovery(§4.7)
+        // Map third-party 401/403 to a plain Api error (not Transport::Http UNAUTHORIZED) to avoid OpenAI recovery (§4.7)
         return Err(ApiError::Api { status, message: text });
     }
 
-    // ---- 异步阶段:仅 2xx 才 spawn ----
+    // ---- Asynchronous phase: spawn only on 2xx ----
     let (tx, rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(64);
     let mut byte_stream = resp.bytes_stream();
     tokio::spawn(async move {
@@ -122,13 +122,13 @@ pub(crate) async fn run_egress(
                 Err(e) => { let _ = tx.send(Err(ApiError::Stream(format!("stream error: {e}")))).await; return; }
             };
             buf.push_str(&String::from_utf8_lossy(&chunk));
-            // 按 SSE 事件边界(空行)切分;逐 data: 处理
+            // Split on SSE event boundaries (blank lines); process each data: line
             while let Some(pos) = buf.find("\n\n") {
                 let event_block = buf[..pos].to_string();
                 buf.drain(..pos + 2);
                 for line in event_block.lines() {
                     let line = line.trim_start();
-                    let Some(data) = line.strip_prefix("data:") else { continue }; // 忽略 event:/id:/注释
+                    let Some(data) = line.strip_prefix("data:") else { continue }; // ignore event:/id:/comments
                     let data = data.trim();
                     if data == "[DONE]" { done = true; break; }
                     if data.is_empty() { continue; }
@@ -145,7 +145,7 @@ pub(crate) async fn run_egress(
             }
             if done { break; }
         }
-        // EOF 或 [DONE] → finish(合成 assistant message + Completed,§4.5)
+        // EOF or [DONE] → finish (synthesize assistant message + Completed, §4.5)
         for ev in translator.finish() { if tx.send(Ok(ev)).await.is_err() { return; } }
     });
 
@@ -153,11 +153,11 @@ pub(crate) async fn run_egress(
 }
 ```
 
-> 依赖说明:`bytes` 通常随 reqwest 传递;若不想新增 `bytes` 直接依赖,用 `String::from_utf8_lossy(&chunk)`(`chunk: reqwest::Bytes` 实现 `AsRef<[u8]>`),如上。不要按未解码字节硬切多字节 UTF-8——SSE 帧以 `\n\n` 分隔,`from_utf8_lossy` 在帧边界足够;若担心跨 chunk 的多字节字符被 lossy 破坏,改为维护 `Vec<u8>` 缓冲、只在 `\n\n` 处 `from_utf8`。实现者二选一并记录。
+> Dependency note: `bytes` is usually passed through by reqwest; if you don't want to add a direct `bytes` dependency, use `String::from_utf8_lossy(&chunk)` (`chunk: reqwest::Bytes` implements `AsRef<[u8]>`), as shown above. Don't slice multi-byte UTF-8 on undecoded byte boundaries—SSE frames are separated by `\n\n`, and `from_utf8_lossy` is sufficient at frame boundaries; if you're worried about multi-byte characters spanning chunks being corrupted by lossy decoding, maintain a `Vec<u8>` buffer instead and only `from_utf8` at the `\n\n` boundaries. The implementer picks one and records it.
 
-- [ ] **Step 4: 定义 `SseTranslator` 并为两状态机实现**
+- [ ] **Step 4: Define `SseTranslator` and implement it for both state machines**
 
-`connector/mod.rs` 加:
+Add to `connector/mod.rs`:
 
 ```rust
 pub(crate) trait SseTranslator: Send {
@@ -167,21 +167,21 @@ pub(crate) trait SseTranslator: Send {
 pub(crate) use crate::sse::run_egress;
 ```
 
-`chat_sse.rs`:`impl SseTranslator for ChatSseState { fn push(&mut self, d) { self.push_chunk(d) } fn finish(&mut self){ self.finish() } }`。
-`anthropic_sse.rs`:`impl SseTranslator for AnthropicSseState { fn push(&mut self, d){ self.push_event(d) } fn finish(&mut self){ self.finish() } }`。
+`chat_sse.rs`: `impl SseTranslator for ChatSseState { fn push(&mut self, d) { self.push_chunk(d) } fn finish(&mut self){ self.finish() } }`.
+`anthropic_sse.rs`: `impl SseTranslator for AnthropicSseState { fn push(&mut self, d){ self.push_event(d) } fn finish(&mut self){ self.finish() } }`.
 
-> 注:chat 与 anthropic 都靠 reader 的 `[DONE]`/EOF 触发 `finish`;anthropic 无 `[DONE]`,靠连接关闭 EOF 触发——已在 Step 3 覆盖。
+> Note: both chat and anthropic rely on the reader's `[DONE]`/EOF to trigger `finish`; anthropic has no `[DONE]` and relies on connection-close EOF to trigger it—already covered in Step 3.
 
-- [ ] **Step 5: 填 chat/anthropic 的 `run`**
+- [ ] **Step 5: Fill in the chat/anthropic `run`**
 
-`connector/mod.rs` 的 `EgressCtx` 增字段 `pub auth_fallback: Option<codex_api::SharedAuthProvider>`(bearer 退路,§5.3 item 3)。新增私有 helper 组装出口头:
+Add the field `pub auth_fallback: Option<codex_api::SharedAuthProvider>` to `EgressCtx` in `connector/mod.rs` (bearer fallback, §5.3 item 3). Add a private helper to assemble the egress headers:
 
 ```rust
 fn egress_headers(ctx: &EgressCtx, av: Option<&str>) -> Result<reqwest::header::HeaderMap, ApiError> {
     if let Some(key) = &ctx.key {
         return crate::http::build_headers(ctx.auth, Some(key), av).map_err(|e| ApiError::InvalidRequest { message: e.to_string() });
     }
-    // 无原始 key:仅 bearer 可借 codex auth(§5.3)
+    // No original key: only bearer may borrow codex auth (§5.3)
     match (ctx.auth, &ctx.auth_fallback) {
         (crate::config::AuthKind::Bearer, Some(provider)) => {
             let mut h = reqwest::header::HeaderMap::new();
@@ -208,9 +208,9 @@ async fn run(&self, req: codex_api::ResponsesApiRequest, ctx: &EgressCtx)
 }
 ```
 
-`anthropic.rs::run`:同构,`build_anthropic_request`、`Connector::Anthropic`、`egress_headers(ctx, ctx.anthropic_version.as_deref())`、`AnthropicSseState`。
+`anthropic.rs::run`: same structure, with `build_anthropic_request`, `Connector::Anthropic`, `egress_headers(ctx, ctx.anthropic_version.as_deref())`, and `AnthropicSseState`.
 
-- [ ] **Step 6: 实现 `lib.rs::run`**
+- [ ] **Step 6: Implement `lib.rs::run`**
 
 ```rust
 mod sse;
@@ -220,18 +220,18 @@ pub async fn run(
     mut request: codex_api::ResponsesApiRequest,
     api_auth: codex_api::SharedAuthProvider,
 ) -> Result<codex_api::ResponseStream, codex_api::ApiError> {
-    // ① 变换层(v1 直通)
+    // ① Transform layer (v1 pass-through)
     let plugins = pipeline::default_plugins();
     pipeline::run_transforms(&plugins, &mut request).map_err(codex_api::ApiError::from)?;
 
-    // 密钥
+    // Key
     let key = http::resolve_key(&rt.cfg).map_err(|e| codex_api::ApiError::InvalidRequest { message: e.to_string() })?;
 
-    // 出口模型:config 覆盖 > 请求里的 model
+    // Egress model: config override > model in the request
     let model = rt.cfg.model.clone().unwrap_or_else(|| request.model.clone());
 
     let ctx = connector::EgressCtx {
-        base_url: rt.cfg.base_url.clone().unwrap_or_default(), // 缺省时由 patch 传 codex provider base_url;见 Task 09 注
+        base_url: rt.cfg.base_url.clone().unwrap_or_default(), // when absent, the patch passes the codex provider base_url; see Task 09 note
         model,
         auth: rt.cfg.auth,
         key,
@@ -251,18 +251,18 @@ fn shared_http_client() -> reqwest::Client {
 }
 ```
 
-> base_url 缺省:`rt.cfg.base_url` 若为 None,v1 用空串会拼出坏 URL。最简策略:**config-zmod 的 provider 必须写 base_url**(testkey 与文档示例都写了);若缺失,`run` 早返回 `ApiError::InvalidRequest{ "provider <id> missing base_url" }`。把 `unwrap_or_default()` 改成显式校验并记录。(设计 §5.2 说"缺省用 codex provider 的 base_url",但那需要 patch 额外把 provider base_url 传进 run——v1 简化为必填 base_url,在 Task 09 patch 说明里同步该简化。)
+> base_url default: if `rt.cfg.base_url` is None, v1 using an empty string would build a broken URL. Simplest strategy: **the config-zmod provider must specify base_url** (both testkey and the doc examples do); if it's missing, `run` returns early with `ApiError::InvalidRequest{ "provider <id> missing base_url" }`. Change `unwrap_or_default()` into explicit validation and record it. (Design §5.2 says "default to the codex provider's base_url," but that would require the patch to additionally pass the provider base_url into run—v1 simplifies this to a mandatory base_url; note this simplification in the Task 09 patch documentation.)
 
-- [ ] **Step 7: testing 转发**
+- [ ] **Step 7: testing forwarding**
 
-`lib.rs` testing 模块加:`chat_translator()`→`Box::new(ChatSseState::default()) as Box<dyn SseTranslator>`;`dummy_headers()`→ `build_headers(AuthKind::Bearer, Some("k"), None).unwrap()`;`run_egress_for_test(url, headers, body, translator)`→ 转发 `sse::run_egress(url, headers, body, reqwest::Client::new(), translator)`。
+Add to the `testing` module in `lib.rs`: `chat_translator()` → `Box::new(ChatSseState::default()) as Box<dyn SseTranslator>`; `dummy_headers()` → `build_headers(AuthKind::Bearer, Some("k"), None).unwrap()`; `run_egress_for_test(url, headers, body, translator)` → forward to `sse::run_egress(url, headers, body, reqwest::Client::new(), translator)`.
 
-- [ ] **Step 8: 运行测试确认通过**
+- [ ] **Step 8: Run the tests and confirm they pass**
 
 Run: `cd zmod/llm-switch && cargo test`
-Expected:全 crate 测试 PASS(config/http/pipeline/chat_request/chat_sse/anthropic_request/anthropic_sse/run 全绿)。
+Expected: all crate tests PASS (config/http/pipeline/chat_request/chat_sse/anthropic_request/anthropic_sse/run all green).
 
-- [ ] **Step 9: 提交**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add zmod/llm-switch/src zmod/llm-switch/Cargo.toml zmod/llm-switch/tests/run_test.rs

@@ -1,88 +1,88 @@
-# llm-compress v2 实现计划 — 总索引
+# llm-compress v2 Implementation Plan — Master Index
 
-> **For agentic workers:** REQUIRED SUB-SKILL: 用 superpowers:subagent-driven-development(推荐)或 superpowers:executing-plans 逐任务执行。每个任务是独立 plan 文件,步骤用 `- [ ]` 复选框追踪。
+> **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to execute task by task. Each task is a standalone plan file, with steps tracked via `- [ ]` checkboxes.
 
-**Goal:** 在已落地的 v1 `codez-llm-compress` 上扩展压缩能力:新增 Search/Tabular 压缩器、升级 Log/JSON、引入 rtk 通用预处理 + 命令感知路由、错误输出保护、CCR(原文取回)。
+**Goal:** Extend the compression capabilities of the already-shipped v1 `codez-llm-compress`: add Search/Tabular compressors, upgrade Log/JSON, introduce rtk generic preprocessing + command-aware routing, error-output protection, and CCR (original-content retrieval).
 
-**Architecture:** 沿用 v1 的 `ContentRouter` + `Compressor` trait + fail-open。`transform` 内先建一次性 `RequestCtx`(查询关键词 + 命令索引 + 可变 CCR registry),再逐片段走"命令识别 → 保护门 → 预处理 → 路由压缩 → CCR 挂载 → 体积闸门"链。不改 transform 签名、不改集成点 patch。
+**Architecture:** Reuse v1's `ContentRouter` + `Compressor` trait + fail-open. Inside `transform`, first build a one-shot `RequestCtx` (query keywords + command index + mutable CCR registry), then run each segment through the chain "command identification → protection gate → preprocessing → routed compression → CCR attachment → size gate". The transform signature and the integration-point patch are left unchanged.
 
-**Tech Stack:** Rust(edition 2021)、serde / serde_json、toml、chrono、tracing、sha2;dev-dep `insta`、`tempfile`。反向 path 依赖 `codex-api` / `codex-protocol`。
+**Tech Stack:** Rust (edition 2021), serde / serde_json, toml, chrono, tracing, sha2; dev-deps `insta`, `tempfile`. Reverse path dependencies on `codex-api` / `codex-protocol`.
 
-**设计依据:** `docs/superpowers/specs/2026-06-21-llm-compress-v2-design.md`(已定稿,经六轮评审)。每个任务标注覆盖的 spec 小节。
+**Design basis:** `docs/superpowers/specs/2026-06-21-llm-compress-v2-design.md` (finalized, after six review rounds). Each task is annotated with the spec subsections it covers.
 
 ---
 
 ## Global Constraints
 
-逐条照抄自 spec §1,每个任务隐含包含本节:
+Copied verbatim from spec §1; every task implicitly includes this section:
 
-- **不改 transform 签名**:`pub fn transform(request: &mut ResponsesApiRequest, _api_provider: &ApiProvider, queryid: &str)`,返回 `()`。新能力的输入全从 `request` 内提取。
-- **不改集成点 patch**:不新增 `core/src/client.rs` 触点,不碰 codex 工具系统。
-- **只处理两个变体**:`FunctionCallOutput` / `CustomToolCallOutput` 的 `output`。`Text(s)` 压 `s`;`ContentItems` 仅压 `InputText.text`,图片/加密内容不读不改,绝不 flatten。
-- **fail-open 贯穿**:任何环节出问题退回原文/跳过,绝不阻断请求;非测试代码不用 `unwrap`/`expect`(`catch_unwind` 边界除外)。
-- **占位标记统一** `[llm-compress: …]`。**压后体积 ≤ 压前**(两道闸门:`ccr::attach` 内 + 编排层最终写回)。UTF-8 安全。
-- **lossy 语义口径(spec §4.0)**:`lossy=true` ⟺ 删了实质内容。纯格式重构(JSON minify/csv-schema/表格转 JSON/连续空行归一/连续重复 RLE)`lossy=false` 不挂 CCR;抽样/删行/删匹配/截断/blob 折叠 `lossy=true` 挂 CCR。
-- **两条铁律不变量**:`kind=Json ⟹ lossy=false`(JSON/Tabular 永不挂 CCR);`lossy=true ⟹ kind=Text`(`attach` 只产 Text 裸占位、不收 kind、无 JSON 注入)。
-- **CCR 核心总则(spec §4.7)**:`ccr.enabled=true` 下"有损与可取回绑定"——`attach` 结果只有"成功落盘+含路径占位"或"返回原文(放弃压缩)",**绝不出现"有损产物但无可取回路径"**。仅 `enabled=false` 允许"有损但不可取回"。
-- **配置 fail-safe**:`~/.codex/config-zmod.toml` 无 `[llm_compress]` 节或 `enabled=false` → 整体关闭、零改动路径。
+- **Do not change the transform signature**: `pub fn transform(request: &mut ResponsesApiRequest, _api_provider: &ApiProvider, queryid: &str)`, returning `()`. All input for new capabilities is extracted from `request`.
+- **Do not change the integration-point patch**: no new touchpoints in `core/src/client.rs`, no changes to the codex tool system.
+- **Handle only two variants**: the `output` of `FunctionCallOutput` / `CustomToolCallOutput`. For `Text(s)`, compress `s`; for `ContentItems`, compress only `InputText.text`, leaving images/encrypted content unread and unchanged — never flatten.
+- **fail-open throughout**: on any failure, fall back to the original content / skip, never blocking the request; non-test code does not use `unwrap`/`expect` (except at `catch_unwind` boundaries).
+- **Unified placeholder marker** `[llm-compress: …]`. **Post-compression size ≤ pre-compression size** (two gates: inside `ccr::attach` + final write-back at the orchestration layer). UTF-8 safe.
+- **lossy semantics (spec §4.0)**: `lossy=true` ⟺ substantive content was removed. Pure format restructuring (JSON minify / csv-schema / table-to-JSON / collapsing consecutive blank lines / RLE of consecutive duplicates) is `lossy=false` and does not attach CCR; sampling / line removal / match removal / truncation / blob folding is `lossy=true` and attaches CCR.
+- **Two ironclad invariants**: `kind=Json ⟹ lossy=false` (JSON/Tabular never attach CCR); `lossy=true ⟹ kind=Text` (`attach` only produces a Text bare placeholder, does not accept kind, no JSON injection).
+- **CCR core rule (spec §4.7)**: under `ccr.enabled=true`, "lossy is bound to retrievable" — an `attach` result is either "successfully persisted + placeholder containing the path" or "returns the original content (abandoning compression)"; **a lossy product without a retrievable path must never occur**. Only `enabled=false` permits "lossy but not retrievable".
+- **Config fail-safe**: if `~/.codex/config-zmod.toml` has no `[llm_compress]` section or `enabled=false` → fully disabled, zero-change path.
 
 ---
 
-## 开发期构建与测试(继承 v1,CLAUDE.md 情况 B)
+## Development-Time Build and Test (inherited from v1, CLAUDE.md Case B)
 
-`zmod/llm-compress` 反向依赖 codex-api/codex-protocol,需软链进 codex-rs workspace 成 member 才能跑 `[dev-dependencies]` + `tests/*.rs`。dev-only 脚手架(不提交进 codex-rs 子树、不进 patch):
+`zmod/llm-compress` has reverse dependencies on codex-api/codex-protocol, so it must be symlinked into the codex-rs workspace as a member in order to run `[dev-dependencies]` + `tests/*.rs`. dev-only scaffolding (not committed into the codex-rs subtree, not part of any patch):
 
 ```bash
-# 在仓库根目录,若软链/member 未就位则重建(git reset --hard 会撤 members 行,软链被 gitignore 而留存)
+# In the repo root, rebuild if the symlink/member is not in place (git reset --hard removes the members line; the symlink survives because it is gitignored)
 ln -s ../zmod/llm-compress codex-rs/llm-compress 2>/dev/null || true
-# 确认 codex-rs/Cargo.toml 的 [workspace] members 含 "llm-compress"(没有则在 members 数组首行后加一行 "llm-compress",)
-grep -q '"llm-compress"' codex-rs/Cargo.toml || echo '需手动在 codex-rs/Cargo.toml members 加 "llm-compress",'
+# Confirm that the [workspace] members in codex-rs/Cargo.toml contains "llm-compress" (if not, add a line "llm-compress", right after the first line of the members array)
+grep -q '"llm-compress"' codex-rs/Cargo.toml || echo 'Need to manually add "llm-compress", to the members in codex-rs/Cargo.toml'
 ```
 
-**所有任务的测试命令统一**:`cd codex-rs && cargo test -p codez-llm-compress`(或 `--test <name>` 跑单文件)。`cargo clippy -p codez-llm-compress --all-targets` 做 lint。
+**Unified test command for all tasks**: `cd codex-rs && cargo test -p codez-llm-compress` (or `--test <name>` to run a single file). Use `cargo clippy -p codez-llm-compress --all-targets` for lint.
 
 ---
 
-## 任务依赖图
+## Task Dependency Graph
 
 ```
-01 接口地基(router+共享类型骨架+config+schema) ─┬─> 05 JSON 升级
-02 query + score ───────────────────────────────┼─> 06 Search
-03 command ─────────────────────────────────────┼─> 07 Tabular
-04 preprocess + protect ────────────────────────┼─> 08 Log 改写
-                                                 └─> 09 Truncate/Diff 收尾
-10 ccr ──────────────────────────────────────────────> 11 lib 编排 + fixture + parity
+01 Interface foundation (router+shared type skeleton+config+schema) ─┬─> 05 JSON upgrade
+02 query + score ────────────────────────────────────────────────────┼─> 06 Search
+03 command ───────────────────────────────────────────────────────────┼─> 07 Tabular
+04 preprocess + protect ──────────────────────────────────────────────┼─> 08 Log rewrite
+                                                                       └─> 09 Truncate/Diff wrap-up
+10 ccr ────────────────────────────────────────────────────────────────────> 11 lib orchestration + fixture + parity
 ```
 
-- **01** 是接口地基:定义全部跨模块共享类型(`ContentKind`/`CompressOutcome`/`Budget`/`CommandHint`/`RequestCtx`/`CcrRegistry`)、改 `Compressor` trait + `compress_text` + config 全量扩展 + `schema.rs`,并**同步现有 4 压缩器签名**使 crate 编译通过。所有后续任务依赖它。
-- **02–04** 共享原语/模块,依赖 01 的类型,互相独立可并行。
-- **05–09** 各压缩器,依赖 01–04,互相独立可并行。
-- **10** ccr,依赖 01 的 `RequestCtx`/`CcrRegistry`/`CcrCfg`。
-- **11** lib 编排把全部接线 + 继承 fixture + parity_test 收尾,依赖全部。
+- **01** is the interface foundation: defines all cross-module shared types (`ContentKind`/`CompressOutcome`/`Budget`/`CommandHint`/`RequestCtx`/`CcrRegistry`), revises the `Compressor` trait + `compress_text` + full config expansion + `schema.rs`, and **synchronizes the signatures of the existing 4 compressors** so the crate compiles. All subsequent tasks depend on it.
+- **02–04** are shared primitives/modules, depend on 01's types, and are mutually independent and parallelizable.
+- **05–09** are the individual compressors, depend on 01–04, and are mutually independent and parallelizable.
+- **10** ccr, depends on 01's `RequestCtx`/`CcrRegistry`/`CcrCfg`.
+- **11** lib orchestration wires everything together + inherited fixtures + parity_test wrap-up; depends on all.
 
 ---
 
-## 任务清单
+## Task List
 
-| # | 文件 | 交付物 | spec |
-|---|------|--------|------|
-| 01 | `2026-06-21-llm-compress-v2-01-foundation.md` | router 接口 + 共享类型 + config 扩展 + schema.rs + 现有压缩器签名同步 | §4.0/§4.1/§4.8/§6 |
-| 02 | `2026-06-21-llm-compress-v2-02-query-score.md` | `query.rs` + `score.rs` 共享原语 | §4.2/§4.4 |
-| 03 | `2026-06-21-llm-compress-v2-03-command.md` | `command.rs` call_id→CommandHint 索引 | §4.3 |
-| 04 | `2026-06-21-llm-compress-v2-04-preprocess-protect.md` | `preprocess.rs`(含 blob_fold)+ `protect.rs` | §4.5/§4.6 |
-| 05 | `2026-06-21-llm-compress-v2-05-json.md` | JSON 升级:detect 让位 + RLE + csv-schema | §5① |
+| # | File | Deliverable | spec |
+|---|------|-------------|------|
+| 01 | `2026-06-21-llm-compress-v2-01-foundation.md` | router interface + shared types + config expansion + schema.rs + existing compressor signature sync | §4.0/§4.1/§4.8/§6 |
+| 02 | `2026-06-21-llm-compress-v2-02-query-score.md` | `query.rs` + `score.rs` shared primitives | §4.2/§4.4 |
+| 03 | `2026-06-21-llm-compress-v2-03-command.md` | `command.rs` call_id→CommandHint index | §4.3 |
+| 04 | `2026-06-21-llm-compress-v2-04-preprocess-protect.md` | `preprocess.rs` (incl. blob_fold) + `protect.rs` | §4.5/§4.6 |
+| 05 | `2026-06-21-llm-compress-v2-05-json.md` | JSON upgrade: detect deferral + RLE + csv-schema | §5① |
 | 06 | `2026-06-21-llm-compress-v2-06-search.md` | `search.rs` SearchCompressor | §5② |
 | 07 | `2026-06-21-llm-compress-v2-07-tabular.md` | `tabular.rs` TabularCompressor | §5④ |
-| 08 | `2026-06-21-llm-compress-v2-08-log.md` | Log 改写:模板挖掘 + 级别评分 | §5⑤ |
-| 09 | `2026-06-21-llm-compress-v2-09-truncate-diff.md` | Truncate 去 blob + Diff lossy 标记收尾 | §5③/§5⑥ |
-| 10 | `2026-06-21-llm-compress-v2-10-ccr.md` | `ccr.rs` 落盘 + 占位 + sanitize + 双限 | §4.7 |
-| 11 | `2026-06-21-llm-compress-v2-11-orchestration-parity.md` | lib 编排接线 + 继承 fixture + parity_test | §2/§8/§9 |
+| 08 | `2026-06-21-llm-compress-v2-08-log.md` | Log rewrite: template mining + level scoring | §5⑤ |
+| 09 | `2026-06-21-llm-compress-v2-09-truncate-diff.md` | Truncate blob removal + Diff lossy-marking wrap-up | §5③/§5⑥ |
+| 10 | `2026-06-21-llm-compress-v2-10-ccr.md` | `ccr.rs` persistence + placeholder + sanitize + dual limit | §4.7 |
+| 11 | `2026-06-21-llm-compress-v2-11-orchestration-parity.md` | lib orchestration wiring + inherited fixtures + parity_test | §2/§8/§9 |
 
-## 成功判据(全计划完成后,对照 spec §9.2)
+## Success Criteria (after the entire plan is complete, against spec §9.2)
 
-1. 六压缩器 + 预处理 + 保护门 + CCR 全部落地,路由优先级 `Json→Search→Diff→Tabular→Log→Truncate` 生效,命令提示能重排候选。
-2. 继承 fixture 的 `parity_test` 全绿(§8.3 四类不变量)。
-3. 硬不变量满足:压后 ≤ 压前、UTF-8 合法、JSON 产物可 parse、只碰两变体、图片不动、`enabled=false` 逐字节不变。
-4. CCR `enabled=true` 下有损必可取回;`enabled=false` 不要求;parity 固定 enabled 下跑。
-5. transform 签名与集成点 patch 不变。
-6. fail-open 全覆盖。
+1. All six compressors + preprocessing + protection gate + CCR are in place; the routing priority `Json→Search→Diff→Tabular→Log→Truncate` is in effect; command hints can reorder candidates.
+2. The inherited-fixture `parity_test` is fully green (§8.3 four invariant classes).
+3. Hard invariants hold: post-compression ≤ pre-compression, valid UTF-8, JSON products parse, only the two variants are touched, images untouched, byte-for-byte unchanged when `enabled=false`.
+4. Under CCR `enabled=true`, any lossy result must be retrievable; not required when `enabled=false`; parity runs with enabled fixed on.
+5. The transform signature and the integration-point patch are unchanged.
+6. fail-open is fully covered.

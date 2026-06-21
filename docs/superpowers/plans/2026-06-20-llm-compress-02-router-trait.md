@@ -1,29 +1,29 @@
 # Task 02: Compressor trait + Budget + ContentRouter
 
-> 属于 `2026-06-20-llm-compress-00-index.md`。执行前先读 index。依赖 Task 01。
+> Part of `2026-06-20-llm-compress-00-index.md`. Read the index before starting. Depends on Task 01.
 
-**Goal:** 定义压缩器的公共契约:`Compressor` trait、`Budget`(承载各压缩器配置切片)、`CompressOutcome`、以及 `ContentRouter`(按固定优先级 detect→compress,含 fail-open `catch_unwind`)。本任务用一个内置 `NoopCompressor` 验证 router 编排与 fail-open,真实压缩器在 03-06 实现。
+**Goal:** Define the public contract for compressors: the `Compressor` trait, `Budget` (carrying each compressor's config slice), `CompressOutcome`, and `ContentRouter` (fixed-priority detect→compress, with fail-open `catch_unwind`). This task validates router orchestration and fail-open behavior with a built-in `NoopCompressor`; the real compressors are implemented in 03-06.
 
-**覆盖 spec:** §4(两层管线 / trait / ContentRouter / fail-open)。
+**Spec coverage:** §4 (two-layer pipeline / trait / ContentRouter / fail-open).
 
 **Files:**
 - Create: `zmod/llm-compress/src/router.rs`
-- Modify: `zmod/llm-compress/src/lib.rs`(加 `pub mod router;`)
+- Modify: `zmod/llm-compress/src/lib.rs` (add `pub mod router;`)
 - Test: `zmod/llm-compress/tests/router_test.rs`
 
 **Interfaces:**
-- Consumes(from Task 01): `config::{Config, TruncateCfg, JsonCfg, DiffCfg, LogCfg}`。
-- Produces(03-06 与 08 依赖这些**钉死**的签名):
-  - `pub struct Budget<'a> { pub cfg: &'a Config }` — 压缩器从中取自己的配置切片(如 `budget.cfg.truncate`)。
+- Consumes (from Task 01): `config::{Config, TruncateCfg, JsonCfg, DiffCfg, LogCfg}`.
+- Produces (03-06 and 08 depend on these **pinned** signatures):
+  - `pub struct Budget<'a> { pub cfg: &'a Config }` — compressors read their own config slice from it (e.g. `budget.cfg.truncate`).
   - `pub enum CompressOutcome { Compressed { text: String, saved_bytes: usize }, Unchanged }`
   - `pub trait Compressor: Send + Sync { fn name(&self) -> &'static str; fn detect(&self, text: &str) -> bool; fn compress(&self, text: &str, budget: &Budget) -> CompressOutcome; }`
   - `pub struct ContentRouter { compressors: Vec<Box<dyn Compressor>> }`
     - `pub fn new(compressors: Vec<Box<dyn Compressor>>) -> Self`
-    - `pub fn compress_text(&self, text: &str, budget: &Budget) -> Option<String>` — 按顺序首个 `detect` 命中者执行 `compress`(包在 `catch_unwind` 内);返回 `Some(new)` 仅当确有压缩(`Compressed` 且 `saved_bytes>0`);`Unchanged`/无命中/panic → `None`(调用方保留原文)。
+    - `pub fn compress_text(&self, text: &str, budget: &Budget) -> Option<String>` — runs `compress` on the first compressor whose `detect` matches, in order (wrapped in `catch_unwind`); returns `Some(new)` only when compression actually happened (`Compressed` with `saved_bytes>0`); `Unchanged` / no match / panic → `None` (the caller keeps the original text).
 
 ---
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: Write the failing test**
 
 Create `zmod/llm-compress/tests/router_test.rs`:
 
@@ -31,7 +31,7 @@ Create `zmod/llm-compress/tests/router_test.rs`:
 use codez_llm_compress::config::Config;
 use codez_llm_compress::router::{Budget, CompressOutcome, Compressor, ContentRouter};
 
-/// 认领一切、把文本替换为固定短串的假压缩器。
+/// Fake compressor that claims everything and replaces the text with a fixed short string.
 struct HalfCompressor;
 impl Compressor for HalfCompressor {
     fn name(&self) -> &'static str { "half" }
@@ -47,7 +47,7 @@ impl Compressor for HalfCompressor {
     }
 }
 
-/// 永不认领。
+/// Never claims.
 struct NeverCompressor;
 impl Compressor for NeverCompressor {
     fn name(&self) -> &'static str { "never" }
@@ -55,7 +55,7 @@ impl Compressor for NeverCompressor {
     fn compress(&self, _t: &str, _b: &Budget) -> CompressOutcome { CompressOutcome::Unchanged }
 }
 
-/// detect 命中但 compress panic —— 验证 fail-open。
+/// detect matches but compress panics —— validates fail-open.
 struct PanicCompressor;
 impl Compressor for PanicCompressor {
     fn name(&self) -> &'static str { "panic" }
@@ -86,7 +86,7 @@ fn no_detect_returns_none() {
 fn panic_in_compress_is_caught_and_returns_none() {
     let cfg = Config::disabled();
     let r = ContentRouter::new(vec![Box::new(PanicCompressor)]);
-    // 不得 panic 出来;返回 None 让调用方保留原文。
+    // Must not panic out; returns None so the caller keeps the original text.
     let out = r.compress_text("some payload text", &budget(&cfg));
     assert!(out.is_none());
 }
@@ -105,43 +105,43 @@ fn unchanged_outcome_returns_none() {
 }
 ```
 
-- [ ] **Step 2: 跑测试看失败**
+- [ ] **Step 2: Run the test and watch it fail**
 
-Run(`codex-rs/`):
+Run (`codex-rs/`):
 ```bash
 cargo test -p codez-llm-compress --test router_test
 ```
-Expected: 编译失败(`router` 模块/类型未定义)。
+Expected: compile error (the `router` module/types are undefined).
 
-- [ ] **Step 3: 写 router.rs**
+- [ ] **Step 3: Write router.rs**
 
 Create `zmod/llm-compress/src/router.rs`:
 
 ```rust
-//! 压缩器公共契约 + ContentRouter(固定优先级 + fail-open)。
+//! Compressor public contract + ContentRouter (fixed priority + fail-open).
 
 use crate::config::Config;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-/// 压缩器从中取自己的配置切片(如 budget.cfg.truncate)。
+/// Compressors read their own config slice from it (e.g. budget.cfg.truncate).
 pub struct Budget<'a> {
     pub cfg: &'a Config,
 }
 
-/// 单个压缩器对一段文本的处理结果。
+/// The result of a single compressor processing a piece of text.
 pub enum CompressOutcome {
     Compressed { text: String, saved_bytes: usize },
     Unchanged,
 }
 
-/// 内容识别 + 压缩。实现者保证 detect 廉价、compress 不依赖外部可变状态。
+/// Content detection + compression. Implementers guarantee detect is cheap and compress does not rely on external mutable state.
 pub trait Compressor: Send + Sync {
     fn name(&self) -> &'static str;
     fn detect(&self, text: &str) -> bool;
     fn compress(&self, text: &str, budget: &Budget) -> CompressOutcome;
 }
 
-/// 固定优先级路由:首个 detect 命中者负责压缩;compress 包在 catch_unwind 内 fail-open。
+/// Fixed-priority routing: the first compressor whose detect matches handles compression; compress is wrapped in catch_unwind for fail-open.
 pub struct ContentRouter {
     compressors: Vec<Box<dyn Compressor>>,
 }
@@ -151,11 +151,11 @@ impl ContentRouter {
         Self { compressors }
     }
 
-    /// 返回 Some(new) 仅当确有压缩(Compressed 且 saved_bytes>0);
-    /// Unchanged / 无命中 / panic → None(调用方保留原文)。
+    /// Returns Some(new) only when compression actually happened (Compressed with saved_bytes>0);
+    /// Unchanged / no match / panic → None (the caller keeps the original text).
     pub fn compress_text(&self, text: &str, budget: &Budget) -> Option<String> {
         let c = self.compressors.iter().find(|c| {
-            // detect 也兜 panic:有问题的压缩器视作不认领。
+            // detect also catches panics: a faulty compressor is treated as not claiming.
             catch_unwind(AssertUnwindSafe(|| c.detect(text))).unwrap_or(false)
         })?;
 
@@ -174,23 +174,23 @@ impl ContentRouter {
 }
 ```
 
-- [ ] **Step 4: lib.rs 注册模块**
+- [ ] **Step 4: Register the module in lib.rs**
 
-Modify `zmod/llm-compress/src/lib.rs`,在 `pub mod config;` 后加：
+Modify `zmod/llm-compress/src/lib.rs`, adding after `pub mod config;`:
 
 ```rust
 pub mod router;
 ```
 
-- [ ] **Step 5: 跑测试看通过**
+- [ ] **Step 5: Run the test and watch it pass**
 
-Run(`codex-rs/`):
+Run (`codex-rs/`):
 ```bash
 cargo test -p codez-llm-compress --test router_test
 ```
-Expected: `test result: ok. 4 passed`。
+Expected: `test result: ok. 4 passed`.
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 6: Commit**
 
 ```bash
 cd /Users/dfbb/Sites/skycode/codez

@@ -1,16 +1,16 @@
-# 实现计划:llm-compress 05 — DiffCompressor
+# Implementation Plan: llm-compress 05 — DiffCompressor
 
-> 本文件属于 `docs/superpowers/plans/` 索引下的 llm-compress 系列任务之一(第 05 篇)。
+> This file is one of the llm-compress task series (part 05) under the `docs/superpowers/plans/` index.
 >
-> **依赖**:
-> - **Task 01**(配置):提供 `Config` 与 `pub struct DiffCfg { pub context_lines: usize }`,可经 `budget.cfg.diff` 访问。
-> - **Task 02**(契约):提供 `Budget<'a>`、`CompressOutcome`、`Compressor` trait。本任务**严格遵循**该契约,不得修改。
+> **Dependencies**:
+> - **Task 01** (config): provides `Config` and `pub struct DiffCfg { pub context_lines: usize }`, accessible via `budget.cfg.diff`.
+> - **Task 02** (contract): provides the `Budget<'a>`, `CompressOutcome`, and `Compressor` trait. This task **strictly follows** that contract and must not modify it.
 >
-> 本任务实现 `DiffCompressor`:识别 unified diff,保留全部变更行与结构头,仅折叠 hunk 内多余的上下文行。
+> This task implements `DiffCompressor`: it recognizes a unified diff, preserves all change lines and structural headers, and only collapses the redundant context lines within a hunk.
 
 ---
 
-## 契约(来自 Task 02,只读,不得改)
+## Contract (from Task 02, read-only, must not change)
 
 ```rust
 pub struct Budget<'a> { pub cfg: &'a Config }
@@ -22,73 +22,73 @@ pub trait Compressor: Send + Sync {
 }
 ```
 
-配置(来自 Task 01):
+Config (from Task 01):
 
 ```rust
 pub struct DiffCfg { pub context_lines: usize }
 ```
 
-从 `budget.cfg.diff` 读取。
+Read from `budget.cfg.diff`.
 
 ---
 
-## 行为规格(spec §6)
+## Behavior Spec (spec §6)
 
-- `name()` 返回 `"diff"`。
-- `detect(text)` 在满足以下**任一**条件时返回 `true`,否则 `false`:
-  1. 任一行匹配 hunk 头正则 `^@@ -\d+(,\d+)? \+\d+(,\d+)? @@`;
-  2. 任一行以 `diff --git ` 开头;
-  3. **同时**存在以 `--- ` 开头的行**和**以 `+++ ` 开头的行。
-- `compress(text, budget)`:解析 unified diff,逐 hunk 处理:
-  - **完整保留**:变更行(以 `+` 或 `-` 开头,但不是文件头 `+++`/`---`)、hunk 头(`@@`)、文件头(`diff --git`、`index`、`--- `、`+++ `)。
-  - **上下文行**(hunk 内以单个空格 ` ` 开头的未变更行):仅保留紧邻变更行**前后各 `context_lines` 行**;中间多余上下文折叠为**一行**裸占位 `[llm-compress: 略 N 行上下文]`,其中 `N` 为被折叠的上下文行数。
-  - `saved_bytes > 0` → `Compressed { text, saved_bytes }`;否则 `Unchanged`。
-  - 占位采用裸文本标记 `[llm-compress: …]`(diff 为文本型,允许裸标记)。
+- `name()` returns `"diff"`.
+- `detect(text)` returns `true` when **any** of the following conditions hold, otherwise `false`:
+  1. any line matches the hunk-header regex `^@@ -\d+(,\d+)? \+\d+(,\d+)? @@`;
+  2. any line starts with `diff --git `;
+  3. there exists a line starting with `--- ` **and** a line starting with `+++ ` at the same time.
+- `compress(text, budget)`: parse the unified diff and process it hunk by hunk:
+  - **Fully preserved**: change lines (starting with `+` or `-`, but not the file headers `+++`/`---`), hunk headers (`@@`), file headers (`diff --git`, `index`, `--- `, `+++ `).
+  - **Context lines** (unchanged lines within a hunk that start with a single space ` `): keep only the `context_lines` lines immediately **before and after** each change line; the redundant context in between is collapsed into **a single** bare placeholder `[llm-compress: 略 N 行上下文]`, where `N` is the number of collapsed context lines.
+  - `saved_bytes > 0` → `Compressed { text, saved_bytes }`; otherwise `Unchanged`.
+  - The placeholder uses a bare text marker `[llm-compress: …]` (a diff is text-typed, so a bare marker is allowed).
 
 ---
 
 ## Files
 
-- **Create** `zmod/llm-compress/src/compress/diff.rs` — `DiffCompressor` 实现。
-- **Create** `zmod/llm-compress/tests/diff_test.rs` — 集成测试。
-- **Modify** `zmod/llm-compress/src/compress/mod.rs` — 新增 `pub mod diff;`。
+- **Create** `zmod/llm-compress/src/compress/diff.rs` — `DiffCompressor` implementation.
+- **Create** `zmod/llm-compress/tests/diff_test.rs` — integration tests.
+- **Modify** `zmod/llm-compress/src/compress/mod.rs` — add `pub mod diff;`.
 
 ## Interfaces
 
-- **Produces**: `pub struct DiffCompressor;`(实现 `Compressor` trait)。
-- **Consumes**: `Budget<'a>`、`CompressOutcome`、`Compressor`(Task 02);`DiffCfg`、`Config`(Task 01)。
+- **Produces**: `pub struct DiffCompressor;` (implements the `Compressor` trait).
+- **Consumes**: `Budget<'a>`, `CompressOutcome`, `Compressor` (Task 02); `DiffCfg`, `Config` (Task 01).
 
 ---
 
-## TDD 步骤
+## TDD Steps
 
-### ① 写失败测试
+### ① Write failing tests
 
-创建 `zmod/llm-compress/tests/diff_test.rs`:
+Create `zmod/llm-compress/tests/diff_test.rs`:
 
 ```rust
-//! DiffCompressor 集成测试。
+//! DiffCompressor integration tests.
 //!
-//! 覆盖:
-//! - detect 对真实 git diff 为 true、对普通文本为 false;
-//! - 大段上下文的 hunk 被折叠,变更行全保留;
-//! - 占位标记存在;
-//! - 小 diff(上下文本就少)→ Unchanged;
-//! - saved_bytes 正确。
+//! Coverage:
+//! - detect is true for a real git diff, false for plain text;
+//! - a hunk with a large context block is collapsed, change lines fully preserved;
+//! - the placeholder marker is present;
+//! - a small diff (already few context lines) → Unchanged;
+//! - saved_bytes is correct.
 
 use codez_llm_compress::compress::diff::DiffCompressor;
 use codez_llm_compress::router::{Budget, CompressOutcome, Compressor};
 use codez_llm_compress::config::Config;
 
-/// 构造一个 context_lines=N 的 Config(借助 Task 01 的默认值再覆盖 diff 字段)。
+/// Build a Config with context_lines=N (start from Task 01's default, then override the diff field).
 fn cfg_with_context(n: usize) -> Config {
     let mut cfg = Config::default();
     cfg.diff.context_lines = n;
     cfg
 }
 
-/// 一段真实的多行 unified diff fixture:单文件、单 hunk,含大段未变更上下文。
-/// hunk 内:6 行上文 + 1 行删除 + 1 行新增 + 6 行下文。
+/// A real multi-line unified diff fixture: single file, single hunk, with a large unchanged context block.
+/// Within the hunk: 6 lines of leading context + 1 deleted line + 1 added line + 6 lines of trailing context.
 const REAL_DIFF: &str = "\
 diff --git a/src/lib.rs b/src/lib.rs
 index 1234567..89abcde 100644
@@ -114,22 +114,23 @@ index 1234567..89abcde 100644
 #[test]
 fn detect_true_for_real_git_diff() {
     let c = DiffCompressor;
-    assert!(c.detect(REAL_DIFF), "真实 git diff 应被识别");
+    assert!(c.detect(REAL_DIFF), "a real git diff should be recognized");
 }
 
 #[test]
 fn detect_true_for_bare_hunk_header() {
     let c = DiffCompressor;
     let text = "@@ -1,3 +1,4 @@\n a\n-b\n+c\n d\n";
-    assert!(c.detect(text), "含 hunk 头应被识别");
+    assert!(c.detect(text), "text containing a hunk header should be recognized");
 }
 
 #[test]
 fn detect_false_for_plain_text() {
     let c = DiffCompressor;
     let text = "这是一段普通文本。\n没有任何 diff 特征。\n+ 这不是变更行只是个加号开头的句子\n";
-    // 注意:仅靠单独的 '+' 开头一行不构成 diff(无 hunk 头、无 diff --git、无 '--- '+'+++ ' 配对)。
-    assert!(!c.detect(text), "普通文本不应被识别");
+    // Note: a single line starting with '+' alone does not constitute a diff
+    // (no hunk header, no diff --git, no '--- '+'+++ ' pairing).
+    assert!(!c.detect(text), "plain text should not be recognized");
 }
 
 #[test]
@@ -140,42 +141,42 @@ fn compress_folds_large_context_and_keeps_changes() {
 
     let outcome = c.compress(REAL_DIFF, &budget);
     let CompressOutcome::Compressed { text, saved_bytes } = outcome else {
-        panic!("大段上下文应被压缩");
+        panic!("a large context block should be compressed");
     };
 
-    // 变更行必须完整保留。
-    assert!(text.contains("-old changed line"), "删除行须保留");
-    assert!(text.contains("+new changed line"), "新增行须保留");
+    // Change lines must be fully preserved.
+    assert!(text.contains("-old changed line"), "the deleted line must be preserved");
+    assert!(text.contains("+new changed line"), "the added line must be preserved");
 
-    // 文件头与 hunk 头须保留。
+    // File headers and the hunk header must be preserved.
     assert!(text.contains("diff --git a/src/lib.rs b/src/lib.rs"));
     assert!(text.contains("index 1234567..89abcde 100644"));
     assert!(text.contains("--- a/src/lib.rs"));
     assert!(text.contains("+++ b/src/lib.rs"));
     assert!(text.contains("@@ -1,14 +1,14 @@"));
 
-    // 紧邻变更行前后各 2 行上下文须保留。
-    assert!(text.contains(" line ctx 5"), "变更行前第 2 行须保留");
-    assert!(text.contains(" line ctx 6"), "变更行前第 1 行须保留");
-    assert!(text.contains(" line ctx 7"), "变更行后第 1 行须保留");
-    assert!(text.contains(" line ctx 8"), "变更行后第 2 行须保留");
+    // The 2 context lines immediately before and after the change line must be preserved.
+    assert!(text.contains(" line ctx 5"), "the 2nd line before the change must be preserved");
+    assert!(text.contains(" line ctx 6"), "the 1st line before the change must be preserved");
+    assert!(text.contains(" line ctx 7"), "the 1st line after the change must be preserved");
+    assert!(text.contains(" line ctx 8"), "the 2nd line after the change must be preserved");
 
-    // 被折叠的远端上下文不应出现。
-    assert!(!text.contains(" line ctx 1"), "远端上文应被折叠");
-    assert!(!text.contains(" line ctx 12"), "远端下文应被折叠");
+    // The collapsed far-side context should not appear.
+    assert!(!text.contains(" line ctx 1"), "the far leading context should be collapsed");
+    assert!(!text.contains(" line ctx 12"), "the far trailing context should be collapsed");
 
-    // 占位标记须存在。
+    // The placeholder marker must be present.
     assert!(
         text.contains("[llm-compress: 略 4 行上下文]"),
-        "上文 6-2=4 行应折叠为占位,实际输出:\n{text}"
+        "leading context 6-2=4 lines should collapse into a placeholder, actual output:\n{text}"
     );
     assert!(
         text.contains("[llm-compress: 略 4 行上下文]"),
-        "下文 6-2=4 行应折叠为占位"
+        "trailing context 6-2=4 lines should collapse into a placeholder"
     );
 
-    // saved_bytes 应等于原文与压缩后文本的字节差。
-    assert_eq!(saved_bytes, REAL_DIFF.len() - text.len(), "saved_bytes 须为字节差");
+    // saved_bytes should equal the byte difference between the original and the compressed text.
+    assert_eq!(saved_bytes, REAL_DIFF.len() - text.len(), "saved_bytes must be the byte difference");
     assert!(saved_bytes > 0);
 }
 
@@ -185,7 +186,7 @@ fn compress_small_diff_unchanged() {
     let cfg = cfg_with_context(3);
     let budget = Budget { cfg: &cfg };
 
-    // 上下文本就 ≤ context_lines,无可折叠。
+    // Context is already ≤ context_lines, nothing to collapse.
     let small = "\
 diff --git a/a.txt b/a.txt
 index aaa..bbb 100644
@@ -201,82 +202,84 @@ index aaa..bbb 100644
     let outcome = c.compress(small, &budget);
     assert!(
         matches!(outcome, CompressOutcome::Unchanged),
-        "无可折叠上下文时应 Unchanged"
+        "should be Unchanged when there is no context to collapse"
     );
 }
 ```
 
-### ② 跑测试看失败
+### ② Run the tests and watch them fail
 
 ```bash
 cd /Users/dfbb/Sites/skycode/codez/codex-rs
 cargo test -p codez-llm-compress --test diff_test
 ```
 
-预期:编译失败(`compress::diff` 模块尚不存在),即"红"。
+Expected: compilation fails (the `compress::diff` module does not exist yet), i.e. "red".
 
-### ③ 写 `diff.rs` 完整实现
+### ③ Write the full `diff.rs` implementation
 
-创建 `zmod/llm-compress/src/compress/diff.rs`:
+Create `zmod/llm-compress/src/compress/diff.rs`:
 
 ```rust
-//! DiffCompressor:识别 unified diff,保留全部变更行与结构头,
-//! 仅折叠 hunk 内多余的上下文行。
+//! DiffCompressor: recognizes a unified diff, preserves all change lines and structural
+//! headers, and only collapses the redundant context lines within a hunk.
 //!
-//! 折叠规则(spec §6):
-//! - 变更行(`+`/`-` 开头,但非文件头 `+++`/`---`)、hunk 头(`@@`)、
-//!   文件头(`diff --git`/`index`/`--- `/`+++ `)全部保留。
-//! - hunk 内上下文行(以单空格开头)仅保留紧邻变更行前后各 `context_lines` 行,
-//!   中间折叠为一行裸占位 `[llm-compress: 略 N 行上下文]`。
+//! Collapse rules (spec §6):
+//! - change lines (starting with `+`/`-`, but not the file headers `+++`/`---`), hunk
+//!   headers (`@@`), and file headers (`diff --git`/`index`/`--- `/`+++ `) are all preserved.
+//! - context lines within a hunk (starting with a single space) keep only the
+//!   `context_lines` lines immediately before and after each change line; the middle is
+//!   collapsed into a single bare placeholder `[llm-compress: 略 N 行上下文]`.
 
 use crate::router::{Budget, CompressOutcome, Compressor};
 
-/// unified diff 压缩器。
+/// Unified-diff compressor.
 pub struct DiffCompressor;
 
 impl DiffCompressor {
-    /// 判断一行是否为 hunk 头 `@@ -a,b +c,d @@`(b、d 可省略)。
+    /// Determine whether a line is a hunk header `@@ -a,b +c,d @@` (b and d may be omitted).
     ///
-    /// 不引入正则依赖,手写解析等价于 `^@@ -\d+(,\d+)? \+\d+(,\d+)? @@`。
+    /// Introduces no regex dependency; the hand-written parser is equivalent to
+    /// `^@@ -\d+(,\d+)? \+\d+(,\d+)? @@`.
     fn is_hunk_header(line: &str) -> bool {
-        // 必须以 "@@ -" 起始。
+        // Must start with "@@ -".
         let rest = match line.strip_prefix("@@ -") {
             Some(r) => r,
             None => return false,
         };
-        // 解析 "\d+(,\d+)? " —— 旧区间。
+        // Parse "\d+(,\d+)? " — the old range.
         let rest = match Self::consume_range(rest) {
             Some(r) => r,
             None => return false,
         };
-        // 紧跟一个空格。
+        // Followed by a single space.
         let rest = match rest.strip_prefix(' ') {
             Some(r) => r,
             None => return false,
         };
-        // 紧跟 "+"。
+        // Followed by "+".
         let rest = match rest.strip_prefix('+') {
             Some(r) => r,
             None => return false,
         };
-        // 解析 "\d+(,\d+)?" —— 新区间。
+        // Parse "\d+(,\d+)?" — the new range.
         let rest = match Self::consume_range(rest) {
             Some(r) => r,
             None => return false,
         };
-        // 紧跟 " @@"。
+        // Followed by " @@".
         rest.starts_with(" @@")
     }
 
-    /// 消费一个 `\d+(,\d+)?` 形式的区间,返回剩余切片;失败返回 None。
+    /// Consume a range of the form `\d+(,\d+)?`, returning the remaining slice; None on failure.
     fn consume_range(s: &str) -> Option<&str> {
-        // 至少一位数字。
+        // At least one digit.
         let first_len = s.bytes().take_while(|b| b.is_ascii_digit()).count();
         if first_len == 0 {
             return None;
         }
         let s = &s[first_len..];
-        // 可选 ",\d+"。
+        // Optional ",\d+".
         if let Some(after_comma) = s.strip_prefix(',') {
             let len = after_comma.bytes().take_while(|b| b.is_ascii_digit()).count();
             if len == 0 {
@@ -288,7 +291,7 @@ impl DiffCompressor {
         }
     }
 
-    /// 是否为文件头(整体保留,不参与上下文折叠)。
+    /// Whether a line is a file header (preserved as a whole, not subject to context collapsing).
     fn is_file_header(line: &str) -> bool {
         line.starts_with("diff --git ")
             || line.starts_with("index ")
@@ -296,7 +299,7 @@ impl DiffCompressor {
             || line.starts_with("+++ ")
     }
 
-    /// 是否为变更行(`+`/`-` 开头,但排除文件头 `+++ `/`--- `)。
+    /// Whether a line is a change line (starting with `+`/`-`, but excluding the file headers `+++ `/`--- `).
     fn is_change_line(line: &str) -> bool {
         if line.starts_with("+++ ") || line.starts_with("--- ") {
             return false;
@@ -304,7 +307,7 @@ impl DiffCompressor {
         line.starts_with('+') || line.starts_with('-')
     }
 
-    /// 是否为上下文行(hunk 内以单空格开头的未变更行)。
+    /// Whether a line is a context line (an unchanged line within a hunk that starts with a single space).
     fn is_context_line(line: &str) -> bool {
         line.starts_with(' ')
     }
@@ -338,29 +341,32 @@ impl Compressor for DiffCompressor {
     fn compress(&self, text: &str, budget: &Budget) -> CompressOutcome {
         let ctx = budget.cfg.diff.context_lines;
 
-        // 第一步:把所有行收集为 Vec,便于做"前后窗口"判定。
+        // Step one: collect all lines into a Vec for easy "before/after window" decisions.
         let lines: Vec<&str> = text.lines().collect();
         let n = lines.len();
 
-        // 标记每一行是否为上下文行。
+        // Mark whether each line is a context line.
         let is_ctx: Vec<bool> = lines.iter().map(|l| Self::is_context_line(l)).collect();
-        // 标记每一行是否为"锚点"(变更行 / hunk 头 / 文件头) —— 上下文需围绕变更行保留。
-        // 折叠窗口的依据是"与最近变更行的距离",因此先标记变更行位置。
+        // Mark whether each line is an "anchor" (change line / hunk header / file header) — context
+        // must be kept around change lines.
+        // The collapse window is based on "distance to the nearest change line", so first mark the
+        // change-line positions.
         let is_change: Vec<bool> = lines.iter().map(|l| Self::is_change_line(l)).collect();
 
-        // 计算每一上下文行到"最近变更行"的距离(只在同一连续上下文段内有意义,
-        // 但用全局最近变更行距离即可正确实现"紧邻变更行前后各 ctx 行"的语义:
-        // 上下文行若其上方 ctx 行内或下方 ctx 行内存在变更行,则保留)。
+        // Compute each context line's distance to the "nearest change line" (only meaningful within
+        // the same contiguous context block, but using the global nearest-change-line distance
+        // correctly implements the "keep ctx lines immediately before and after each change line"
+        // semantics: a context line is kept if a change line exists within ctx lines above or below it).
         let mut keep: Vec<bool> = vec![true; n];
 
         for i in 0..n {
             if !is_ctx[i] {
-                // 非上下文行(变更行 / hunk 头 / 文件头 / 其它)一律保留。
+                // Non-context lines (change line / hunk header / file header / other) are always kept.
                 continue;
             }
-            // 上下文行:检查上方 ctx 行内是否有变更行。
+            // Context line: check whether a change line exists within ctx lines above.
             let mut near_change = false;
-            // 向上看 ctx 行。
+            // Look ctx lines up.
             let lo = i.saturating_sub(ctx);
             for j in lo..i {
                 if is_change[j] {
@@ -368,7 +374,7 @@ impl Compressor for DiffCompressor {
                     break;
                 }
             }
-            // 向下看 ctx 行。
+            // Look ctx lines down.
             if !near_change {
                 let hi = (i + ctx + 1).min(n);
                 for j in (i + 1)..hi {
@@ -381,7 +387,7 @@ impl Compressor for DiffCompressor {
             keep[i] = near_change;
         }
 
-        // 第二步:按顺序输出,遇到连续被丢弃的上下文段折叠为一行占位。
+        // Step two: emit in order; collapse each run of discarded context lines into a single placeholder.
         let mut out_lines: Vec<String> = Vec::with_capacity(n);
         let mut i = 0;
         let mut any_folded = false;
@@ -390,7 +396,7 @@ impl Compressor for DiffCompressor {
                 out_lines.push(lines[i].to_string());
                 i += 1;
             } else {
-                // 收集一段连续的被丢弃上下文行。
+                // Collect a contiguous run of discarded context lines.
                 let start = i;
                 while i < n && !keep[i] {
                     i += 1;
@@ -405,13 +411,14 @@ impl Compressor for DiffCompressor {
             return CompressOutcome::Unchanged;
         }
 
-        // 重建文本:保留原文末尾换行习惯。原文以 '\n' 结尾则补一个。
+        // Rebuild the text, preserving the original's trailing-newline convention. If the original
+        // ends with '\n', append one.
         let mut result = out_lines.join("\n");
         if text.ends_with('\n') {
             result.push('\n');
         }
 
-        // 若折叠后体积未减小(占位反而更长),视为 Unchanged。
+        // If the size did not shrink after folding (the placeholder is actually longer), treat as Unchanged.
         if result.len() >= text.len() {
             return CompressOutcome::Unchanged;
         }
@@ -425,26 +432,26 @@ impl Compressor for DiffCompressor {
 }
 ```
 
-### ④ 注册模块
+### ④ Register the module
 
-在 `zmod/llm-compress/src/compress/mod.rs` 中新增:
+In `zmod/llm-compress/src/compress/mod.rs`, add:
 
 ```rust
 pub mod diff;
 ```
 
-(置于现有 `pub mod ...;` 声明区,与既有模块同级。)
+(Place it in the existing `pub mod ...;` declaration block, alongside the other modules.)
 
-### ⑤ 跑测试看通过
+### ⑤ Run the tests and watch them pass
 
 ```bash
 cd /Users/dfbb/Sites/skycode/codez/codex-rs
 cargo test -p codez-llm-compress --test diff_test
 ```
 
-预期:全部用例通过,即"绿"。
+Expected: all cases pass, i.e. "green".
 
-### ⑥ 提交
+### ⑥ Commit
 
 ```bash
 cd /Users/dfbb/Sites/skycode/codez
@@ -454,19 +461,19 @@ git -c core.hooksPath=/dev/null commit -m "feat(llm-compress): DiffCompressor (k
 
 ---
 
-## 测试覆盖清单
+## Test Coverage Checklist
 
-| 用例 | 验证点 |
+| Case | Verification point |
 | --- | --- |
-| `detect_true_for_real_git_diff` | detect 对真实 git diff 返回 `true` |
-| `detect_true_for_bare_hunk_header` | detect 对裸 hunk 头返回 `true` |
-| `detect_false_for_plain_text` | detect 对普通文本返回 `false` |
-| `compress_folds_large_context_and_keeps_changes` | 大段上下文折叠 + 变更行/头部全保留 + 占位标记存在 + `saved_bytes` 为字节差 |
-| `compress_small_diff_unchanged` | 上下文本就少 → `Unchanged` |
+| `detect_true_for_real_git_diff` | detect returns `true` for a real git diff |
+| `detect_true_for_bare_hunk_header` | detect returns `true` for a bare hunk header |
+| `detect_false_for_plain_text` | detect returns `false` for plain text |
+| `compress_folds_large_context_and_keeps_changes` | large context collapsed + change lines/headers fully preserved + placeholder marker present + `saved_bytes` is the byte difference |
+| `compress_small_diff_unchanged` | already few context lines → `Unchanged` |
 
-## 实现要点说明
+## Implementation Notes
 
-- **不引入正则依赖**:`is_hunk_header` 手写解析等价于 `^@@ -\d+(,\d+)? \+\d+(,\d+)? @@`,避免为单一匹配引入 `regex` crate。
-- **折叠语义**:"紧邻变更行前后各 `context_lines` 行"以"该上下文行的上/下 `ctx` 行窗口内是否存在变更行"判定,等价且简洁;连续被丢弃的上下文段折叠为单行占位,`N` 为该段行数。
-- **末尾换行**:输出保留原文是否以 `\n` 结尾的习惯,保证 `saved_bytes` 与 `text.len() - result.len()` 严格一致。
-- **保守回退**:若折叠后体积未减小则返回 `Unchanged`,符合 `saved_bytes > 0 → Compressed` 的规格。
+- **No regex dependency**: `is_hunk_header`'s hand-written parser is equivalent to `^@@ -\d+(,\d+)? \+\d+(,\d+)? @@`, avoiding pulling in the `regex` crate for a single match.
+- **Collapse semantics**: "keep the `context_lines` lines immediately before and after each change line" is decided by "whether a change line exists within the `ctx`-line window above/below this context line" — equivalent and concise; each contiguous run of discarded context lines is collapsed into a single placeholder, with `N` being the run's line count.
+- **Trailing newline**: the output preserves whether the original ends with `\n`, ensuring `saved_bytes` matches `text.len() - result.len()` exactly.
+- **Conservative fallback**: if the size does not shrink after folding, return `Unchanged`, consistent with the `saved_bytes > 0 → Compressed` spec.

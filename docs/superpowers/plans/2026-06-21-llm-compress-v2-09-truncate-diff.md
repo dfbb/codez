@@ -1,27 +1,27 @@
-# Task 09 — Truncate / Diff 收尾验证
+# Task 09 — Truncate / Diff Final Verification
 
-> 隶属 `2026-06-21-llm-compress-v2-00-index.md`。覆盖 spec §5③ / §5⑥。依赖 Task 01(签名已同步)、Task 04(blob 归 preprocess)。可与 05–08 并行。
+> Part of `2026-06-21-llm-compress-v2-00-index.md`. Covers spec §5③ / §5⑥. Depends on Task 01 (signatures already synced) and Task 04 (blob moved to preprocess). Can run in parallel with 05–08.
 
-**Goal:** 确认 Truncate 与 Diff 在 v2 框架下行为正确:Truncate **不做 base64/blob 折叠**(已上移 preprocess,Task 04)、产 `lossy=true,kind=Text`;Diff 折叠时 `lossy=true,kind=Text`。本任务以回归测试锁定这两点,不引入新算法(Task 01 已同步签名;v1 truncate 本就无 blob 逻辑,只需断言确认)。
+**Goal:** Confirm that Truncate and Diff behave correctly under the v2 framework: Truncate does **no base64/blob folding** (already moved up to preprocess, Task 04) and produces `lossy=true, kind=Text`; Diff produces `lossy=true, kind=Text` when folding. This task locks down these two points with regression tests and introduces no new algorithm (Task 01 already synced the signatures; v1 truncate never had blob logic, so this only requires assertions to confirm).
 
 ## Files
-- Modify: `zmod/llm-compress/src/compress/truncate.rs`(仅在确有 v1 残留 blob 逻辑时移除;预期无)
-- Test: `zmod/llm-compress/tests/truncate_test.rs`(追加 lossy/kind 断言)、`zmod/llm-compress/tests/diff_test.rs`(追加 lossy/kind 断言)
+- Modify: `zmod/llm-compress/src/compress/truncate.rs` (only if there really is leftover v1 blob logic to remove; not expected)
+- Test: `zmod/llm-compress/tests/truncate_test.rs` (add lossy/kind assertions), `zmod/llm-compress/tests/diff_test.rs` (add lossy/kind assertions)
 
 **Interfaces:**
-- Consumes: Task 01 的 `Budget`/`CompressOutcome`/`ContentKind`。
-- Produces: 无新接口,锁定 Truncate/Diff 的 lossy/kind 契约。
+- Consumes: Task 01's `Budget` / `CompressOutcome` / `ContentKind`.
+- Produces: no new interface; locks down the lossy/kind contract for Truncate/Diff.
 
 ---
 
-- [ ] **Step 1: 确认 truncate.rs 无 base64/blob 折叠逻辑**
+- [ ] **Step 1: Confirm truncate.rs has no base64/blob folding logic**
 
 Run: `grep -n "base64\|blob\|data:" zmod/llm-compress/src/compress/truncate.rs`
-Expected: 无输出(v1 truncate 不含 blob;blob 折叠唯一在 preprocess,spec §4.6 #6)。若有输出,删除相关分支(它会与 preprocess 重复折叠)。
+Expected: no output (v1 truncate contains no blob; blob folding lives solely in preprocess, spec §4.6 #6). If there is output, delete the relevant branch (it would fold redundantly with preprocess).
 
-- [ ] **Step 2: 写 Truncate lossy/kind 回归测试**
+- [ ] **Step 2: Write the Truncate lossy/kind regression test**
 
-向 `zmod/llm-compress/tests/truncate_test.rs` 追加:
+Append to `zmod/llm-compress/tests/truncate_test.rs`:
 
 ```rust
 #[test]
@@ -34,16 +34,16 @@ fn truncate_marks_lossy_text_kind() {
     let CompressOutcome::Compressed { lossy, kind, .. } = out else {
         panic!("expected Compressed");
     };
-    assert!(lossy, "截断删内容 → lossy=true");
+    assert!(lossy, "truncation drops content → lossy=true");
     assert_eq!(kind, ContentKind::Text);
 }
 ```
 
-> `cfg_with` / `budget` helper 在 truncate_test.rs 已存在(Task 01 已把 budget 改为 `Budget { cfg, cmd: None, query: &[] }`)。
+> The `cfg_with` / `budget` helpers already exist in truncate_test.rs (Task 01 changed budget to `Budget { cfg, cmd: None, query: &[] }`).
 
-- [ ] **Step 3: 写 Diff lossy/kind 回归测试**
+- [ ] **Step 3: Write the Diff lossy/kind regression test**
 
-向 `zmod/llm-compress/tests/diff_test.rs` 追加(确认 diff 折叠产 lossy=true,kind=Text):
+Append to `zmod/llm-compress/tests/diff_test.rs` (confirming diff folding produces lossy=true, kind=Text):
 
 ```rust
 #[test]
@@ -55,7 +55,7 @@ fn diff_fold_marks_lossy_text_kind() {
     let mut cfg = Config::disabled();
     cfg.diff.context_lines = 1;
     let c = DiffCompressor;
-    // 构造一个有多余上下文可折叠的 diff
+    // Construct a diff with surplus context that can be folded
     let mut lines = vec!["diff --git a/f b/f".to_string(), "--- a/f".to_string(), "+++ b/f".to_string(), "@@ -1,20 +1,20 @@".to_string()];
     for i in 0..10 {
         lines.push(format!(" ctx{i}"));
@@ -68,7 +68,7 @@ fn diff_fold_marks_lossy_text_kind() {
     let text = lines.join("\n");
     let b = Budget { cfg: &cfg, cmd: None, query: &[] };
     if let CompressOutcome::Compressed { lossy, kind, .. } = c.compress(&text, &b) {
-        assert!(lossy, "diff 折叠上下文 → lossy=true");
+        assert!(lossy, "diff folds context → lossy=true");
         assert_eq!(kind, ContentKind::Text);
     } else {
         panic!("expected compressed diff");
@@ -76,18 +76,18 @@ fn diff_fold_marks_lossy_text_kind() {
 }
 ```
 
-- [ ] **Step 4: 运行测试通过**
+- [ ] **Step 4: Run the tests and pass**
 
 Run: `cd codex-rs && cargo test -p codez-llm-compress --test truncate_test --test diff_test`
-Expected: PASS(现有用例 + 2 个新回归)
+Expected: PASS (existing cases + 2 new regressions)
 
-- [ ] **Step 5: clippy + 提交**
+- [ ] **Step 5: clippy + commit**
 
 Run: `cd codex-rs && cargo test -p codez-llm-compress && cargo clippy -p codez-llm-compress --all-targets`
-Expected: 全绿、无 warning
+Expected: all green, no warnings
 
 ```bash
 git add zmod/llm-compress/src/compress/truncate.rs zmod/llm-compress/tests/truncate_test.rs \
   zmod/llm-compress/tests/diff_test.rs
-git commit -m "test(llm-compress-v2): Task09 Truncate/Diff lossy+kind 契约回归;确认 blob 不在 Truncate"
+git commit -m "test(llm-compress-v2): Task09 Truncate/Diff lossy+kind contract regression; confirm blob is not in Truncate"
 ```

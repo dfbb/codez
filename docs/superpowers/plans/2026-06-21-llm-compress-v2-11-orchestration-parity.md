@@ -1,24 +1,24 @@
-# Task 11 — lib 编排接线 + 继承 fixture + parity_test
+# Task 11 — lib orchestration wiring + inherited fixtures + parity_test
 
-> 隶属 `2026-06-21-llm-compress-v2-00-index.md`。覆盖 spec §2 / §8 / §9。依赖全部前序任务(01–10)。
+> Belongs to `2026-06-21-llm-compress-v2-00-index.md`. Covers spec §2 / §8 / §9. Depends on all prior tasks (01–10).
 
-**Goal:** 把所有模块接线进 `transform` 编排链(命令识别 → 保护门 → 预处理 → 路由压缩 → CCR 挂载 → 体积闸门),`build_router` 注册全部 6 个压缩器(Json→Search→Diff→Tabular→Log→Truncate),继承 headroom/rtk fixture(NOTICE+manifest sidecar),写 `parity_test` 跑对比断言。
+**Goal:** Wire all modules into the `transform` orchestration chain (command detection → protection gate → preprocessing → routed compression → CCR attachment → volume gate), register all 6 compressors in `build_router` (Json→Search→Diff→Tabular→Log→Truncate), inherit the headroom/rtk fixtures (NOTICE + manifest sidecar), and write a `parity_test` that runs comparison assertions.
 
 ## Files
-- Modify: `zmod/llm-compress/src/lib.rs`(重写 transform 编排 + build_router 注册 6 压缩器)
-- Create: `zmod/llm-compress/tests/fixtures/inherited/`(LICENSE-headroom、LICENSE-rtk、NOTICE.md、manifest.toml + 各压缩器子目录原始数据文件)
+- Modify: `zmod/llm-compress/src/lib.rs` (rewrite the transform orchestration + register the 6 compressors in build_router)
+- Create: `zmod/llm-compress/tests/fixtures/inherited/` (LICENSE-headroom, LICENSE-rtk, NOTICE.md, manifest.toml + raw data files in each compressor subdirectory)
 - Create: `zmod/llm-compress/tests/parity_test.rs`
-- Create: `zmod/llm-compress/tests/orchestration_test.rs`(编排端到端)
+- Create: `zmod/llm-compress/tests/orchestration_test.rs` (end-to-end orchestration)
 
 **Interfaces:**
-- Consumes: Task 01–10 全部:`router::{ContentRouter,Budget,build...}`、`query::extract`、`command::index`、`score`、`protect::should_protect`、`preprocess::run`、`ccr::{RequestCtx,CcrRegistry,attach}`、6 压缩器、`config`。
-- Produces: 完整可用的 `transform`。
+- Consumes: all of Task 01–10: `router::{ContentRouter,Budget,build...}`, `query::extract`, `command::index`, `score`, `protect::should_protect`, `preprocess::run`, `ccr::{RequestCtx,CcrRegistry,attach}`, the 6 compressors, `config`.
+- Produces: a fully usable `transform`.
 
 ---
 
-- [ ] **Step 1: build_router 注册 6 压缩器**
+- [ ] **Step 1: Register the 6 compressors in build_router**
 
-`zmod/llm-compress/src/lib.rs` 的 `build_router`(v1 只注册 4 个)改为(顺序 = spec 路由优先级 `Json→Search→Diff→Tabular→Log→Truncate`):
+Change `build_router` in `zmod/llm-compress/src/lib.rs` (v1 registered only 4) to the following (order = spec routing priority `Json→Search→Diff→Tabular→Log→Truncate`):
 
 ```rust
 fn build_router() -> ContentRouter {
@@ -37,9 +37,9 @@ fn build_router() -> ContentRouter {
 }
 ```
 
-- [ ] **Step 2: 重写 transform 编排(构造 RequestCtx + 处理链)**
+- [ ] **Step 2: Rewrite the transform orchestration (build RequestCtx + processing chain)**
 
-`zmod/llm-compress/src/lib.rs` 的 `transform` 改为(spec §2 编排):
+Change `transform` in `zmod/llm-compress/src/lib.rs` to the following (spec §2 orchestration):
 
 ```rust
 pub fn transform(request: &mut ResponsesApiRequest, _api_provider: &ApiProvider, queryid: &str) {
@@ -47,7 +47,7 @@ pub fn transform(request: &mut ResponsesApiRequest, _api_provider: &ApiProvider,
     if !cfg.enabled {
         return;
     }
-    // 一次性请求上下文
+    // One-time request context
     let ctx = crate::ccr::RequestCtx {
         queryid,
         query_terms: crate::query::extract(request),
@@ -67,9 +67,9 @@ pub fn transform(request: &mut ResponsesApiRequest, _api_provider: &ApiProvider,
 }
 ```
 
-- [ ] **Step 3: 重写 compress_item / compress_in_place(处理链 ①–⑥)**
+- [ ] **Step 3: Rewrite compress_item / compress_in_place (processing chain ①–⑥)**
 
-替换 `lib.rs` 现有 `compress_item` 与 `compress_in_place`:
+Replace the existing `compress_item` and `compress_in_place` in `lib.rs`:
 
 ```rust
 fn compress_item(
@@ -111,13 +111,13 @@ fn compress_in_place(
         return;
     }
     let cmd = ctx.cmd_index.get(call_id);
-    // ② 保护门:命中即整段逐字节不变
+    // ② Protection gate: if it matches, the whole segment stays byte-for-byte unchanged
     if crate::protect::should_protect(s, cmd, cfg) {
         return;
     }
-    // ③ 预处理
+    // ③ Preprocessing
     let (pre, pre_lossy) = crate::preprocess::run(s, &cfg.preprocess);
-    // ④⑤ 路由压缩
+    // ④⑤ Routed compression
     let budget = Budget { cfg, cmd, query: &ctx.query_terms };
     let candidate = match router.compress_text(&pre, &budget) {
         Some((new, comp_lossy, _kind)) => {
@@ -135,21 +135,21 @@ fn compress_in_place(
             }
         }
     };
-    // #4 最终写回闸门
+    // #4 Final write-back gate
     if candidate.len() <= s.len() {
         *s = candidate;
     }
 }
 ```
 
-> 删除 v1 `compress_item` 旧签名(带 `min_bytes` 参数的)与旧 `Budget { cfg: &cfg }` 构造。确保 `lib.rs` 顶部 use 含 `FunctionCallOutputContentItem`、`Budget`、`ContentRouter`。
+> Delete the old v1 `compress_item` signature (the one with the `min_bytes` parameter) and the old `Budget { cfg: &cfg }` construction. Make sure the use block at the top of `lib.rs` includes `FunctionCallOutputContentItem`, `Budget`, and `ContentRouter`.
 
-- [ ] **Step 4: 编译 + 现有测试回归**
+- [ ] **Step 4: Build + regression of existing tests**
 
 Run: `cd codex-rs && cargo build -p codez-llm-compress && cargo test -p codez-llm-compress`
-Expected: 全绿(全部模块测试 + 现有)
+Expected: all green (all module tests + existing)
 
-- [ ] **Step 5: 建 fixture 目录骨架 + LICENSE + NOTICE**
+- [ ] **Step 5: Set up the fixture directory skeleton + LICENSE + NOTICE**
 
 ```bash
 mkdir -p zmod/llm-compress/tests/fixtures/inherited/{search,log,diff,json,tabular,preprocess}
@@ -157,41 +157,41 @@ cp ../3rd/compress/headroom/LICENSE zmod/llm-compress/tests/fixtures/inherited/L
 cp ../3rd/compress/rtk/LICENSE zmod/llm-compress/tests/fixtures/inherited/LICENSE-rtk
 ```
 
-创建 `zmod/llm-compress/tests/fixtures/inherited/NOTICE.md`:
+Create `zmod/llm-compress/tests/fixtures/inherited/NOTICE.md`:
 
 ```markdown
-# 继承测试数据来源
+# Sources of inherited test data
 
-本目录数据改编自以下 Apache-2.0 项目,版权归原作者:
-- headroom — © 2025 Headroom Contributors(Apache-2.0,见 LICENSE-headroom)
-- rtk — © 2024 rtk-ai Labs(Apache-2.0,见 LICENSE-rtk)
+The data in this directory is adapted from the following Apache-2.0 projects; copyright belongs to the original authors:
+- headroom — © 2025 Headroom Contributors (Apache-2.0, see LICENSE-headroom)
+- rtk — © 2024 rtk-ai Labs (Apache-2.0, see LICENSE-rtk)
 
-逐文件来源见 manifest.toml 的 `origin` 字段。fixture 文件保持上游原始字节,不在文件内加注释(避免破坏 JSON/污染输入)。
+Per-file provenance is recorded in the `origin` field of manifest.toml. Fixture files keep the upstream raw bytes; no comments are added inside the files (to avoid breaking JSON / polluting input).
 ```
 
-- [ ] **Step 6: 拷贝 input fixture(从 headroom parity JSON 抽 input,从 rtk 抽样本)**
+- [ ] **Step 6: Copy input fixtures (extract input from headroom parity JSON, sample from rtk)**
 
-CCR/parity fixture 的 input 从 headroom parity JSON 的 `input` 字段提取。由于上游 parity JSON 是 `{input, config, output}` 三元组,**input 字段即我方 fixture 输入,output 字段存为 `.expected` 供对比**。用脚本抽取(对每个压缩器目录取 3-5 个代表样本即可,不必全 20+):
+The input for CCR/parity fixtures is extracted from the `input` field of the headroom parity JSON. Since the upstream parity JSON is an `{input, config, output}` triple, **the input field is our fixture input, and the output field is stored as `.expected` for comparison**. Extract with a script (3–5 representative samples per compressor directory is enough; you don't need all 20+):
 
 ```bash
-# 示例:Log —— 取 headroom 3 个 parity JSON,拆出 input 与 expected
+# Example: Log — take 3 headroom parity JSONs, split out input and expected
 cd /Users/dfbb/Sites/skycode/codez
 for f in $(ls ../3rd/compress/headroom/tests/parity/fixtures/log_compressor/*.json | head -3); do
   base=$(basename "$f" .json)
   python3 -c "import json,sys; d=json.load(open('$f')); open('zmod/llm-compress/tests/fixtures/inherited/log/$base.txt','w').write(d['input']); out=d['output']; open('zmod/llm-compress/tests/fixtures/inherited/log/$base.expected','w').write(out['compressed'] if isinstance(out,dict) else out)"
 done
-# Diff / JSON(smart_crusher)同理,改目录名与 head 数量
+# Diff / JSON (smart_crusher) are the same; change the directory name and head count
 ```
 
-对 Search:headroom search 无 parity fixture,从 `search_compressor.rs:668-900` 内嵌例**手抄** 2-3 个标准 grep 样本存为 `search/grep_basic.txt`(无 expected,parity 仅跑硬不变量)。
-对 rtk preprocess:从 `rtk/src/core/toml_filter.rs` 测试或 `rtk/tests/fixtures/*.txt` 取 1-2 个含 ANSI/进度条样本存 `preprocess/`。
-对 Tabular:自造 `tabular/simple.txt`(`id,name\n1,a\n2,b`),无 expected。
+For Search: headroom search has no parity fixtures, so **hand-copy** 2–3 standard grep samples from the inline examples in `search_compressor.rs:668-900` and save them as `search/grep_basic.txt` (no expected; parity only runs hard invariants).
+For rtk preprocess: take 1–2 samples containing ANSI / progress bars from the tests in `rtk/src/core/toml_filter.rs` or `rtk/tests/fixtures/*.txt` and save them under `preprocess/`.
+For Tabular: hand-craft `tabular/simple.txt` (`id,name\n1,a\n2,b`), no expected.
 
-> **取舍说明(必须 log 出来)**:每个压缩器只继承 3-5 个代表样本而非全部,降低维护成本;覆盖在单测(Task 05-08)里已充分,parity 是补充性的真实数据对比。在 `NOTICE.md` 末尾追加一行注明"每类取代表样本,非全量继承"。
+> **Tradeoff note (must be logged)**: each compressor inherits only 3–5 representative samples rather than all of them, lowering maintenance cost; coverage is already thorough in the unit tests (Task 05-08), and parity is a supplementary comparison against real data. Append a line at the end of `NOTICE.md` noting "representative samples per category, not a full inheritance".
 
-- [ ] **Step 7: 写 manifest.toml**
+- [ ] **Step 7: Write manifest.toml**
 
-创建 `zmod/llm-compress/tests/fixtures/inherited/manifest.toml`(按实际拷贝的文件填;示例):
+Create `zmod/llm-compress/tests/fixtures/inherited/manifest.toml` (fill in according to the files actually copied; example):
 
 ```toml
 [[fixture]]
@@ -205,19 +205,19 @@ invariants = ["volume_not_worse", "keep_error_lines", "hard_invariants"]
 file = "search/grep_basic.txt"
 origin = "headroom/crates/headroom-core/src/transforms/search_compressor.rs:680"
 compressor = "search"
-ref_output = ""   # 无参考输出,仅跑硬不变量
+ref_output = ""   # no reference output, only runs hard invariants
 invariants = ["hard_invariants"]
 
-# … 其余按实际拷贝的文件补全(diff/json/tabular/preprocess 各 condition)
+# … fill in the rest per the files actually copied (diff/json/tabular/preprocess for each condition)
 ```
 
-- [ ] **Step 8: 写 parity_test.rs(遍历 manifest 跑硬不变量)**
+- [ ] **Step 8: Write parity_test.rs (iterate the manifest, run hard invariants)**
 
-创建 `zmod/llm-compress/tests/parity_test.rs`。直接调各压缩器,断言 §8.3 不变量(体积不劣、关键行保留、硬不变量)。固定 `ccr.enabled=true`:
+Create `zmod/llm-compress/tests/parity_test.rs`. Call each compressor directly and assert the §8.3 invariants (volume not worse, key lines preserved, hard invariants). Fix `ccr.enabled=true`:
 
 ```rust
-//! 遍历 fixtures/inherited/manifest.toml,对每个继承样本跑硬不变量(spec §8.3)。
-//! 不做逐字节相等;参考输出仅用于"体积不劣"对比。
+//! Iterate fixtures/inherited/manifest.toml and run the hard invariants (spec §8.3) on each inherited sample.
+//! Does not require byte-for-byte equality; the reference output is only used for the "volume not worse" comparison.
 
 use codez_llm_compress::compress::{
     json::JsonCompressor, log::LogCompressor, search::SearchCompressor,
@@ -266,37 +266,37 @@ fn parity_invariants_hold_for_all_fixtures() {
     let dir = fixtures_dir();
     let manifest_path = dir.join("manifest.toml");
     if !manifest_path.exists() {
-        eprintln!("manifest.toml 不存在,跳过 parity(fixture 未就位)");
+        eprintln!("manifest.toml does not exist, skipping parity (fixtures not in place)");
         return;
     }
     let manifest: Manifest = toml::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
 
     let mut cfg = Config::disabled();
     cfg.enabled = true;
-    // 给足阈值让压缩器认领(parity 关注算法输出而非让位)
+    // Give thresholds enough room for compressors to claim (parity cares about algorithm output, not deferral)
     cfg.truncate.max_bytes = 1_000_000;
 
     for fx in &manifest.fixture {
         let input = std::fs::read_to_string(dir.join(&fx.file))
-            .unwrap_or_else(|_| panic!("读不到 fixture {}", fx.file));
+            .unwrap_or_else(|_| panic!("cannot read fixture {}", fx.file));
         let Some((out, _lossy)) = run_compressor(&fx.compressor, &input, &cfg) else {
-            continue; // 未认领/未压缩,跳过(允许)
+            continue; // not claimed / not compressed, skip (allowed)
         };
 
-        // 硬不变量 1:压后 ≤ 压前
-        assert!(out.len() <= input.len(), "[{}] 压后体积应 ≤ 压前", fx.file);
-        // 硬不变量 2:UTF-8 合法(out 是 String,天然合法)
-        // 硬不变量 3:JSON 压缩器产物可 parse
+        // Hard invariant 1: after ≤ before
+        assert!(out.len() <= input.len(), "[{}] compressed size should be ≤ original", fx.file);
+        // Hard invariant 2: valid UTF-8 (out is a String, inherently valid)
+        // Hard invariant 3: JSON compressor output must parse
         if fx.compressor == "json" || fx.compressor == "tabular" {
             serde_json::from_str::<serde_json::Value>(&out)
-                .unwrap_or_else(|_| panic!("[{}] JSON 产物必须可 parse", fx.file));
+                .unwrap_or_else(|_| panic!("[{}] JSON output must parse", fx.file));
         }
-        // 对比 4:体积不劣于参考(若有 ref_output)
+        // Comparison 4: volume not worse than the reference (if ref_output exists)
         if !fx.ref_output.is_empty() {
             if let Ok(reference) = std::fs::read_to_string(dir.join(&fx.ref_output)) {
                 assert!(
                     out.len() as f64 <= reference.len() as f64 * 1.5,
-                    "[{}] 我方产物 {} 不应远超参考 {} 的 1.5x",
+                    "[{}] our output {} should not far exceed 1.5x the reference {}",
                     fx.file, out.len(), reference.len()
                 );
             }
@@ -305,14 +305,14 @@ fn parity_invariants_hold_for_all_fixtures() {
 }
 ```
 
-> `serde`/`toml`/`serde_json` 均已是依赖。
+> `serde`/`toml`/`serde_json` are all already dependencies.
 
-- [ ] **Step 9: 写 orchestration_test.rs(端到端编排)**
+- [ ] **Step 9: Write orchestration_test.rs (end-to-end orchestration)**
 
-创建 `zmod/llm-compress/tests/orchestration_test.rs`:
+Create `zmod/llm-compress/tests/orchestration_test.rs`:
 
 ```rust
-//! transform 端到端:用真实 codex 类型构造 request,验证编排链。
+//! transform end-to-end: build a request from real codex types and verify the orchestration chain.
 use codez_llm_compress::transform;
 use codex_api::ResponsesApiRequest;
 use codex_protocol::models::{
@@ -346,7 +346,7 @@ fn provider() -> codex_api::Provider {
 
 #[test]
 fn disabled_config_leaves_request_untouched() {
-    // 无 config-zmod 文件 → enabled=false → 逐字节不变
+    // No config-zmod file → enabled=false → byte-for-byte unchanged
     let big = "x\n".repeat(10_000);
     let mut r = req(vec![fco("c1", &big)]);
     let before = r.clone();
@@ -367,33 +367,31 @@ fn non_tooloutput_variants_ignored() {
 }
 ```
 
-> 注:`disabled_config_leaves_request_untouched` 依赖测试环境无 `~/.codex/config-zmod.toml` 的 `[llm_compress].enabled=true`。CI/本地若存在该文件会干扰——可接受(沿用 v1 transform_test 同样假设)。
+> Note: `disabled_config_leaves_request_untouched` relies on the test environment not having `[llm_compress].enabled=true` in `~/.codex/config-zmod.toml`. If that file exists in CI/locally it will interfere — acceptable (it follows the same assumption as the v1 transform_test).
 
-- [ ] **Step 10: 全量测试 + clippy**
+- [ ] **Step 10: Full test suite + clippy**
 
 Run: `cd codex-rs && cargo test -p codez-llm-compress`
-Expected: 全绿(所有模块 + parity + orchestration)
+Expected: all green (all modules + parity + orchestration)
 
 Run: `cd codex-rs && cargo clippy -p codez-llm-compress --all-targets`
-Expected: 无 warning
+Expected: no warnings
 
-- [ ] **Step 11: 提交**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add zmod/llm-compress/src/lib.rs \
   zmod/llm-compress/tests/fixtures/inherited \
   zmod/llm-compress/tests/parity_test.rs \
   zmod/llm-compress/tests/orchestration_test.rs
-git commit -m "feat(llm-compress-v2): Task11 lib 编排接线 + 6压缩器注册 + 继承fixture + parity_test"
+git commit -m "feat(llm-compress-v2): Task11 lib orchestration wiring + 6-compressor registration + inherited fixtures + parity_test"
 ```
 
-- [ ] **Step 12: 更新 README(记录 v2 能力)**
+- [ ] **Step 12: Update README (document v2 capabilities)**
 
-在 `zmod/llm-compress/README.md` 追加 v2 章节:六压缩器、预处理层、命令感知、CCR 取回机制、配置新字段。提交:
+Append a v2 section to `zmod/llm-compress/README.md`: the six compressors, the preprocessing layer, command awareness, the CCR retrieval mechanism, and the new config fields. Commit:
 
 ```bash
 git add zmod/llm-compress/README.md
-git commit -m "docs(llm-compress): README 补 v2 能力(预处理/命令感知/CCR/新压缩器)"
+git commit -m "docs(llm-compress): README adds v2 capabilities (preprocessing/command-awareness/CCR/new compressors)"
 ```
-
-

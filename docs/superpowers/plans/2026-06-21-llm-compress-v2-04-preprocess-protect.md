@@ -1,26 +1,26 @@
-# Task 04 — preprocess.rs(含 blob_fold)+ protect.rs
+# Task 04 — preprocess.rs (incl. blob_fold) + protect.rs
 
-> 隶属 `2026-06-21-llm-compress-v2-00-index.md`。覆盖 spec §4.5 / §4.6。依赖 Task 01(config 子表)。可与 02/03 并行。
+> Belongs to `2026-06-21-llm-compress-v2-00-index.md`. Covers spec §4.5 / §4.6. Depends on Task 01 (config subtables). Can run in parallel with 02/03.
 
-**Goal:** 实现 rtk 风格通用预处理层 `preprocess::run`(strip_progress / blob_fold / collapse_blank / truncate_line_bytes / dedup_consecutive,返回是否删了实质内容)与错误输出保护门 `protect::should_protect`。base64/blob 折叠唯一执行位置在此(spec §4.6 #6)。
+**Goal:** Implement the rtk-style general preprocessing layer `preprocess::run` (strip_progress / blob_fold / collapse_blank / truncate_line_bytes / dedup_consecutive, returning whether substantive content was removed) and the error-output protection gate `protect::should_protect`. This is the sole location where base64/blob folding is performed (spec §4.6 #6).
 
 ## Files
 - Create: `zmod/llm-compress/src/preprocess.rs`
 - Create: `zmod/llm-compress/src/protect.rs`
-- Modify: `zmod/llm-compress/src/lib.rs`(加 `pub mod preprocess; pub mod protect;`)
-- Test: `zmod/llm-compress/tests/preprocess_test.rs`、`zmod/llm-compress/tests/protect_test.rs`
+- Modify: `zmod/llm-compress/src/lib.rs` (add `pub mod preprocess; pub mod protect;`)
+- Test: `zmod/llm-compress/tests/preprocess_test.rs`, `zmod/llm-compress/tests/protect_test.rs`
 
 **Interfaces:**
-- Consumes: Task 01 的 `config::{PreprocessCfg, ProtectCfg, Config}`、`command::CommandHint`。
+- Consumes: Task 01's `config::{PreprocessCfg, ProtectCfg, Config}`, `command::CommandHint`.
 - Produces:
-  - `pub fn preprocess::run(text: &str, cfg: &PreprocessCfg) -> (String, bool)`(处理后文本, 是否删了实质内容)
+  - `pub fn preprocess::run(text: &str, cfg: &PreprocessCfg) -> (String, bool)` (processed text, whether substantive content was removed)
   - `pub fn protect::should_protect(text: &str, cmd: Option<&CommandHint>, cfg: &Config) -> bool`
 
 ---
 
-- [ ] **Step 1: 写 protect 失败测试**
+- [ ] **Step 1: Write failing protect tests**
 
-创建 `zmod/llm-compress/tests/protect_test.rs`:
+Create `zmod/llm-compress/tests/protect_test.rs`:
 
 ```rust
 use codez_llm_compress::config::Config;
@@ -28,7 +28,7 @@ use codez_llm_compress::protect::should_protect;
 
 #[test]
 fn small_error_output_is_protected() {
-    let cfg = Config::disabled(); // protect.error_max_bytes 默认 8192
+    let cfg = Config::disabled(); // protect.error_max_bytes defaults to 8192
     let text = "Traceback (most recent call last):\n  File x\nValueError: boom";
     assert!(should_protect(text, None, &cfg));
 }
@@ -54,18 +54,18 @@ fn zero_threshold_disables_protection() {
 }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [ ] **Step 2: Run to confirm failure**
 
 Run: `cd codex-rs && cargo test -p codez-llm-compress --test protect_test 2>&1 | head`
-Expected: FAIL(`protect` 模块不存在)
+Expected: FAIL (`protect` module does not exist)
 
-- [ ] **Step 3: 实现 protect.rs**
+- [ ] **Step 3: Implement protect.rs**
 
-创建 `zmod/llm-compress/src/protect.rs`:
+Create `zmod/llm-compress/src/protect.rs`:
 
 ```rust
-//! 错误输出保护门(spec §4.5/C2):错误/异常且 < 阈值 → 整段不压。
-//! 优先级最高:在所有预处理之前判定,命中即整段逐字节不变(spec §2/§4.5 #7)。
+//! Error-output protection gate (spec §4.5/C2): error/exception below the threshold → leave the whole block uncompressed.
+//! Highest priority: decided before any preprocessing; once it matches, the whole block is preserved byte-for-byte (spec §2/§4.5 #7).
 
 use crate::command::CommandHint;
 use crate::config::Config;
@@ -79,8 +79,8 @@ const STRONG_ERROR_MARKERS: &[&str] = &[
     "segmentation fault",
 ];
 
-/// 文本含强错误指示符且 len < cfg.protect.error_max_bytes → true(整段不压)。
-/// error_max_bytes==0 → 关闭保护,恒 false。
+/// Text contains a strong error marker and len < cfg.protect.error_max_bytes → true (whole block uncompressed).
+/// error_max_bytes==0 → protection disabled, always false.
 pub fn should_protect(text: &str, cmd: Option<&CommandHint>, cfg: &Config) -> bool {
     let limit = cfg.protect.error_max_bytes;
     if limit == 0 {
@@ -91,23 +91,23 @@ pub fn should_protect(text: &str, cmd: Option<&CommandHint>, cfg: &Config) -> bo
     }
     let lower = text.to_lowercase();
     let has_error = STRONG_ERROR_MARKERS.iter().any(|m| lower.contains(m));
-    // 命令提示辅助:test runner 输出含 fail/error 时提高保护倾向。
+    // Command-hint assist: raise the protection bias when test-runner output contains fail/error.
     let test_failed = cmd.is_some_and(|c| c.is_test_runner())
         && (lower.contains("fail") || lower.contains("error"));
     has_error || test_failed
 }
 ```
 
-在 `lib.rs` 加 `pub mod protect;`。
+Add `pub mod protect;` to `lib.rs`.
 
-- [ ] **Step 4: 运行 protect 测试通过**
+- [ ] **Step 4: Run protect tests to pass**
 
 Run: `cd codex-rs && cargo test -p codez-llm-compress --test protect_test`
-Expected: PASS(4 个)
+Expected: PASS (4 tests)
 
-- [ ] **Step 5: 写 preprocess 失败测试**
+- [ ] **Step 5: Write failing preprocess tests**
 
-创建 `zmod/llm-compress/tests/preprocess_test.rs`:
+Create `zmod/llm-compress/tests/preprocess_test.rs`:
 
 ```rust
 use codez_llm_compress::config::PreprocessCfg;
@@ -123,16 +123,16 @@ fn strip_progress_removes_download_lines_and_marks_lossy() {
     let (out, lossy) = run(input, &cfg());
     assert!(!out.contains("Downloading"));
     assert!(out.contains("real line"));
-    assert!(lossy, "删进度条 → lossy=true");
+    assert!(lossy, "removing progress bars → lossy=true");
 }
 
 #[test]
 fn collapse_blank_is_not_lossy() {
     let input = "a\n\n\n\nb";
     let (out, lossy) = run(input, &cfg());
-    // 连续空行归一为一个
+    // consecutive blank lines collapse into one
     assert_eq!(out, "a\n\nb");
-    assert!(!lossy, "空行归一是格式重构 → lossy=false");
+    assert!(!lossy, "blank-line collapse is a formatting reshape → lossy=false");
 }
 
 #[test]
@@ -149,10 +149,10 @@ fn blob_fold_replaces_long_base64_and_marks_lossy() {
 fn truncate_line_bytes_marks_lossy_utf8_safe() {
     let mut c = cfg();
     c.truncate_line_bytes = 10;
-    let input = "中文字符串很长很长很长很长".to_string(); // 多字节
+    let input = "中文字符串很长很长很长很长".to_string(); // multi-byte
     let (out, lossy) = run(&input, &c);
     assert!(lossy);
-    // 产物仍是合法 UTF-8(能正常作为 String 存在即合法)
+    // the result is still valid UTF-8 (being a valid String already proves it)
     assert!(out.len() <= input.len());
 }
 
@@ -160,9 +160,9 @@ fn truncate_line_bytes_marks_lossy_utf8_safe() {
 fn dedup_consecutive_not_lossy_and_skips_marker_lines() {
     let input = "x\nx\nx\n[llm-compress: 已有占位]\n[llm-compress: 已有占位]";
     let (out, lossy) = run(input, &cfg());
-    assert!(!lossy, "连续重复折叠是格式重构");
+    assert!(!lossy, "folding consecutive duplicates is a formatting reshape");
     assert!(out.contains("[llm-compress: 上一行 ×3]"));
-    // 原文已含 [llm-compress: 前缀的行不参与折叠,原样保留两行
+    // lines already starting with [llm-compress: are excluded from folding; both lines are kept verbatim
     assert_eq!(out.matches("[llm-compress: 已有占位]").count(), 2);
 }
 
@@ -176,26 +176,26 @@ fn all_disabled_returns_unchanged() {
 }
 ```
 
-- [ ] **Step 6: 运行确认失败**
+- [ ] **Step 6: Run to confirm failure**
 
 Run: `cd codex-rs && cargo test -p codez-llm-compress --test preprocess_test 2>&1 | head`
-Expected: FAIL(`preprocess` 模块不存在)
+Expected: FAIL (`preprocess` module does not exist)
 
-- [ ] **Step 7: 实现 preprocess.rs(骨架 + run + strip_progress + blob_fold)**
+- [ ] **Step 7: Implement preprocess.rs (skeleton + run + strip_progress + blob_fold)**
 
-创建 `zmod/llm-compress/src/preprocess.rs`,先写顶部到 blob_fold:
+Create `zmod/llm-compress/src/preprocess.rs`; start with the top down through blob_fold:
 
 ```rust
-//! rtk 风格通用预处理层(spec §4.6/D1)。返回 (处理后文本, 是否删了实质内容)。
-//! 顺序:strip_progress → blob_fold → collapse_blank → truncate_line_bytes → dedup_consecutive。
-//! 删内容段(strip_progress/blob_fold/truncate_line_bytes)置 lossy=true;格式重构段不置。
-//! base64/blob 折叠唯一执行位置(#6),Truncate 不再折叠。
+//! rtk-style general preprocessing layer (spec §4.6/D1). Returns (processed text, whether substantive content was removed).
+//! Order: strip_progress → blob_fold → collapse_blank → truncate_line_bytes → dedup_consecutive.
+//! Content-removing stages (strip_progress/blob_fold/truncate_line_bytes) set lossy=true; formatting-reshape stages do not.
+//! Sole location for base64/blob folding (#6); Truncate no longer folds.
 
 use crate::config::PreprocessCfg;
 
 const MARKER_PREFIX: &str = "[llm-compress: ";
 
-/// 主入口:按顺序跑各段。返回 (文本, 是否删实质内容)。
+/// Main entry: run each stage in order. Returns (text, whether substantive content was removed).
 pub fn run(text: &str, cfg: &PreprocessCfg) -> (String, bool) {
     let mut s = text.to_string();
     let mut lossy = false;
@@ -211,7 +211,7 @@ pub fn run(text: &str, cfg: &PreprocessCfg) -> (String, bool) {
         lossy |= changed;
     }
     if cfg.collapse_blank {
-        s = collapse_blank(&s); // 格式重构,不置 lossy
+        s = collapse_blank(&s); // formatting reshape, does not set lossy
     }
     if cfg.truncate_line_bytes > 0 {
         let (ns, changed) = truncate_lines(&s, cfg.truncate_line_bytes);
@@ -219,12 +219,12 @@ pub fn run(text: &str, cfg: &PreprocessCfg) -> (String, bool) {
         lossy |= changed;
     }
     if cfg.dedup_consecutive {
-        s = dedup_consecutive(&s); // 格式重构,不置 lossy
+        s = dedup_consecutive(&s); // formatting reshape, does not set lossy
     }
     (s, lossy)
 }
 
-/// 删进度条/下载行(删内容)。返回 (文本, 是否删了行)。
+/// Remove progress-bar/download lines (content removal). Returns (text, whether any line was removed).
 fn strip_progress(text: &str) -> (String, bool) {
     let mut kept: Vec<&str> = Vec::new();
     let mut removed = false;
@@ -243,16 +243,16 @@ fn is_progress_line(line: &str) -> bool {
     if t.starts_with("Downloading") || t.starts_with("Downloaded") || t.starts_with("Fetching") {
         return true;
     }
-    // 含回车覆写(\r)或百分比进度
+    // contains carriage-return overwrite (\r) or a percentage progress indicator
     if line.contains('\r') {
         return true;
     }
-    // 形如 " 45%" / "[####    ] 80%"
+    // shapes like " 45%" / "[####    ] 80%"
     let has_pct = t.split_whitespace().any(|w| w.ends_with('%') && w.trim_end_matches('%').parse::<f64>().is_ok());
     has_pct && (t.contains('[') || t.contains('#') || t.contains('='))
 }
 
-/// 折叠超长 base64/data-uri 段(删内容,#6 唯一位置)。返回 (文本, 是否折叠)。
+/// Fold overly long base64/data-uri segments (content removal, #6 sole location). Returns (text, whether anything was folded).
 fn blob_fold(text: &str, min_bytes: usize) -> (String, bool) {
     let mut out: Vec<String> = Vec::new();
     let mut folded = false;
@@ -268,7 +268,7 @@ fn blob_fold(text: &str, min_bytes: usize) -> (String, bool) {
     (out.join("\n"), folded)
 }
 
-/// 判定一行是否像 base64/data-uri:data: 前缀,或长串且字符集限于 base64 字母表。
+/// Decide whether a line looks like base64/data-uri: a data: prefix, or a long run whose character set is limited to the base64 alphabet.
 fn is_blobish(s: &str) -> bool {
     if s.starts_with("data:") {
         return true;
@@ -281,19 +281,19 @@ fn is_blobish(s: &str) -> bool {
 }
 ```
 
-- [ ] **Step 8: 续写 preprocess.rs(collapse_blank + truncate_lines + dedup_consecutive)**
+- [ ] **Step 8: Continue preprocess.rs (collapse_blank + truncate_lines + dedup_consecutive)**
 
-接着在 `preprocess.rs` 末尾追加:
+Then append to the end of `preprocess.rs`:
 
 ```rust
-/// 连续空行归一为一个空行(格式重构,不删实质内容)。
+/// Collapse consecutive blank lines into a single blank line (formatting reshape, does not remove substantive content).
 fn collapse_blank(text: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
     let mut prev_blank = false;
     for line in text.split('\n') {
         let blank = line.trim().is_empty();
         if blank && prev_blank {
-            continue; // 跳过多余空行
+            continue; // skip the redundant blank line
         }
         out.push(line);
         prev_blank = blank;
@@ -301,13 +301,13 @@ fn collapse_blank(text: &str) -> String {
     out.join("\n")
 }
 
-/// 超长单行按字节截断(UTF-8 边界安全,删内容)。返回 (文本, 是否截断)。
+/// Truncate overly long single lines by byte count (UTF-8 boundary safe, content removal). Returns (text, whether anything was truncated).
 fn truncate_lines(text: &str, max_bytes: usize) -> (String, bool) {
     let mut out: Vec<String> = Vec::new();
     let mut truncated = false;
     for line in text.split('\n') {
         if line.len() > max_bytes {
-            // 在 ≤ max_bytes 的最大字符边界截断
+            // cut at the largest character boundary ≤ max_bytes
             let mut cut = 0;
             for (idx, ch) in line.char_indices() {
                 let end = idx + ch.len_utf8();
@@ -326,8 +326,8 @@ fn truncate_lines(text: &str, max_bytes: usize) -> (String, bool) {
     (out.join("\n"), truncated)
 }
 
-/// 连续完全相同行折叠为 行 + [llm-compress: 上一行 ×N](格式重构,不删内容)。
-/// #6:本身即 [llm-compress: 前缀的行不参与折叠(原样保留),避免占位混淆。
+/// Fold consecutive identical lines into line + [llm-compress: 上一行 ×N] (formatting reshape, no content removed).
+/// #6: lines that themselves start with [llm-compress: are excluded from folding (kept verbatim) to avoid placeholder confusion.
 fn dedup_consecutive(text: &str) -> String {
     let lines: Vec<&str> = text.split('\n').collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
@@ -335,7 +335,7 @@ fn dedup_consecutive(text: &str) -> String {
     while i < lines.len() {
         let cur = lines[i];
         if cur.starts_with(MARKER_PREFIX) {
-            out.push(cur.to_string()); // 占位行不折叠
+            out.push(cur.to_string()); // placeholder lines are not folded
             i += 1;
             continue;
         }
@@ -354,19 +354,19 @@ fn dedup_consecutive(text: &str) -> String {
 }
 ```
 
-在 `lib.rs` 加 `pub mod preprocess;`。
+Add `pub mod preprocess;` to `lib.rs`.
 
-- [ ] **Step 9: 运行 preprocess 测试通过**
+- [ ] **Step 9: Run preprocess tests to pass**
 
 Run: `cd codex-rs && cargo test -p codez-llm-compress --test preprocess_test`
-Expected: PASS(6 个)
+Expected: PASS (6 tests)
 
-> 若 `dedup_consecutive` 测试因占位行计数偏差失败,核对:`x\nx\nx` 三行 → `x` + `[llm-compress: 上一行 ×3]`;两行占位各自原样保留(count 行被 `starts_with(MARKER_PREFIX)` 提前 push,不进折叠)。
+> If the `dedup_consecutive` test fails due to a placeholder-line count discrepancy, double-check: the three lines `x\nx\nx` → `x` + `[llm-compress: 上一行 ×3]`; the two placeholder lines are each kept verbatim (the count lines are pushed early by `starts_with(MARKER_PREFIX)` and never enter folding).
 
-- [ ] **Step 10: clippy + 提交**
+- [ ] **Step 10: clippy + commit**
 
 Run: `cd codex-rs && cargo test -p codez-llm-compress && cargo clippy -p codez-llm-compress --all-targets`
-Expected: 全绿、无 warning
+Expected: all green, no warnings
 
 ```bash
 git add zmod/llm-compress/src/preprocess.rs zmod/llm-compress/src/protect.rs \
@@ -374,6 +374,5 @@ git add zmod/llm-compress/src/preprocess.rs zmod/llm-compress/src/protect.rs \
   zmod/llm-compress/tests/preprocess_test.rs zmod/llm-compress/tests/protect_test.rs
 git commit -m "feat(llm-compress-v2): Task04 preprocess.rs(含 blob_fold)+ protect.rs"
 ```
-
 
 

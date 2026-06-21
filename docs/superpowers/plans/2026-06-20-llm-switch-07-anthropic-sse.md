@@ -1,35 +1,35 @@
 # Task 07 — anthropic SSE→ResponseEvent
 
-> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development 或 executing-plans。先读 [总索引](2026-06-20-llm-switch-00-index.md) Global Constraints,尤其 §4.5。结构与 [Task 05](2026-06-20-llm-switch-05-chat-sse.md) 对称。
+> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development or executing-plans. First read the [master index](2026-06-20-llm-switch-00-index.md) Global Constraints, especially §4.5. The structure is symmetric to [Task 05](2026-06-20-llm-switch-05-chat-sse.md).
 
-**Goal:** 实现 anthropic 入站状态机:Anthropic Messages SSE 事件序列 → `Vec<ResponseEvent>`。覆盖 `content_block_delta`/`text_delta` 累计、`tool_use` block + `input_json_delta` 聚合(**对象 stringify 回 arguments 字符串**)、§4.5 合成 assistant message、`message_start`/`message_delta`/`message_stop` → `Completed`(usage 累计、`stop_reason` → `end_turn`)。
+**Goal:** Implement the anthropic inbound state machine: Anthropic Messages SSE event sequence → `Vec<ResponseEvent>`. Cover `content_block_delta`/`text_delta` accumulation, `tool_use` block + `input_json_delta` aggregation (**stringify the object back into the arguments string**), §4.5 synthesized assistant message, `message_start`/`message_delta`/`message_stop` → `Completed` (usage accumulation, `stop_reason` → `end_turn`).
 
-**覆盖 spec:** §4.3(响应)、§4.5、§4.8。
+**Spec coverage:** §4.3 (response), §4.5, §4.8.
 
 **Files:**
 - Create: `zmod/llm-switch/src/connector/anthropic_sse.rs`
-- Modify: `zmod/llm-switch/src/connector/anthropic.rs`(`pub(crate) mod anthropic_sse;`)
+- Modify: `zmod/llm-switch/src/connector/anthropic.rs` (`pub(crate) mod anthropic_sse;`)
 - Test: `zmod/llm-switch/tests/anthropic_sse_test.rs`
 
 **Interfaces:**
-- Produces:`pub(crate) struct AnthropicSseState`、`push_event(&mut self, evt: &serde_json::Value) -> Result<Vec<ResponseEvent>, ConnError>`、`finish(&mut self) -> Vec<ResponseEvent>`;testing 转发 `translate_anthropic_sse_for_test(events, done)`。
+- Produces: `pub(crate) struct AnthropicSseState`, `push_event(&mut self, evt: &serde_json::Value) -> Result<Vec<ResponseEvent>, ConnError>`, `finish(&mut self) -> Vec<ResponseEvent>`; testing forwarder `translate_anthropic_sse_for_test(events, done)`.
 
 ---
 
-- [ ] **Step 0: anthropic SSE 事件形态对照**
+- [ ] **Step 0: anthropic SSE event shape reference**
 
-Anthropic Messages streaming 事件类型(以官方/llm-rosetta fixture 为准,执行前在 `../3rd/proxy/llm-rosetta` 找一段真实序列核对):
-- `message_start`:`{"type":"message_start","message":{"id":"msg_..","usage":{"input_tokens":N,..}}}`
-- `content_block_start`:`{"type":"content_block_start","index":i,"content_block":{"type":"text"|"tool_use","id":..,"name":..}}`
-- `content_block_delta`:`{"type":"content_block_delta","index":i,"delta":{"type":"text_delta","text":".."}}` 或 `{"type":"input_json_delta","partial_json":".."}`
-- `content_block_stop`:`{"type":"content_block_stop","index":i}`
-- `message_delta`:`{"type":"message_delta","delta":{"stop_reason":"end_turn"|"tool_use"|"max_tokens"},"usage":{"output_tokens":N}}`
-- `message_stop`:`{"type":"message_stop"}`
-- `error`:`{"type":"error","error":{...}}`
+Anthropic Messages streaming event types (based on the official / llm-rosetta fixture; before execution, find a real sequence in `../3rd/proxy/llm-rosetta` to cross-check):
+- `message_start`: `{"type":"message_start","message":{"id":"msg_..","usage":{"input_tokens":N,..}}}`
+- `content_block_start`: `{"type":"content_block_start","index":i,"content_block":{"type":"text"|"tool_use","id":..,"name":..}}`
+- `content_block_delta`: `{"type":"content_block_delta","index":i,"delta":{"type":"text_delta","text":".."}}` or `{"type":"input_json_delta","partial_json":".."}`
+- `content_block_stop`: `{"type":"content_block_stop","index":i}`
+- `message_delta`: `{"type":"message_delta","delta":{"stop_reason":"end_turn"|"tool_use"|"max_tokens"},"usage":{"output_tokens":N}}`
+- `message_stop`: `{"type":"message_stop"}`
+- `error`: `{"type":"error","error":{...}}`
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: Write the failing test**
 
-创建 `zmod/llm-switch/tests/anthropic_sse_test.rs`:
+Create `zmod/llm-switch/tests/anthropic_sse_test.rs`:
 
 ```rust
 use codez_llm_switch::testing::translate_anthropic_sse_for_test as run;
@@ -81,8 +81,8 @@ fn tool_use_aggregates_partial_json_to_arguments_string() {
         ResponseEvent::OutputItemDone(ResponseItem::FunctionCall{name,arguments,call_id,..})=>Some((name,arguments,call_id)),_=>None
     }).expect("FunctionCall");
     assert_eq!(fc.0, "get_weather");
-    assert_eq!(fc.1, "{\"city\":\"SF\"}"); // partial_json 聚合 → arguments 字符串(§4.3)
-    assert_eq!(fc.2, "toolu_1");            // tool_use.id → call_id(§4.8)
+    assert_eq!(fc.1, "{\"city\":\"SF\"}"); // partial_json aggregated → arguments string (§4.3)
+    assert_eq!(fc.2, "toolu_1");            // tool_use.id → call_id (§4.8)
     let end = out.iter().find_map(|e| match e { ResponseEvent::Completed{end_turn,..}=>Some(*end_turn),_=>None }).unwrap();
     assert_eq!(end, Some(false)); // tool_use → end_turn=false
 }
@@ -94,12 +94,12 @@ fn error_event_fails() {
 }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [ ] **Step 2: Run and confirm failure**
 
 Run: `cd zmod/llm-switch && cargo test --test anthropic_sse_test`
-Expected: 编译失败。
+Expected: compilation failure.
 
-- [ ] **Step 3: 实现 `anthropic_sse.rs`**
+- [ ] **Step 3: Implement `anthropic_sse.rs`**
 
 ```rust
 use serde_json::Value;
@@ -115,7 +115,7 @@ pub(crate) struct AnthropicSseState {
     stop_reason: Option<String>,
     input_tokens: i64,
     output_tokens: i64,
-    // block index → tool_use 聚合
+    // block index → tool_use aggregation
     blocks: std::collections::BTreeMap<i64, BlockAcc>,
     synth_counter: u64,
 }
@@ -173,7 +173,7 @@ impl AnthropicSseState {
                     self.output_tokens = ot;
                 }
             }
-            _ => {} // content_block_stop / message_stop / ping 等无需即时事件
+            _ => {} // content_block_stop / message_stop / ping etc. need no immediate event
         }
         Ok(out)
     }
@@ -207,7 +207,7 @@ impl AnthropicSseState {
             end_turn: match self.stop_reason.as_deref() {
                 Some("end_turn") => Some(true),
                 Some("tool_use") => Some(false),
-                _ => None, // max_tokens / 未知
+                _ => None, // max_tokens / unknown
             },
         });
         out
@@ -217,22 +217,22 @@ impl AnthropicSseState {
 }
 ```
 
-> 注:tool_use 的 `partial_json` 已是对象的 JSON 字符串,直接作为 codex `FunctionCall.arguments`(字符串)——与 §4.3"对象 → stringify 回 arguments 字符串"一致;此处上游本就给字符串增量,聚合即得。若某 block 收到的 partial_json 为空(无参数工具),`arguments` 置 `"{}"`(在 finish 里 `if acc.partial_json.is_empty() { acc.partial_json = "{}".into() }`)。
+> Note: the `partial_json` of a tool_use is already the JSON string of the object, used directly as codex `FunctionCall.arguments` (a string) — consistent with §4.3 "object → stringify back to the arguments string"; here the upstream already provides string increments, so aggregation alone yields the result. If a block receives empty partial_json (a tool with no parameters), set `arguments` to `"{}"` (in `finish`: `if acc.partial_json.is_empty() { acc.partial_json = "{}".into() }`).
 
-- [ ] **Step 4: 挂模块 + testing 转发**
+- [ ] **Step 4: Wire up the module + testing forwarder**
 
-`connector/anthropic.rs` 加 `pub(crate) mod anthropic_sse;`。`lib.rs` testing 加 `translate_anthropic_sse_for_test(events, done)`(逐个 `push_event` 后按 done `finish`)。
+Add `pub(crate) mod anthropic_sse;` to `connector/anthropic.rs`. Add `translate_anthropic_sse_for_test(events, done)` to the testing section of `lib.rs` (call `push_event` one by one, then `finish` based on done).
 
-- [ ] **Step 5: 运行测试确认通过**
+- [ ] **Step 5: Run the tests and confirm they pass**
 
 Run: `cd zmod/llm-switch && cargo test --test anthropic_sse_test`
-Expected: 3 个测试 PASS。
+Expected: 3 tests PASS.
 
-- [ ] **Step 6: 黄金 SSE fixture**
+- [ ] **Step 6: Golden SSE fixture**
 
-从 llm-rosetta 的 anthropic streaming fixture 取一段真实事件序列,落 `tests/fixtures/anthropic_sse_*.jsonl`,逐行喂 `push_event`,断言事件序列。注明基准来源。
+Take a real event sequence from llm-rosetta's anthropic streaming fixture, save it to `tests/fixtures/anthropic_sse_*.jsonl`, feed it line by line to `push_event`, and assert the event sequence. Note the reference source.
 
-- [ ] **Step 7: 提交**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add zmod/llm-switch/src/connector/anthropic_sse.rs zmod/llm-switch/src/connector/anthropic.rs zmod/llm-switch/src/lib.rs zmod/llm-switch/tests/anthropic_sse_test.rs zmod/llm-switch/tests/fixtures

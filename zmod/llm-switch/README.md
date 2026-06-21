@@ -1,78 +1,78 @@
 # codez-llm-switch
 
-codez 的第一个 zmod 功能 crate，在 **codex 进程内接管 LLM API 层**，让 codex 能接入 DeepSeek、Claude 等非 OpenAI 模型。
+codez's first zmod feature crate. It **takes over the LLM API layer inside the codex process**, letting codex connect to non-OpenAI models such as DeepSeek and Claude.
 
-- 包名：`codez-llm-switch`　lib target：`codez_llm_switch`
-- 对应补丁：构建集成 `patches/001-build.patch`（共享）+ 代码接入 `patches/002-llm-switch.patch`
-- 设计文档：`docs/superpowers/specs/2026-06-20-llm-switch-design.md`
+- Package name: `codez-llm-switch`　lib target: `codez_llm_switch`
+- Corresponding patches: build integration `patches/001-build.patch` (shared) + code hook-in `patches/002-llm-switch.patch`
+- Design doc: `docs/superpowers/specs/2026-06-20-llm-switch-design.md`
 
-## 作用
+## Purpose
 
-codex 对 `base_url` **恒只说 OpenAI Responses 协议**（`WireApi` 枚举当前仅 `Responses`）。要接入 Anthropic / DeepSeek 这类上游，必须在 codex 与真上游之间做协议翻译。本 crate 挂在 codex client 的 HTTP 发送边界（`core/src/client.rs` 的 `stream_responses_api`），做两件事：
+codex **always speaks only the OpenAI Responses protocol** to `base_url` (the `WireApi` enum currently has only `Responses`). To connect upstreams like Anthropic / DeepSeek, you must translate protocols between codex and the real upstream. This crate hooks into codex client's HTTP send boundary (`stream_responses_api` in `core/src/client.rs`) and does two things:
 
-1. **出站**：把 codex 组装好的 `ResponsesApiRequest`（Responses 原生类型）翻译成目标协议请求体（Chat Completions 或 Anthropic Messages）。
-2. **入站**：读上游 SSE，逐事件翻译回 codex 的 `ResponseEvent`，返回与 `ApiResponsesClient::stream_request` **同型**的 `codex_api::ResponseStream`，交回 core 既有的 `map_response_stream` 包装。
+1. **Outbound**: translate the `ResponsesApiRequest` that codex assembled (a native Responses type) into the target protocol's request body (Chat Completions or Anthropic Messages).
+2. **Inbound**: read the upstream SSE, translate it event by event back into codex's `ResponseEvent`, and return a `codex_api::ResponseStream` of the **same type** as `ApiResponsesClient::stream_request`, handing it back to core's existing `map_response_stream` wrapper.
 
 ```
-codex (Responses) ──run()──▶ ① 变换层(v1 直通) ──▶ ② Connector 出口翻译 + HTTP/SSE ──▶ 真上游
+codex (Responses) ──run()──▶ ① transform layer (v1 pass-through) ──▶ ② Connector egress translation + HTTP/SSE ──▶ real upstream
         ▲                                                                                  │
-        └────────────────  ResponseEvent ◀── SSE 翻译 ◀── 上游 SSE  ◀─────────────────────┘
+        └────────────────  ResponseEvent ◀── SSE translation ◀── upstream SSE  ◀───────────┘
 ```
 
-路由键是 codex 的 **`model_provider_id`**（不是 `name` 或 `base_url`）：命中 config-zmod 里配置的 provider 则接管，否则返回 `None`、走 codex 原生 Responses 分支（遥测链完整保留）。
+The routing key is codex's **`model_provider_id`** (not `name` or `base_url`): if it matches a provider configured in config-zmod, the crate takes over; otherwise it returns `None` and falls through to codex's native Responses branch (keeping the telemetry chain intact).
 
-## 支持的连接器
+## Supported connectors
 
-| connector | 目标协议 | 默认出口 path | 鉴权 |
+| connector | target protocol | default egress path | auth |
 | --- | --- | --- | --- |
-| `chat` | Chat Completions（DeepSeek / OpenAI 兼容） | `/chat/completions` | `bearer` → `Authorization: Bearer <key>` |
+| `chat` | Chat Completions (DeepSeek / OpenAI compatible) | `/chat/completions` | `bearer` → `Authorization: Bearer <key>` |
 | `anthropic` | Anthropic Messages | `/v1/messages` | `x-api-key` → `x-api-key: <key>` + `anthropic-version` |
 
-`connector = "responses"` 或未在 config-zmod 列出的 provider → 不接管，走原生分支。
+`connector = "responses"` or any provider not listed in config-zmod → no takeover, falls through to the native branch.
 
-出口 URL = `base_url.trim_end_matches('/') + path`；`base_url` 只写到 API 根（版本前缀如 `/v1` 算 base_url 的一部分），`path` 可由配置覆盖。
+Egress URL = `base_url.trim_end_matches('/') + path`; `base_url` is written only up to the API root (a version prefix like `/v1` counts as part of base_url), and `path` can be overridden via config.
 
-## v1 能力边界
+## v1 capability boundary
 
-v1 **只支持标准 `function` 工具**与纯文本对话。下列情形连接器一律**硬失败**返回 `ApiError`（绝不静默丢、绝不强译成函数）：
+v1 **supports only standard `function` tools** and plain-text conversation. In the following cases the connector always **hard-fails** with an `ApiError` (it never silently drops, never force-translates into a function):
 
-- 非标准工具：`namespace` / `custom` / freeform / `tool_search` / `image_generation` 等工具定义或对应历史项。
-- 加密内容：`EncryptedContent` / `Compaction` / `ContextCompaction`。
-- 目标协议无法等价表达的强制 `tool_choice`。
+- Non-standard tools: tool definitions or corresponding history items such as `namespace` / `custom` / freeform / `tool_search` / `image_generation`.
+- Encrypted content: `EncryptedContent` / `Compaction` / `ContextCompaction`.
+- A forced `tool_choice` that the target protocol cannot express equivalently.
 
-> **anthropic 连接器的额外能力（仅 `connector = "anthropic"`）**：Anthropic Messages API 原生支持联网搜索与图片识别，故 anthropic 连接器对这两项不再硬失败、而是翻译：
+> **Extra capabilities of the anthropic connector (only for `connector = "anthropic"`)**: The Anthropic Messages API natively supports web search and image recognition, so the anthropic connector no longer hard-fails on these two and instead translates them:
 >
-> - **web_search**：codex 的 `{"type":"web_search"}` 托管工具 → Anthropic 原生 `{"type":"web_search_20250305","name":"web_search"}` server tool（Responses 侧的 `external_web_access`/`filters`/`user_location` 等参数与 Anthropic 不对应，丢弃）。该 server tool 由 Anthropic 服务端执行并流回 `server_tool_use` / `web_search_tool_result` content block，连接器在 SSE 回程忽略它们（不产生多余 `FunctionCall`），模型基于检索结果的最终文本正常透传。**无需 anthropic-beta header**。
-> - **图片识别（识图）**：`InputImage { image_url }`（用户消息或工具结果里）→ Anthropic image content block。`data:<media_type>;base64,<data>` → `source.type=base64`；`http(s)://...` → `source.type=url`；其他形态仍硬失败。`detail` 字段丢弃（Anthropic 无对应字段，分辨率由服务端自动处理）。Anthropic **不支持**图片生成（`image_generation`），该能力对 anthropic 仍关闭。
-> - **tool_search 暂不支持**：codex 的 `tool_search` 是本地执行器，与 Anthropic 服务端的 `tool_search_tool_*` + `defer_loading` 机制不兼容，强行翻译会得到不工作的工具，故 anthropic 连接器对 codex `tool_search` 仍按硬失败处理。
+> - **web_search**: codex's `{"type":"web_search"}` hosted tool → Anthropic's native `{"type":"web_search_20250305","name":"web_search"}` server tool (parameters on the Responses side such as `external_web_access` / `filters` / `user_location` have no Anthropic counterpart and are dropped). This server tool is executed by the Anthropic backend and streamed back as `server_tool_use` / `web_search_tool_result` content blocks; the connector ignores them on the SSE return path (producing no extra `FunctionCall`), and the model's final text based on the search results passes through normally. **No anthropic-beta header is required.**
+> - **Image recognition (vision)**: `InputImage { image_url }` (in a user message or a tool result) → Anthropic image content block. `data:<media_type>;base64,<data>` → `source.type=base64`; `http(s)://...` → `source.type=url`; any other form still hard-fails. The `detail` field is dropped (Anthropic has no equivalent field; resolution is handled automatically by the backend). Anthropic **does not support** image generation (`image_generation`), so that capability stays off for anthropic.
+> - **tool_search is not yet supported**: codex's `tool_search` is a local executor and is incompatible with Anthropic's backend `tool_search_tool_*` + `defer_loading` mechanism; force-translating it would produce a non-working tool, so the anthropic connector still hard-fails on codex's `tool_search`.
 >
-> chat 连接器与未接管 provider 的过滤行为完全不变（图片输入 / web_search 等仍硬失败）。
+> The filtering behavior of the chat connector and of non-taken-over providers is completely unchanged (image input / web_search etc. still hard-fail).
 
-> **托管工具的源头降级**：codex 默认 `namespace_tools` / `web_search` / `image_generation` 能力均为 `true`，会把多智能体/协作、联网搜索、图片生成等工具打包进 Responses 请求（`{"type":"namespace"}` / `{"type":"web_search"}` 等），撞上面的硬失败。为此 `002-llm-switch.patch` 在 `core/src/tools/spec_plan.rs` 加了 `provider_capabilities()` 包装——当被接管的 provider 配 `captype = "chat"`（缺省）时按「无任何托管能力」处理（三项能力全 `false`），复用 codex 原生的能力门控从源头不产生这些托管工具。连接器里的硬失败保留作兜底安全网。因此实跑标准第三方 provider 时**无需**再手动关多智能体 / 搜索 / 图片等特性。
+> **Source-level downgrade of hosted tools**: codex enables the `namespace_tools` / `web_search` / `image_generation` capabilities by default (all `true`), bundling tools for multi-agent/collaboration, web search, image generation, etc. into the Responses request (`{"type":"namespace"}` / `{"type":"web_search"}` and so on), which trips the hard-fails above. To handle this, `002-llm-switch.patch` adds a `provider_capabilities()` wrapper in `core/src/tools/spec_plan.rs` — when a taken-over provider is configured with `captype = "chat"` (the default), it is treated as having "no hosted capabilities at all" (all three capabilities `false`), reusing codex's native capability gating to avoid producing these hosted tools at the source. The connector's hard-fails remain as a backstop safety net. As a result, when actually running against a standard third-party provider you **do not** need to manually disable multi-agent / search / image features.
 >
-> **例外——anthropic 连接器放开 web_search**：走 `connector = "anthropic"` 的 provider 即便 `captype = "chat"`（缺省 suppress），`provider_capabilities()` 仍把 `web_search` 设为 `true`（其余 `namespace_tools` / `image_generation` 仍关）——因为 anthropic 连接器能把 web_search 翻译成 Anthropic 原生 server tool。判定见 `codez_llm_switch::allow_anthropic_web_search()`。chat 连接器与未接管 provider 不受影响。
+> **Exception — the anthropic connector re-enables web_search**: a provider using `connector = "anthropic"`, even with `captype = "chat"` (the default suppress), still has `provider_capabilities()` set `web_search` to `true` (while `namespace_tools` / `image_generation` stay off) — because the anthropic connector can translate web_search into Anthropic's native server tool. See `codez_llm_switch::allow_anthropic_web_search()` for the decision. The chat connector and non-taken-over providers are unaffected.
 >
-> 若某上游出口仍走 Responses 协议、能自行处理这些托管工具，给它配 `captype = "response"` 即可透传 codex 原生能力，不做屏蔽。
+> If some upstream egress still speaks the Responses protocol and can handle these hosted tools itself, configure it with `captype = "response"` to pass codex's native capabilities through without any suppression.
 
-可安全降级或丢弃：
+Safely downgradable or droppable:
 
-- 历史里的 `Reasoning` 项、`CompactionTrigger` → 出站丢弃（**只改请求副本，不动 codex 本地历史**）。
-- 请求级 `reasoning` 配置 → chat `reasoning_effort` / anthropic `thinking`；`text.format` → chat `response_format` / anthropic 追加系统指令。
-- `store` / `include` / `prompt_cache_key` / `service_tier` / `client_metadata` → 静默丢弃。
-- 压缩造成的结构破损（孤儿 tool_call/result、空 tools 的 tool_choice、chat tool 消息错位）→ 自动修复（复刻 llm-rosetta），不硬失败。
+- `Reasoning` items and `CompactionTrigger` in history → dropped on outbound (**only the request copy is modified, codex's local history is untouched**).
+- Request-level `reasoning` config → chat `reasoning_effort` / anthropic `thinking`; `text.format` → chat `response_format` / anthropic appends a system instruction.
+- `store` / `include` / `prompt_cache_key` / `service_tier` / `client_metadata` → silently dropped.
+- Structural breakage caused by compaction (orphan tool_call/result, tool_choice with empty tools, misplaced chat tool messages) → auto-repaired (replicating llm-rosetta), not hard-failed.
 
-## 配置与用法
+## Configuration and usage
 
-所有 zmod 功能受 `~/.codex/config-zmod.toml` 控制，与 codex 自身的 `~/.codex/config.toml` 并列。每个 provider 需**两处**配置。
+All zmod features are controlled by `~/.codex/config-zmod.toml`, which sits alongside codex's own `~/.codex/config.toml`. Each provider needs configuration in **two places**.
 
 ### 1. codex `~/.codex/config.toml`
 
-照常配 provider，`wire_api` 必须是 `responses`（codex 对内只会说 Responses）：
+Configure the provider as usual; `wire_api` must be `responses` (codex only speaks Responses internally):
 
 ```toml
 [model_providers.deepseek]
 name     = "DeepSeek"
-base_url = "https://api.deepseek.com/v1"   # 接管语义下不参与路由
+base_url = "https://api.deepseek.com/v1"   # not used for routing under takeover semantics
 wire_api = "responses"
 env_key  = "DEEPSEEK_API_KEY"
 
@@ -83,11 +83,11 @@ wire_api = "responses"
 env_key  = "ANTHROPIC_API_KEY"
 ```
 
-切换时设 `model_provider = "deepseek"`（或 `"claude"`）。
+To switch, set `model_provider = "deepseek"` (or `"claude"`).
 
 ### 2. codez `~/.codex/config-zmod.toml`
 
-表名 = codex 的 `model_provider_id`，决定路由与出口翻译：
+The table name = codex's `model_provider_id`, which determines routing and egress translation:
 
 ```toml
 [llm-switch]
@@ -95,11 +95,11 @@ enabled = true
 
 [llm-switch.providers.deepseek]
 connector = "chat"
-base_url  = "https://api.deepseek.com/v1"   # 可选；缺省用 codex provider 的 base_url
+base_url  = "https://api.deepseek.com/v1"   # optional; defaults to the codex provider's base_url
 auth      = "bearer"
-key_env   = "DEEPSEEK_API_KEY"              # 连接器自读原始 key
-# path    = "/chat/completions"             # 可选，覆盖默认出口路径
-# model   = "deepseek-v4-pro"               # 可选，覆盖发往上游的模型名
+key_env   = "DEEPSEEK_API_KEY"              # connector reads the raw key itself
+# path    = "/chat/completions"             # optional, overrides the default egress path
+# model   = "deepseek-v4-pro"               # optional, overrides the model name sent upstream
 
 [llm-switch.providers.claude]
 connector          = "anthropic"
@@ -107,113 +107,112 @@ base_url           = "https://api.anthropic.com"
 auth               = "x-api-key"
 key_env            = "ANTHROPIC_API_KEY"
 anthropic_version  = "2023-06-01"
-default_max_tokens = 8192                    # anthropic max_tokens 兜底（缺省常量 4096）
+default_max_tokens = 8192                    # anthropic max_tokens fallback (default constant 4096)
 ```
 
-字段说明：
+Field reference:
 
-| 字段 | 必填 | 说明 |
+| field | required | description |
 | --- | --- | --- |
-| `connector` | 是 | `chat` / `anthropic` / `responses`（responses 不进路由表） |
-| `captype` | 否 | `chat`（缺省）屏蔽托管工具能力；`response` 透传 codex 原生能力（见下） |
-| `base_url` | 否 | 出口 API 根；缺省回退 codex provider 的 base_url |
-| `auth` | 是 | `bearer` / `x-api-key` |
-| `key_env` | 否* | 读环境变量取原始 key（运行时主路径） |
-| `path` | 否 | 覆盖默认出口 path |
-| `model` | 否 | 覆盖发往上游的模型名；缺省用 codex 请求里的 model |
-| `anthropic_version` | 否 | x-api-key 形态下的版本头，缺省 `2023-06-01` |
-| `default_max_tokens` | 否 | anthropic `max_tokens` 兜底，缺省 4096 |
-| `context_window` | 否 | 覆盖 codex 对该模型的上下文窗口（token）。被接管的第三方模型多不在 codex 内置表、走 fallback（硬上限 272k）；配此值经 patch 在 `with_config_overrides` 连同 `max_context_window` 一起抬高，绕过 clamp。例：`1000000` |
-| `model_catalog_json` | 否 | 该 provider 专属的模型目录 JSON 路径（支持 `~`）。用此 provider 时 codex 以该表作模型目录，使第三方模型进 `/model` 列表并带推理强度。例：`~/.codex/model-catalog-deepseek.json` |
+| `connector` | yes | `chat` / `anthropic` / `responses` (responses does not enter the routing table) |
+| `captype` | no | `chat` (default) suppresses hosted-tool capabilities; `response` passes codex's native capabilities through (see below) |
+| `base_url` | no | egress API root; falls back to the codex provider's base_url |
+| `auth` | yes | `bearer` / `x-api-key` |
+| `key_env` | no* | reads the raw key from the environment variable (the runtime primary path) |
+| `path` | no | overrides the default egress path |
+| `model` | no | overrides the model name sent upstream; defaults to the model in the codex request |
+| `anthropic_version` | no | the version header under the x-api-key form, defaults to `2023-06-01` |
+| `default_max_tokens` | no | anthropic `max_tokens` fallback, defaults to 4096 |
+| `context_window` | no | overrides codex's context window (tokens) for this model. Most taken-over third-party models are not in codex's built-in table and go through fallback (hard cap 272k); setting this value, via the patch, raises both `max_context_window` and the window in `with_config_overrides`, bypassing the clamp. Example: `1000000` |
+| `model_catalog_json` | no | path to a model catalog JSON specific to this provider (supports `~`). When this provider is used, codex treats that table as the model catalog, so third-party models appear in the `/model` list with reasoning levels. Example: `~/.codex/model-catalog-deepseek.json` |
 
-> **`context_window` 的实施**：codex 对未知模型用 fallback 元数据（`max_context_window = 272_000`），其 `model_context_window` 顶层覆盖会被 clamp 到该上限。`002-llm-switch.patch` 给 `ModelsManagerConfig` 加了 `force_context_window`，由 `core` 的 `to_models_manager_config()` 从 `codez_llm_switch::context_window(provider_id)` 填充，在 `with_config_overrides` 里**同时**设 `context_window` 与 `max_context_window`（不 clamp），从而突破 272k。
+> **How `context_window` is implemented**: codex uses fallback metadata for unknown models (`max_context_window = 272_000`), and its top-level `model_context_window` override gets clamped to that ceiling. `002-llm-switch.patch` adds `force_context_window` to `ModelsManagerConfig`, populated by `core`'s `to_models_manager_config()` from `codez_llm_switch::context_window(provider_id)`, setting **both** `context_window` and `max_context_window` (no clamp) in `with_config_overrides`, thereby breaking past 272k.
 
-> **`model_catalog_json` 的实施**：`/model` 列表由 `build_available_models` 从模型目录（catalog）映射，第三方 slug 不在 codex 内置表、走 fallback（`visibility=None`、`supported_reasoning_levels` 空），既不进列表也无推理强度可选。`002-llm-switch.patch` 在 `core` 加载 config 时，若 `codez_llm_switch::model_catalog_json(provider_id)` 返回路径，则用 `load_llm_switch_model_catalog` 读它并覆盖 `config.model_catalog`——后续 `StaticModelsManager` 即以该表作目录，模型带 `visibility=list` 与 `supported_reasoning_levels` 进 `/model`。catalog JSON 即 codex 的 `ModelsResponse`（`{"models":[{slug,display_name,visibility:"list",supported_reasoning_levels,context_window,...}]}`，必填字段见 `~/.codex/model-catalog-*.json` 示例）。
+> **How `model_catalog_json` is implemented**: the `/model` list is mapped by `build_available_models` from the model catalog; third-party slugs are not in codex's built-in table and go through fallback (`visibility=None`, empty `supported_reasoning_levels`), so they neither appear in the list nor offer a reasoning level. When `core` loads config, `002-llm-switch.patch` checks whether `codez_llm_switch::model_catalog_json(provider_id)` returns a path; if so, it reads it with `load_llm_switch_model_catalog` and overrides `config.model_catalog` — so the subsequent `StaticModelsManager` uses that table as its catalog, and the model enters `/model` with `visibility=list` and `supported_reasoning_levels`. The catalog JSON is codex's `ModelsResponse` (`{"models":[{slug,display_name,visibility:"list",supported_reasoning_levels,context_window,...}]}`; for required fields see the `~/.codex/model-catalog-*.json` example).
 
-### fail-safe 与开关
+### fail-safe and toggles
 
-- 文件缺失、`[llm-switch]` 段缺失、`enabled = false`、或 provider 未命中 → 整体**关闭**，走原生 Responses 分支。
-- 配置解析出错 → 记 `warn` 并关闭，不让 codex 启动失败。
+- File missing, `[llm-switch]` section missing, `enabled = false`, or provider not matched → entirely **off**, falls through to the native Responses branch.
+- Config parse error → log a `warn` and turn off, without making codex fail to start.
 
-### 密钥来源（优先级）
+### Key sources (priority order)
 
-1. `key_env` → `std::env::var(key_env)` 读原始 key（**运行时主路径**）。
-2. `auth_key` 内联明文 → **仅允许出现在 gitignored 的 `tests/testkey.toml`**；正式 `config-zmod.toml` 一旦出现 `auth_key`，解析期直接报错拒绝启动。
-3. 仅 `auth = "bearer"` 且未配 key 时的退路：复用 codex 的 `api_auth.add_auth_headers()` 写 `Authorization: Bearer`。`x-api-key` 形态**无**此退路，必须有 `key_env` / `auth_key`。
+1. `key_env` → `std::env::var(key_env)` reads the raw key (**the runtime primary path**).
+2. `auth_key` inline plaintext → **only allowed in the gitignored `tests/testkey.toml`**; once `auth_key` appears in a real `config-zmod.toml`, parsing errors out and refuses to start.
+3. Fallback only when `auth = "bearer"` and no key is configured: reuse codex's `api_auth.add_auth_headers()` to write `Authorization: Bearer`. The `x-api-key` form has **no** such fallback and must have `key_env` / `auth_key`.
 
-## 与 codex-rs 的集成（patch）
+## Integration with codex-rs (patch)
 
-本 crate 反向依赖 `codex-api` / `codex-protocol`（path 依赖，见 `Cargo.toml`），属 CLAUDE.md 所述「情况 B」。生产接入分两个 patch：构建集成在共享的 `patches/001-build.patch`，代码接入点在 `patches/002-llm-switch.patch`。触点：
+This crate reverse-depends on `codex-api` / `codex-protocol` (path dependencies, see `Cargo.toml`), making it "case B" as described in CLAUDE.md. Production integration is split across two patches: build integration in the shared `patches/001-build.patch`, code hook-in points in `patches/002-llm-switch.patch`. Touchpoints:
 
-1. **`001-build.patch`** → `core/Cargo.toml`：加 `codez-llm-switch = { path = "../../zmod/llm-switch" }`（普通 path 依赖，不进 workspace members）。
-2. **`002-llm-switch.patch`** → `core/src/client.rs`：`ModelClient::new` 增形参 `model_provider_id: String`，存进 `ModelClientState`（含 `memories/write` 等所有调用点同步改）。
-3. **`002-llm-switch.patch`** → `core/src/client.rs` 的 `stream_responses_api`：按 `codez_llm_switch::route(...)` 二选一——`None` 走原生 `ApiResponsesClient`（保留 `.with_telemetry(...)`），`Some(rt)` 走 `codez_llm_switch::run(...)`，二者落进同一个 `match stream_result`。
+1. **`001-build.patch`** → `core/Cargo.toml`: adds `codez-llm-switch = { path = "../../zmod/llm-switch" }` (a plain path dependency, not entered into workspace members).
+2. **`002-llm-switch.patch`** → `core/src/client.rs`: `ModelClient::new` gains a parameter `model_provider_id: String`, stored into `ModelClientState` (all call sites, including `memories/write`, are updated accordingly).
+3. **`002-llm-switch.patch`** → `stream_responses_api` in `core/src/client.rs`: based on `codez_llm_switch::route(...)`, choose one of two — `None` goes to the native `ApiResponsesClient` (keeping `.with_telemetry(...)`), `Some(rt)` goes to `codez_llm_switch::run(...)`, both landing in the same `match stream_result`.
 
-> 已知缺口：接管路径不接 codex-api 层的请求/SSE 遥测（连接器用自己的 HTTP/SSE 客户端）；`inference_trace` 与 `map_response_stream` 的 LastResponse/cancellation 两路径都保留。
+> Known gap: the takeover path does not connect to codex-api's request/SSE telemetry (the connector uses its own HTTP/SSE client); both the LastResponse/cancellation paths of `inference_trace` and `map_response_stream` are preserved.
 
-## 公开 API
+## Public API
 
 ```rust
-// 路由判定（patch 在 stream_responses_api 里调用）
+// Routing decision (the patch calls this inside stream_responses_api)
 pub fn route(model_provider_id: &str) -> Option<Route>;
 pub fn enabled() -> bool;
 
-// 接管入口（patch 调用契约，签名固定）
+// Takeover entry point (the call contract for the patch; signature is fixed)
 pub async fn run(
     rt: Route,
     request: codex_api::ResponsesApiRequest,
     api_auth: codex_api::SharedAuthProvider,
 ) -> Result<codex_api::ResponseStream, codex_api::ApiError>;
 
-// 配置
+// Configuration
 pub fn load_config_from_str(toml_text: &str, allow_inline_key: bool) -> Result<Config, ConfigError>;
-pub fn load_testkey_config(path: &Path) -> Result<Config, ConfigError>;  // 仅测试，允许内联 auth_key
+pub fn load_testkey_config(path: &Path) -> Result<Config, ConfigError>;  // tests only, allows inline auth_key
 ```
 
-运行时从 `~/.codex/config-zmod.toml`（或 `$CODEX_HOME/config-zmod.toml`）读一次并进程级缓存。
+At runtime it reads `~/.codex/config-zmod.toml` (or `$CODEX_HOME/config-zmod.toml`) once and caches it process-wide.
 
-## 模块布局
+## Module layout
 
 ```
 src/
-  lib.rs            run()/route()/enabled() 入口；配置缓存
-  config.rs         解析 config-zmod 的 [llm-switch] 段
-  http.rs           出口 URL 拼接 + 鉴权头整形 + 密钥解析
-  pipeline.rs       TransformPlugin trait + 有序执行（v1 直通）
-  transform/        将来的压缩变换落点（v1 空）
-  sse.rs            出口 HTTP 请求 + SSE 字节读取（跨 chunk 多字节安全）
+  lib.rs            run()/route()/enabled() entry points; config cache
+  config.rs         parses the [llm-switch] section of config-zmod
+  http.rs           egress URL assembly + auth header shaping + key resolution
+  pipeline.rs       TransformPlugin trait + ordered execution (v1 pass-through)
+  transform/        landing spot for future compression transforms (empty in v1)
+  sse.rs            egress HTTP request + SSE byte reading (safe across multi-byte chunks)
   connector/
-    mod.rs          Connector trait + EgressCtx + 工厂
-    chat.rs         chat 连接器；chat_req.rs 请求构造；chat_sse.rs SSE 翻译
-    anthropic.rs    anthropic 连接器；anthropic_req.rs 请求构造；anthropic_sse.rs SSE 翻译
+    mod.rs          Connector trait + EgressCtx + factory
+    chat.rs         chat connector; chat_req.rs request construction; chat_sse.rs SSE translation
+    anthropic.rs    anthropic connector; anthropic_req.rs request construction; anthropic_sse.rs SSE translation
 ```
 
-## 构建与测试
+## Build and test
 
-本 crate 在 codex-rs workspace **之外**且反向依赖其 crate，受 cargo 两条硬约束：作为「非 member 的 path 依赖」时不能用 `[dev-dependencies]`、不能跑 `tests/*.rs`；而 cargo 又拒绝 codex-rs 之外的 member。
+This crate lives **outside** the codex-rs workspace and reverse-depends on its crates, subject to two cargo hard constraints: as a "non-member path dependency" it cannot use `[dev-dependencies]` and cannot run `tests/*.rs`; yet cargo also rejects a member outside codex-rs.
 
-**开发期解法**（CLAUDE.md「情况 B 开发期测试」）：用软链把本 crate 临时接进 codex-rs workspace 成为真 member，从而支持 dev-deps（wiremock）与集成测试，共享 codex-rs 的 `Cargo.lock` / `target`。
+**Development-time workaround** (CLAUDE.md "case B development testing"): use a symlink to temporarily wire this crate into the codex-rs workspace as a real member, thereby enabling dev-deps (wiremock) and integration tests, sharing codex-rs's `Cargo.lock` / `target`.
 
 ```bash
-# 在仓库根
-ln -s ../zmod/llm-switch codex-rs/llm-switch          # 软链(已被 .gitignore 覆盖)
-# 在 codex-rs/Cargo.toml 的 [workspace] members 末尾加一行: "llm-switch",
+# at the repo root
+ln -s ../zmod/llm-switch codex-rs/llm-switch          # symlink (already covered by .gitignore)
+# add a line at the end of [workspace] members in codex-rs/Cargo.toml: "llm-switch",
 
 cd codex-rs
-cargo test -p codez-llm-switch                         # 全部测试
-cargo test -p codez-llm-switch --test chat_request_test # 单个集成测试
+cargo test -p codez-llm-switch                         # all tests
+cargo test -p codez-llm-switch --test chat_request_test # a single integration test
 cargo clippy -p codez-llm-switch --all-targets         # lint
 ```
 
-> 纪律：软链 `codex-rs/llm-switch`、`codex-rs/Cargo.toml` 的 members 那行、构建生成的 `codex-rs/Cargo.lock` 改动都是 **dev-only 脚手架**，保持 uncommitted dirty，**绝不**提交进 codex-rs 子树、**不进**任何 patch。`git reset --hard` 会撤掉 members 行（软链因被 ignore 而留存），按上面两步重建即可。
+> Discipline: the symlink `codex-rs/llm-switch`, the members line in `codex-rs/Cargo.toml`, and the build-generated changes to `codex-rs/Cargo.lock` are all **dev-only scaffolding**; keep them uncommitted dirty and **never** commit them into the codex-rs subtree, and **never** put them into any patch. `git reset --hard` will revert the members line (the symlink survives because it is ignored); rebuild it with the two steps above.
 
-### 实跑测试（门控）
+### Live tests (gated)
 
-`tests/live_test.rs` 真打 DeepSeek / Claude 端点，默认 `#[ignore]`。需在 `tests/testkey.toml`（**gitignored，含真 key，不得提交**）配好 provider + `auth_key` + `model` 后：
+`tests/live_test.rs` hits the real DeepSeek / Claude endpoints and is `#[ignore]` by default. After configuring the provider + `auth_key` + `model` in `tests/testkey.toml` (**gitignored, contains real keys, must not be committed**):
 
 ```bash
 cargo test -p codez-llm-switch -- --ignored
 ```
 
-`testkey.toml` 缺失时自动跳过，CI 无 key 也全绿。离线黄金测试（请求构造 / SSE 翻译 / 配置 / 硬失败 / 降级断言）不需要 key。
-
+When `testkey.toml` is missing the tests are skipped automatically, so CI stays green even without keys. The offline golden tests (request construction / SSE translation / config / hard-fail / downgrade assertions) need no key.

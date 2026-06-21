@@ -1,30 +1,30 @@
-# Task 02 — http.rs 出口与鉴权
+# Task 02 — http.rs Egress and Authentication
 
-> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development 或 executing-plans。先读 [总索引](2026-06-20-llm-switch-00-index.md) Global Constraints。
+> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development or executing-plans. First read the Global Constraints in the [master index](2026-06-20-llm-switch-00-index.md).
 
-**Goal:** 实现 `http.rs`:① endpoint URL 拼接(§4.0a `base_url.trim_end('/') + path`);② 鉴权头整形(§5.3 / §7.2:`bearer` → `Authorization: Bearer`;`x-api-key` → `x-api-key` + `anthropic-version`);③ 原始 key 取得优先级(`key_env` → `auth_key`)。纯函数,易测。
+**Goal:** Implement `http.rs`: ① endpoint URL assembly (§4.0a `base_url.trim_end('/') + path`); ② auth header shaping (§5.3 / §7.2: `bearer` → `Authorization: Bearer`; `x-api-key` → `x-api-key` + `anthropic-version`); ③ raw key resolution priority (`key_env` → `auth_key`). Pure functions, easy to test.
 
-**覆盖 spec:** §4.0a(URL)、§5.3(密钥来源/优先级)、§7.2(鉴权整形)。
+**Spec coverage:** §4.0a (URL), §5.3 (key source/priority), §7.2 (auth shaping).
 
 **Files:**
 - Create: `zmod/llm-switch/src/http.rs`
-- Modify: `zmod/llm-switch/src/lib.rs`(加 `mod http;` 与重导出)
+- Modify: `zmod/llm-switch/src/lib.rs` (add `mod http;` and re-exports)
 - Test: `zmod/llm-switch/tests/http_test.rs`
 
 **Interfaces:**
-- Consumes(Task 01):`ProviderCfg`、`AuthKind`、`Connector`。
+- Consumes (Task 01): `ProviderCfg`, `AuthKind`, `Connector`.
 - Produces:
   - `pub fn egress_url(base_url: &str, connector: Connector, path_override: Option<&str>) -> String`
   - `pub fn default_path(connector: Connector) -> &'static str`
-  - `pub fn resolve_key(cfg: &ProviderCfg) -> Result<Option<String>, HttpError>`(读 `key_env` 环境变量或 `auth_key`;都没有时返回 `Ok(None)`,留给 bearer 退路)
+  - `pub fn resolve_key(cfg: &ProviderCfg) -> Result<Option<String>, HttpError>` (reads the `key_env` environment variable or `auth_key`; returns `Ok(None)` when neither is present, leaving the bearer fallback open)
   - `pub fn build_headers(auth: AuthKind, key: Option<&str>, anthropic_version: Option<&str>) -> Result<reqwest::header::HeaderMap, HttpError>`
-  - `pub enum HttpError { MissingKey, BadHeader(String) }`(`thiserror`)
+  - `pub enum HttpError { MissingKey, BadHeader(String) }` (`thiserror`)
 
 ---
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: Write failing tests**
 
-创建 `zmod/llm-switch/tests/http_test.rs`:
+Create `zmod/llm-switch/tests/http_test.rs`:
 
 ```rust
 use codez_llm_switch::{build_headers, default_path, egress_url, AuthKind, Connector};
@@ -80,12 +80,12 @@ fn headers_xapikey_missing_key_errors() {
 }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [ ] **Step 2: Run and confirm failure**
 
 Run: `cd zmod/llm-switch && cargo test --test http_test`
-Expected: 编译失败(符号未定义)。
+Expected: compile failure (undefined symbols).
 
-- [ ] **Step 3: 实现 `http.rs`**
+- [ ] **Step 3: Implement `http.rs`**
 
 ```rust
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -108,13 +108,13 @@ pub fn default_path(connector: Connector) -> &'static str {
     }
 }
 
-/// `base_url.trim_end('/') + path`(§4.0a)。path 缺省由 connector 决定,可被 config 覆盖。
+/// `base_url.trim_end('/') + path` (§4.0a). The default path is determined by the connector and can be overridden by config.
 pub fn egress_url(base_url: &str, connector: Connector, path_override: Option<&str>) -> String {
     let path = path_override.unwrap_or_else(|| default_path(connector));
     format!("{}{}", base_url.trim_end_matches('/'), path)
 }
 
-/// 原始 key 优先级:key_env(读环境变量)→ auth_key(内联,仅 testkey)→ None(留给 bearer 退路)。
+/// Raw key priority: key_env (read environment variable) → auth_key (inline, testkey only) → None (leaves the bearer fallback open).
 pub fn resolve_key(cfg: &ProviderCfg) -> Result<Option<String>, HttpError> {
     if let Some(env_name) = &cfg.key_env {
         if let Ok(v) = std::env::var(env_name) {
@@ -129,7 +129,7 @@ pub fn resolve_key(cfg: &ProviderCfg) -> Result<Option<String>, HttpError> {
     Ok(None)
 }
 
-/// 按 auth 形态整形鉴权头。原始 key 由连接器自取,不依赖 codex add_auth_headers。
+/// Shape the auth headers according to the auth kind. The connector fetches the raw key itself; it does not rely on codex add_auth_headers.
 pub fn build_headers(
     auth: AuthKind,
     key: Option<&str>,
@@ -160,21 +160,21 @@ pub fn build_headers(
 }
 ```
 
-- [ ] **Step 4: 在 `lib.rs` 挂模块并重导出**
+- [ ] **Step 4: Mount the module in `lib.rs` and re-export**
 
-在 `lib.rs` 顶部 `mod config;` 旁加:
+In `lib.rs`, next to `mod config;` at the top, add:
 
 ```rust
 mod http;
 pub use http::{build_headers, default_path, egress_url, resolve_key, HttpError};
 ```
 
-- [ ] **Step 5: 运行测试确认通过**
+- [ ] **Step 5: Run tests and confirm they pass**
 
 Run: `cd zmod/llm-switch && cargo test --test http_test`
-Expected: 7 个测试全 PASS。
+Expected: all 7 tests PASS.
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add zmod/llm-switch/src/http.rs zmod/llm-switch/src/lib.rs zmod/llm-switch/tests/http_test.rs

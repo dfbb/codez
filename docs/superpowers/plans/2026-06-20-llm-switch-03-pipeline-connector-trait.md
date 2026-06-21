@@ -1,50 +1,50 @@
-# Task 03 — pipeline 与 connector trait/工厂
+# Task 03 — pipeline and connector trait/factory
 
-> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development 或 executing-plans。先读 [总索引](2026-06-20-llm-switch-00-index.md) Global Constraints。
+> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development or executing-plans. First read the Global Constraints in the [master index](2026-06-20-llm-switch-00-index.md).
 
-**Goal:** 搭出两层管线的骨架与公共契约:① `pipeline.rs` 的 `TransformPlugin` trait + 有序执行(v1 直通,仅注册点);`transform/mod.rs`(v1 空);② `connector/mod.rs` 的 `Connector` trait、`EgressCtx`、`ConnError`、按 `config::Connector` 选连接器的工厂。chat/anthropic 的具体实现是 Task 04–07,本任务给出空壳 + 工厂分派测试。
+**Goal:** Lay out the skeleton and shared contracts for the two-stage pipeline: ① the `TransformPlugin` trait in `pipeline.rs` + ordered execution (v1 is pass-through, only the registration point); `transform/mod.rs` (empty in v1); ② the `Connector` trait, `EgressCtx`, `ConnError` in `connector/mod.rs`, plus a factory that selects a connector by `config::Connector`. The concrete chat/anthropic implementations come in Tasks 04–07; this task provides the empty shells + a factory-dispatch test.
 
-**覆盖 spec:** §2(两层管线)、§3(模块布局)、§4(Connector 契约 / EgressCtx)。
+**Spec coverage:** §2 (two-stage pipeline), §3 (module layout), §4 (Connector contract / EgressCtx).
 
 **Files:**
 - Create: `zmod/llm-switch/src/pipeline.rs`
 - Create: `zmod/llm-switch/src/transform/mod.rs`
 - Create: `zmod/llm-switch/src/connector/mod.rs`
-- Create: `zmod/llm-switch/src/connector/chat.rs`(空壳)
-- Create: `zmod/llm-switch/src/connector/anthropic.rs`(空壳)
-- Modify: `zmod/llm-switch/src/lib.rs`(挂模块)
+- Create: `zmod/llm-switch/src/connector/chat.rs` (empty shell)
+- Create: `zmod/llm-switch/src/connector/anthropic.rs` (empty shell)
+- Modify: `zmod/llm-switch/src/lib.rs` (wire up modules)
 - Test: `zmod/llm-switch/tests/pipeline_test.rs`
 
 **Interfaces:**
-- Consumes(Task 01/02):`config::Connector`、`ProviderCfg`。
-- Produces(Task 04–08 依赖):
+- Consumes (Task 01/02): `config::Connector`, `ProviderCfg`.
+- Produces (depended on by Tasks 04–08):
   - `pub trait TransformPlugin: Send + Sync { fn transform(&self, req: &mut codex_api::ResponsesApiRequest) -> Result<(), ConnError>; }`
   - `pub fn run_transforms(plugins: &[Box<dyn TransformPlugin>], req: &mut codex_api::ResponsesApiRequest) -> Result<(), ConnError>`
-  - `pub fn default_plugins() -> Vec<Box<dyn TransformPlugin>>`(v1 返回空 vec)
+  - `pub fn default_plugins() -> Vec<Box<dyn TransformPlugin>>` (returns an empty vec in v1)
   - `pub struct EgressCtx { pub base_url: String, pub model: String, pub auth: AuthKind, pub key: Option<String>, pub anthropic_version: Option<String>, pub path_override: Option<String>, pub default_max_tokens: Option<u32>, pub http: reqwest::Client }`
-  - `pub trait Connector: Send + Sync { async fn run(&self, req: codex_api::ResponsesApiRequest, ctx: &EgressCtx) -> Result<codex_api::ResponseStream, codex_api::ApiError>; }`(用 `async-trait` 或 `impl Future`,见 Step 4 说明)
+  - `pub trait Connector: Send + Sync { async fn run(&self, req: codex_api::ResponsesApiRequest, ctx: &EgressCtx) -> Result<codex_api::ResponseStream, codex_api::ApiError>; }` (use `async-trait` or `impl Future`, see the Step 4 notes)
   - `pub fn make_connector(kind: config::Connector) -> Box<dyn Connector>`
   - `pub enum ConnError { HardFail(String), Http(codex_api::ApiError) }` + `impl From<ConnError> for codex_api::ApiError`
-- 说明:`EgressCtx` 由 Task 08 的 `run()` 从 `Route` + `resolve_key` 组装。
+- Note: `EgressCtx` is assembled by Task 08's `run()` from `Route` + `resolve_key`.
 
 ---
 
-- [ ] **Step 0: 确认 ApiError / ResponsesApiRequest 路径**
+- [ ] **Step 0: Confirm the ApiError / ResponsesApiRequest paths**
 
 Run: `grep -rn "pub use\|pub struct ResponsesApiRequest\|pub enum ApiError" codex-rs/codex-api/src/lib.rs codex-rs/codex-api/src/common.rs codex-rs/codex-api/src/error.rs`
-确认 `codex_api::ResponsesApiRequest`、`codex_api::ResponseStream`、`codex_api::ApiError` 都从 crate 根重导出;若不是,记录正确路径(如 `codex_api::common::ResponsesApiRequest`)并在后续代码统一用之。
+Confirm that `codex_api::ResponsesApiRequest`, `codex_api::ResponseStream`, and `codex_api::ApiError` are all re-exported from the crate root; if not, record the correct path (e.g. `codex_api::common::ResponsesApiRequest`) and use it consistently in the code that follows.
 
-- [ ] **Step 1: 写失败测试(工厂分派 + transform 直通)**
+- [ ] **Step 1: Write a failing test (factory dispatch + transform pass-through)**
 
-创建 `zmod/llm-switch/tests/pipeline_test.rs`:
+Create `zmod/llm-switch/tests/pipeline_test.rs`:
 
 ```rust
 use codez_llm_switch::{default_plugins, make_connector, run_transforms};
-use codez_llm_switch::Connector as ConnectorKind; // config::Connector 重导出
+use codez_llm_switch::Connector as ConnectorKind; // re-export of config::Connector
 
 #[test]
 fn v1_transforms_are_noop_passthrough() {
-    // 构造一个最小 ResponsesApiRequest;字段以源码为准(见下方 helper 注释)。
+    // Build a minimal ResponsesApiRequest; fields follow the source (see the helper notes below).
     let mut req = sample_request();
     let before = serde_json::to_value(&req).unwrap();
     let plugins = default_plugins();
@@ -56,13 +56,14 @@ fn v1_transforms_are_noop_passthrough() {
 
 #[test]
 fn factory_returns_distinct_connectors() {
-    // 仅验证工厂能为两种 kind 各造出一个 Connector(类型擦除后无法直接比较,
-    // 用一个标识方法或 std::any 占位;此处验证不 panic 即可)。
+    // Only verify that the factory can produce a Connector for each of the two kinds (after type
+    // erasure they can't be compared directly; use an identity method or std::any as a placeholder;
+    // here it's enough that it doesn't panic).
     let _chat = make_connector(ConnectorKind::Chat);
     let _anthropic = make_connector(ConnectorKind::Anthropic);
 }
 
-// 构造样本请求:字段名/类型以 codex-api/src/common.rs:182 ResponsesApiRequest 为准。
+// Build a sample request: field names/types follow codex-api/src/common.rs:182 ResponsesApiRequest.
 fn sample_request() -> codex_api::ResponsesApiRequest {
     codex_api::ResponsesApiRequest {
         model: "test".into(),
@@ -83,27 +84,27 @@ fn sample_request() -> codex_api::ResponsesApiRequest {
 }
 ```
 
-> 注:`sample_request()` 字段必须与源码 `ResponsesApiRequest` 完全一致。执行前 `grep -n "pub struct ResponsesApiRequest" -A 25 codex-rs/codex-api/src/common.rs` 对齐(若上游新增字段,补上)。这是后续所有连接器测试共用的样本,Task 04+ 会扩展它。
+> Note: the fields of `sample_request()` must exactly match the source `ResponsesApiRequest`. Before running, align them with `grep -n "pub struct ResponsesApiRequest" -A 25 codex-rs/codex-api/src/common.rs` (and add any fields upstream may have introduced). This is the shared sample used by all later connector tests; Task 04+ will extend it.
 
-- [ ] **Step 2: 运行确认失败**
+- [ ] **Step 2: Run and confirm it fails**
 
 Run: `cd zmod/llm-switch && cargo test --test pipeline_test`
-Expected: 编译失败。
+Expected: compilation failure.
 
-- [ ] **Step 3: 实现 `pipeline.rs` 与 `transform/mod.rs`**
+- [ ] **Step 3: Implement `pipeline.rs` and `transform/mod.rs`**
 
 `zmod/llm-switch/src/pipeline.rs`:
 
 ```rust
 use crate::connector::ConnError;
 
-/// ① 层变换插件:作用于 codex 原生 ResponsesApiRequest,协议无关。
-/// v1 无实现;将来 compressor 落在这里。
+/// Stage ① transform plugins: operate on codex's native ResponsesApiRequest, protocol-agnostic.
+/// No implementation in v1; the compressor will live here in the future.
 pub trait TransformPlugin: Send + Sync {
     fn transform(&self, req: &mut codex_api::ResponsesApiRequest) -> Result<(), ConnError>;
 }
 
-/// 有序执行所有插件;任一失败即中止。
+/// Run all plugins in order; abort on the first failure.
 pub fn run_transforms(
     plugins: &[Box<dyn TransformPlugin>],
     req: &mut codex_api::ResponsesApiRequest,
@@ -114,7 +115,7 @@ pub fn run_transforms(
     Ok(())
 }
 
-/// v1 默认插件集:空。
+/// v1 default plugin set: empty.
 pub fn default_plugins() -> Vec<Box<dyn TransformPlugin>> {
     crate::transform::plugins()
 }
@@ -125,15 +126,15 @@ pub fn default_plugins() -> Vec<Box<dyn TransformPlugin>> {
 ```rust
 use crate::pipeline::TransformPlugin;
 
-/// v1:无变换插件。将来 compressor 在此注册。
+/// v1: no transform plugins. The compressor will register here in the future.
 pub fn plugins() -> Vec<Box<dyn TransformPlugin>> {
     Vec::new()
 }
 ```
 
-- [ ] **Step 4: 实现 `connector/mod.rs`(trait + EgressCtx + 工厂 + 错误)**
+- [ ] **Step 4: Implement `connector/mod.rs` (trait + EgressCtx + factory + error)**
 
-异步 trait 方案:codex-rs 已依赖 `async-trait`(执行前 `grep async-trait codex-rs/Cargo.toml` 确认版本);在 `Cargo.toml` 加 `async-trait = "0.1"` 并用之,签名最简洁。
+Async-trait approach: codex-rs already depends on `async-trait` (before running, confirm the version with `grep async-trait codex-rs/Cargo.toml`); add `async-trait = "0.1"` to `Cargo.toml` and use it for the cleanest signature.
 
 `zmod/llm-switch/src/connector/mod.rs`:
 
@@ -146,8 +147,9 @@ use thiserror::Error;
 
 use crate::config::{AuthKind, Connector as ConnectorKind};
 
-/// 连接器内部错误。HardFail = v1 不支持/结构无法表达(§4.0 等),映射成 ApiError::InvalidRequest;
-/// Http = 已是 codex ApiError(建连/状态码/流错误)。
+/// Internal connector error. HardFail = unsupported in v1 / cannot be expressed structurally (§4.0 etc.),
+/// mapped to ApiError::InvalidRequest;
+/// Http = already a codex ApiError (connection setup / status code / stream error).
 #[derive(Debug, Error)]
 pub enum ConnError {
     #[error("llm-switch unsupported: {0}")]
@@ -165,7 +167,7 @@ impl From<ConnError> for codex_api::ApiError {
     }
 }
 
-/// 出口上下文:由 Task 08 run() 从 Route + resolve_key 组装。
+/// Egress context: assembled by Task 08's run() from Route + resolve_key.
 pub struct EgressCtx {
     pub base_url: String,
     pub model: String,
@@ -179,7 +181,8 @@ pub struct EgressCtx {
 
 #[async_trait]
 pub trait Connector: Send + Sync {
-    /// 同步完成 HTTP+状态码+SSE 建立后才 spawn(§4.7);返回与 stream_request 同型的流。
+    /// Spawn only after HTTP + status code + SSE setup complete synchronously (§4.7); returns a
+    /// stream of the same shape as stream_request.
     async fn run(
         &self,
         req: codex_api::ResponsesApiRequest,
@@ -195,7 +198,7 @@ pub fn make_connector(kind: ConnectorKind) -> Box<dyn Connector> {
 }
 ```
 
-- [ ] **Step 5: chat/anthropic 空壳**
+- [ ] **Step 5: chat/anthropic empty shells**
 
 `zmod/llm-switch/src/connector/chat.rs`:
 
@@ -212,7 +215,7 @@ impl Connector for ChatConnector {
         _req: codex_api::ResponsesApiRequest,
         _ctx: &EgressCtx,
     ) -> Result<codex_api::ResponseStream, codex_api::ApiError> {
-        // 实体逻辑见 Task 04(请求)+ Task 05(SSE)+ Task 08(接线)。
+        // Concrete logic is in Task 04 (request) + Task 05 (SSE) + Task 08 (wiring).
         Err(codex_api::ApiError::InvalidRequest {
             message: "chat connector not implemented yet".into(),
         })
@@ -220,11 +223,11 @@ impl Connector for ChatConnector {
 }
 ```
 
-`zmod/llm-switch/src/connector/anthropic.rs`:同结构,`pub struct AnthropicConnector;`,消息 `"anthropic connector not implemented yet"`。
+`zmod/llm-switch/src/connector/anthropic.rs`: same structure, `pub struct AnthropicConnector;`, with message `"anthropic connector not implemented yet"`.
 
-- [ ] **Step 6: `lib.rs` 挂模块并重导出**
+- [ ] **Step 6: Wire up modules and re-export in `lib.rs`**
 
-`lib.rs` 顶部模块声明区补:
+Add to the module-declaration section at the top of `lib.rs`:
 
 ```rust
 mod pipeline;
@@ -235,16 +238,16 @@ pub use pipeline::{default_plugins, run_transforms, TransformPlugin};
 pub use connector::{make_connector, ConnError, Connector as ConnectorTrait, EgressCtx};
 ```
 
-> 命名冲突注意:`config::Connector`(枚举)与 `connector::Connector`(trait)同名。对外:`pub use config::Connector;`(枚举,Task 01 已导出),trait 重命名为 `ConnectorTrait`。`make_connector` 形参是枚举。测试里 `use codez_llm_switch::Connector as ConnectorKind` 取枚举。
+> Naming-collision note: `config::Connector` (enum) and `connector::Connector` (trait) share a name. Externally: `pub use config::Connector;` (the enum, already exported in Task 01), and the trait is renamed to `ConnectorTrait`. `make_connector`'s parameter is the enum. In tests, `use codez_llm_switch::Connector as ConnectorKind` picks the enum.
 
-在 `Cargo.toml` `[dependencies]` 增 `async-trait = "0.1"`。
+Add `async-trait = "0.1"` to `[dependencies]` in `Cargo.toml`.
 
-- [ ] **Step 7: 运行测试确认通过**
+- [ ] **Step 7: Run the tests and confirm they pass**
 
 Run: `cd zmod/llm-switch && cargo test --test pipeline_test`
-Expected: 2 个测试 PASS(transform 直通、工厂分派)。
+Expected: 2 tests PASS (transform pass-through, factory dispatch).
 
-- [ ] **Step 8: 提交**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add zmod/llm-switch/src/pipeline.rs zmod/llm-switch/src/transform zmod/llm-switch/src/connector zmod/llm-switch/src/lib.rs zmod/llm-switch/Cargo.toml zmod/llm-switch/tests/pipeline_test.rs

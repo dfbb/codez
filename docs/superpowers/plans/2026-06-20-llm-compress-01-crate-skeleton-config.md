@@ -1,10 +1,10 @@
-# Task 01: crate 骨架 + config
+# Task 01: crate skeleton + config
 
-> 属于 `2026-06-20-llm-compress-00-index.md`。执行前先读 index 的 Global Constraints / 真实类型 / dev-build 决策。
+> Part of `2026-06-20-llm-compress-00-index.md`. Before executing, read the index's Global Constraints / real types / dev-build decisions.
 
-**Goal:** 建出 `zmod/llm-compress` crate(path 反指 codex-rs),实现 `config.rs` 读取 `~/.codex/config-zmod.toml` 的 `[llm_compress]` 段并提供默认值;`lib.rs` 暴露 `enabled()`。本任务结束时 crate 在 codex-rs workspace 内 `cargo test -p codez-llm-compress` 通过。
+**Goal:** Build the `zmod/llm-compress` crate (with path pointing back to codex-rs), implement `config.rs` to read the `[llm_compress]` section of `~/.codex/config-zmod.toml` and provide defaults; `lib.rs` exposes `enabled()`. By the end of this task the crate passes `cargo test -p codez-llm-compress` inside the codex-rs workspace.
 
-**覆盖 spec:** §5(配置)、§11(crate 结构 / workspace 接入)。
+**Covers spec:** §5 (config), §11 (crate structure / workspace integration).
 
 **Files:**
 - Create: `zmod/llm-compress/Cargo.toml`
@@ -12,7 +12,7 @@
 - Create: `zmod/llm-compress/src/lib.rs`
 - Create: `zmod/llm-compress/src/config.rs`
 - Create: `zmod/llm-compress/tests/config_test.rs`
-- Modify(工作树,不提交): `codex-rs/core/Cargo.toml` `[dependencies]` 增一行
+- Modify (working tree, not committed): add one line to `codex-rs/core/Cargo.toml` `[dependencies]`
 
 **Interfaces:**
 - Produces:
@@ -21,12 +21,12 @@
   - `pub struct JsonCfg { pub max_array_items: usize, pub max_depth: usize }`
   - `pub struct DiffCfg { pub context_lines: usize }`
   - `pub struct LogCfg { pub dedup_repeats: bool }`
-  - `pub fn load() -> Config` — 读 `~/.codex/config-zmod.toml`,缺节/解析失败 → 返回 `Config::disabled()`(`enabled=false` + 默认阈值) 并 warn;成功 → 用文件值覆盖默认。
-  - `pub fn enabled() -> bool`(`lib.rs`) — `load().enabled` 的便捷封装(进程内每次 load,v1 不缓存以求简单;若实现缓存须用 `OnceLock`)。
+  - `pub fn load() -> Config` — reads `~/.codex/config-zmod.toml`; missing section / parse failure → returns `Config::disabled()` (`enabled=false` + default thresholds) and warns; on success → file values override defaults.
+  - `pub fn enabled() -> bool` (`lib.rs`) — convenience wrapper over `load().enabled` (loads every call within the process; v1 does not cache, for simplicity; if caching is implemented it must use `OnceLock`).
 
 ---
 
-- [ ] **Step 1: 建目录与 Cargo.toml**
+- [ ] **Step 1: Create directory and Cargo.toml**
 
 Create `zmod/llm-compress/Cargo.toml`:
 
@@ -55,7 +55,7 @@ insta = "1"
 tempfile = "3"
 ```
 
-- [ ] **Step 2: .gitignore(不提交 Cargo.lock)**
+- [ ] **Step 2: .gitignore (do not commit Cargo.lock)**
 
 Create `zmod/llm-compress/.gitignore`:
 
@@ -64,35 +64,35 @@ Create `zmod/llm-compress/.gitignore`:
 Cargo.lock
 ```
 
-- [ ] **Step 3: 接线开发期构建——软链成为 codex-rs workspace member(情况 B,CLAUDE.md §44-63)**
+- [ ] **Step 3: Wire up the dev-time build — soft-link the crate into the codex-rs workspace as a member (Case B, CLAUDE.md §44-63)**
 
-> **背景(已由 llm-switch 实测验证)**:本 crate 反向依赖 codex-api/codex-protocol(情况 B)。cargo 硬约束:非 member 的 path 依赖**不能声明 `[dev-dependencies]`、不能跑 `tests/*.rs` 集成测试**;而 cargo 又拒绝 codex-rs 根之外的 member。解法是**开发期用软链把 crate 接进 codex-rs workspace 成为真 member**(仅本地测试,不进 patch、不提交进 codex-rs 子树)。
+> **Background (already empirically validated by llm-switch):** this crate reverse-depends on codex-api/codex-protocol (Case B). cargo hard constraints: a path dependency that is not a member **cannot declare `[dev-dependencies]`, cannot run `tests/*.rs` integration tests**; and cargo also rejects members outside the codex-rs root. The solution is to **soft-link the crate into the codex-rs workspace at dev time so it becomes a real member** (local testing only, not in the patch, not committed into the codex-rs subtree).
 
-① 建软链(cargo 视其为根下 member,绕过跨根限制):
+① Create the soft link (cargo treats it as a member under the root, bypassing the cross-root restriction):
 ```bash
 cd /Users/dfbb/Sites/skycode/codez
 ln -s ../zmod/llm-compress codex-rs/llm-compress
 ```
 
-② 在 `codex-rs/Cargo.toml` 的 `members` 列表末尾(`]` 之前)加一行——**软链名**,不是 `../` 路径:
+② Add one line at the end of the `members` list in `codex-rs/Cargo.toml` (before the `]`) — the **soft-link name**, not the `../` path:
 ```toml
     "llm-compress",
 ```
 
-③ 在根 `.gitignore` 加(若未加):
+③ Add to the root `.gitignore` (if not already present):
 ```
 /codex-rs/llm-compress
 ```
 
-> **纪律**:软链 `codex-rs/llm-compress` 写进 `.gitignore`,绝不提交进 codex-rs 子树;`codex-rs/Cargo.toml` 的 members 那行与构建产生的 `codex-rs/Cargo.lock` 是 dev-only 脚手架,保持 uncommitted dirty,**不进 `patches/llm-compress.patch`、不被还原**。生产接入(Task 09 patch)走的是另一条路——情况 B 的 `core/Cargo.toml` 外部 path 依赖 + client.rs 调用,与软链无关。软链就位后 `cd codex-rs && cargo test -p codez-llm-compress` 完整支持 dev-deps 与集成测试,共享 codex-rs 的 Cargo.lock 与 target。
+> **Discipline:** the soft link `codex-rs/llm-compress` goes into `.gitignore` and is never committed into the codex-rs subtree; the members line in `codex-rs/Cargo.toml` and the build-generated `codex-rs/Cargo.lock` are dev-only scaffolding, kept uncommitted dirty, **not in `patches/llm-compress.patch`, not reverted**. The production integration (Task 09 patch) takes a different route — Case B's external path dependency in `core/Cargo.toml` + the client.rs call, unrelated to the soft link. Once the soft link is in place, `cd codex-rs && cargo test -p codez-llm-compress` fully supports dev-deps and integration tests, sharing codex-rs's Cargo.lock and target.
 
-- [ ] **Step 4: 写 config.rs(默认值 + 读取 + fail-safe)**
+- [ ] **Step 4: Write config.rs (defaults + reading + fail-safe)**
 
 Create `zmod/llm-compress/src/config.rs`:
 
 ```rust
-//! 读取 ~/.codex/config-zmod.toml 的 [llm_compress] 段。
-//! fail-safe:文件/节缺失或解析失败 → enabled=false + 默认阈值。
+//! Reads the [llm_compress] section of ~/.codex/config-zmod.toml.
+//! fail-safe: file/section missing or parse failure → enabled=false + default thresholds.
 
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -180,7 +180,7 @@ impl Config {
     }
 }
 
-/// 顶层文件结构:只关心 [llm_compress] 节。
+/// Top-level file structure: we only care about the [llm_compress] section.
 #[derive(Debug, Deserialize)]
 struct RootFile {
     #[serde(default)]
@@ -192,7 +192,7 @@ fn config_path() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".codex").join("config-zmod.toml"))
 }
 
-/// 从指定路径读取(便于测试注入)。
+/// Read from a given path (for test injection).
 pub fn load_from(path: &std::path::Path) -> Config {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
@@ -207,7 +207,7 @@ pub fn load_from(path: &std::path::Path) -> Config {
     }
 }
 
-/// 从默认路径 ~/.codex/config-zmod.toml 读取。
+/// Read from the default path ~/.codex/config-zmod.toml.
 pub fn load() -> Config {
     match config_path() {
         Some(p) => load_from(&p),
@@ -216,23 +216,23 @@ pub fn load() -> Config {
 }
 ```
 
-- [ ] **Step 5: 写 lib.rs(暂只导出 config + enabled)**
+- [ ] **Step 5: Write lib.rs (for now export only config + enabled)**
 
 Create `zmod/llm-compress/src/lib.rs`:
 
 ```rust
-//! codez-llm-compress:在 codex LLM 请求边界压缩请求。
-//! 入口 transform() 在 Task 08 加入;本任务先建 config 地基。
+//! codez-llm-compress: compress requests at the codex LLM request boundary.
+//! The transform() entry point is added in Task 08; this task first lays the config foundation.
 
 pub mod config;
 
-/// 是否启用压缩(读 ~/.codex/config-zmod.toml 的 [llm_compress].enabled)。
+/// Whether compression is enabled (reads [llm_compress].enabled from ~/.codex/config-zmod.toml).
 pub fn enabled() -> bool {
     config::load().enabled
 }
 ```
 
-- [ ] **Step 6: 写失败测试**
+- [ ] **Step 6: Write failing tests**
 
 Create `zmod/llm-compress/tests/config_test.rs`:
 
@@ -273,7 +273,7 @@ dedup_repeats = false
     let cfg = load_from(f.path());
     assert!(cfg.enabled);
     assert_eq!(cfg.min_total_bytes, 2048);
-    assert_eq!(cfg.per_item_min_bytes, 1024); // 未给 → 默认
+    assert_eq!(cfg.per_item_min_bytes, 1024); // not given → default
     assert_eq!(cfg.truncate.head_lines, 10);
     assert_eq!(cfg.truncate.max_bytes, 8192);
     assert_eq!(cfg.json.max_array_items, 7);
@@ -287,7 +287,7 @@ fn missing_section_disables() {
     let f = write_tmp("[some_other]\nx = 1\n");
     let cfg = load_from(f.path());
     assert!(!cfg.enabled);
-    assert_eq!(cfg.min_total_bytes, 4096); // 默认
+    assert_eq!(cfg.min_total_bytes, 4096); // default
 }
 
 #[test]
@@ -313,23 +313,23 @@ fn default_config_is_disabled_with_known_thresholds() {
 }
 ```
 
-- [ ] **Step 7: 跑测试看失败(crate 尚未编译进 workspace 前会先失败/编译错)**
+- [ ] **Step 7: Run the tests to see them fail (before the crate is compiled into the workspace they will fail / fail to compile)**
 
-Run(在 `codex-rs/` 目录):
+Run (in the `codex-rs/` directory):
 ```bash
 cargo test -p codez-llm-compress --test config_test
 ```
-Expected: 软链+member(Step 3)就位后编译通过、测试运行;若测试逻辑有误则相应断言 FAIL。若报 `package ID specification ... did not match` 说明 Step 3 软链/member 未生效,回到 Step 3。
+Expected: once the soft link + member (Step 3) are in place, compilation succeeds and the tests run; if the test logic is wrong the corresponding assertions FAIL. If you see `package ID specification ... did not match`, the Step 3 soft link/member did not take effect — go back to Step 3.
 
-- [ ] **Step 8: 跑测试看通过**
+- [ ] **Step 8: Run the tests to see them pass**
 
-Run(在 `codex-rs/` 目录):
+Run (in the `codex-rs/` directory):
 ```bash
 cargo test -p codez-llm-compress --test config_test
 ```
-Expected: `test result: ok. 5 passed`。
+Expected: `test result: ok. 5 passed`.
 
-- [ ] **Step 9: 提交(仅 zmod,不含 codex-rs 的 dirty 改动)**
+- [ ] **Step 9: Commit (zmod only, not the codex-rs dirty changes)**
 
 ```bash
 cd /Users/dfbb/Sites/skycode/codez
@@ -337,4 +337,4 @@ git add zmod/llm-compress docs/superpowers/plans/2026-06-20-llm-compress-01-crat
 git -c core.hooksPath=/dev/null commit -m "feat(llm-compress): crate skeleton + config-zmod [llm_compress] parsing"
 ```
 
-> **不要** `git add codex-rs/Cargo.toml`(members 行)、`codex-rs/Cargo.lock`、软链 `codex-rs/llm-compress`——它们是 dev-build 软链 member 脚手架,全程保持 dirty/未跟踪,不提交进 codex-rs 子树、不进 patch。`.gitignore` 已忽略软链。
+> **Do not** `git add codex-rs/Cargo.toml` (the members line), `codex-rs/Cargo.lock`, or the soft link `codex-rs/llm-compress` — they are dev-build soft-link member scaffolding, kept dirty/untracked throughout, not committed into the codex-rs subtree and not in any patch. `.gitignore` already ignores the soft link.

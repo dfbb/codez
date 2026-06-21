@@ -1,25 +1,25 @@
 # Task 07 — tabular.rs:TabularCompressor
 
-> 隶属 `2026-06-21-llm-compress-v2-00-index.md`。覆盖 spec §5④。依赖 Task 01(schema.rs/签名)。可与 05/06/08/09 并行。
+> Part of `2026-06-21-llm-compress-v2-00-index.md`. Covers spec §5④. Depends on Task 01 (schema.rs / signatures). Can run in parallel with 05/06/08/09.
 
-**Goal:** 新增 `TabularCompressor`:识别 CSV/TSV/Markdown 表格,满足**严格前提**(有 header、列名唯一非空、列数一致、无转义分隔符/单元格换行)时,解析成对象数组 → 调 `schema::to_schema_form` → 输出合法 JSON。`kind=Json, lossy=false`,不挂 CCR。前提判定**在 detect 内**(适配 router first-match,不满足即 detect false 让 Truncate)。
+**Goal:** Add `TabularCompressor`: recognize CSV/TSV/Markdown tables. When the **strict preconditions** are met (has a header, column names unique and non-empty, consistent column count, no escaped separators / no cell line breaks), parse into an array of objects → call `schema::to_schema_form` → emit valid JSON. `kind=Json, lossy=false`, no CCR attached. The precondition check happens **inside detect** (to fit the router's first-match behavior: if not satisfied, detect returns false so Truncate takes over).
 
 ## Files
 - Create: `zmod/llm-compress/src/compress/tabular.rs`
-- Modify: `zmod/llm-compress/src/compress/mod.rs`(加 `pub mod tabular;`)
+- Modify: `zmod/llm-compress/src/compress/mod.rs` (add `pub mod tabular;`)
 - Test: `zmod/llm-compress/tests/tabular_test.rs`
 
 **Interfaces:**
-- Consumes: Task 01 的 `schema::to_schema_form`、`Budget`/`CompressOutcome`/`ContentKind`/`Compressor`、`config.tabular.enabled`。
-- Produces: `pub struct TabularCompressor;`(impl Compressor)。
+- Consumes: Task 01's `schema::to_schema_form`, `Budget`/`CompressOutcome`/`ContentKind`/`Compressor`, `config.tabular.enabled`.
+- Produces: `pub struct TabularCompressor;` (impl Compressor).
 
-> **算法(spec §5④)**:`parse_table(text) -> Option<Vec<Vec<String>>>`(首行 header + 数据行,列数一致;否则 None)。detect:`cfg.tabular.enabled` 且 `parse_table` 成功且 header 唯一非空 → true。compress:转 `Vec<serde_json::Value::Object>` → `Value::Array` → `schema::to_schema_form`。CSV 用逗号分隔(简单解析:无引号转义则按 `,` 切;**含引号或换行的单元格 → parse_table 返回 None**);Markdown 用 `|` 分隔,跳过 `|---|` 分隔行。
+> **Algorithm (spec §5④)**: `parse_table(text) -> Option<Vec<Vec<String>>>` (first line is the header + data rows, consistent column count; otherwise None). detect: `cfg.tabular.enabled` AND `parse_table` succeeds AND the header is unique and non-empty → true. compress: convert to `Vec<serde_json::Value::Object>` → `Value::Array` → `schema::to_schema_form`. CSV is comma-separated (simple parsing: if there's no quote escaping, split on `,`; **a cell containing quotes or line breaks → parse_table returns None**); Markdown is `|`-separated, skipping the `|---|` separator row.
 
 ---
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: Write the failing test**
 
-创建 `zmod/llm-compress/tests/tabular_test.rs`:
+Create `zmod/llm-compress/tests/tabular_test.rs`:
 
 ```rust
 use codez_llm_compress::compress::tabular::TabularCompressor;
@@ -32,12 +32,12 @@ fn budget(cfg: &Config) -> Budget<'_> {
 
 #[test]
 fn csv_with_header_to_schema() {
-    let cfg = Config::disabled(); // tabular.enabled 默认 true
+    let cfg = Config::disabled(); // tabular.enabled defaults to true
     let c = TabularCompressor;
     let text = "id,name\n1,alice\n2,bob\n3,carol";
     assert!(c.detect(text, &budget(&cfg)));
     if let CompressOutcome::Compressed { text: new, lossy, kind, .. } = c.compress(text, &budget(&cfg)) {
-        assert!(!lossy, "格式重构不删内容");
+        assert!(!lossy, "format restructuring does not drop content");
         assert_eq!(kind, ContentKind::Json);
         let v: serde_json::Value = serde_json::from_str(&new).expect("valid json");
         assert_eq!(v["_schema"], serde_json::json!(["id","name"]));
@@ -66,7 +66,7 @@ fn duplicate_column_names_detect_false() {
     let cfg = Config::disabled();
     let c = TabularCompressor;
     let text = "id,id\n1,2\n3,4";
-    assert!(!c.detect(text, &budget(&cfg)), "重复列名 → detect false 让 Truncate");
+    assert!(!c.detect(text, &budget(&cfg)), "duplicate column names → detect false so Truncate takes over");
 }
 
 #[test]
@@ -74,7 +74,7 @@ fn ragged_columns_detect_false() {
     let cfg = Config::disabled();
     let c = TabularCompressor;
     let text = "a,b,c\n1,2\n3,4,5";
-    assert!(!c.detect(text, &budget(&cfg)), "列数不齐 → detect false");
+    assert!(!c.detect(text, &budget(&cfg)), "inconsistent column count → detect false");
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn quoted_cell_detect_false() {
     let cfg = Config::disabled();
     let c = TabularCompressor;
     let text = "a,b\n\"x,y\",z\n1,2";
-    assert!(!c.detect(text, &budget(&cfg)), "含引号转义单元格 → detect false");
+    assert!(!c.detect(text, &budget(&cfg)), "cell with quote escaping → detect false");
 }
 
 #[test]
@@ -95,18 +95,18 @@ fn disabled_config_detect_false() {
 }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [ ] **Step 2: Run and confirm failure**
 
 Run: `cd codex-rs && cargo test -p codez-llm-compress --test tabular_test 2>&1 | head`
-Expected: FAIL(`tabular` 模块不存在)
+Expected: FAIL (the `tabular` module does not exist)
 
-- [ ] **Step 3: 实现 tabular.rs**
+- [ ] **Step 3: Implement tabular.rs**
 
-创建 `zmod/llm-compress/src/compress/tabular.rs`:
+Create `zmod/llm-compress/src/compress/tabular.rs`:
 
 ```rust
-//! TabularCompressor —— CSV/TSV/Markdown 表格 → csv-schema(spec §5④)。
-//! 严格前提在 detect 内判定;满足才认领。kind=Json, lossy=false,不挂 CCR。
+//! TabularCompressor — CSV/TSV/Markdown tables → csv-schema (spec §5④).
+//! The strict preconditions are checked inside detect; only claimed when satisfied. kind=Json, lossy=false, no CCR attached.
 
 use crate::compress::schema::to_schema_form;
 use crate::router::{Budget, CompressOutcome, Compressor, ContentKind};
@@ -131,7 +131,7 @@ impl Compressor for TabularCompressor {
             Some(t) => t,
             None => return CompressOutcome::Unchanged,
         };
-        // 转对象数组
+        // Convert to an array of objects
         let header = &table[0];
         let mut arr: Vec<Value> = Vec::with_capacity(table.len() - 1);
         for row in &table[1..] {
@@ -159,15 +159,15 @@ impl Compressor for TabularCompressor {
     }
 }
 
-/// 解析 CSV/TSV/Markdown 表格为 Vec<行>(行 = Vec<单元格>),含 header。
-/// 严格:有 header、列名唯一非空、所有行列数一致、无引号转义/单元格换行;否则 None。
+/// Parse a CSV/TSV/Markdown table into Vec<row> (row = Vec<cell>), including the header.
+/// Strict: must have a header, column names unique and non-empty, all rows with consistent column count, no quote escaping / no cell line breaks; otherwise None.
 fn parse_table(text: &str) -> Option<Vec<Vec<String>>> {
     let raw_lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
     if raw_lines.len() < 2 {
         return None;
     }
     let is_md = raw_lines[0].trim_start().starts_with('|');
-    // 含引号的单元格 → 放弃(简单解析器无法稳定还原)
+    // Cell containing a quote → give up (the simple parser cannot reliably reconstruct it)
     if text.contains('"') {
         return None;
     }
@@ -184,7 +184,7 @@ fn parse_table(text: &str) -> Option<Vec<Vec<String>>> {
 
     let mut rows: Vec<Vec<String>> = Vec::new();
     for (i, line) in raw_lines.iter().enumerate() {
-        // Markdown 分隔行 |---|---| 跳过
+        // Skip the Markdown separator row |---|---|
         if is_md && line.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ')) {
             continue;
         }
@@ -199,7 +199,7 @@ fn parse_table(text: &str) -> Option<Vec<Vec<String>>> {
     if ncol == 0 {
         return None;
     }
-    // header 唯一非空
+    // header unique and non-empty
     let header = &rows[0];
     if header.iter().any(|h| h.is_empty()) {
         return None;
@@ -207,10 +207,10 @@ fn parse_table(text: &str) -> Option<Vec<Vec<String>>> {
     let mut seen = std::collections::HashSet::new();
     for h in header {
         if !seen.insert(h) {
-            return None; // 重复列名
+            return None; // duplicate column name
         }
     }
-    // 列数一致
+    // consistent column count
     if rows.iter().any(|r| r.len() != ncol) {
         return None;
     }
@@ -218,21 +218,20 @@ fn parse_table(text: &str) -> Option<Vec<Vec<String>>> {
 }
 ```
 
-在 `zmod/llm-compress/src/compress/mod.rs` 加 `pub mod tabular;`。
+In `zmod/llm-compress/src/compress/mod.rs`, add `pub mod tabular;`.
 
-- [ ] **Step 4: 运行测试通过**
+- [ ] **Step 4: Run the test to pass**
 
 Run: `cd codex-rs && cargo test -p codez-llm-compress --test tabular_test`
-Expected: PASS(6 个)
+Expected: PASS (6 tests)
 
-- [ ] **Step 5: clippy + 提交**
+- [ ] **Step 5: clippy + commit**
 
 Run: `cd codex-rs && cargo test -p codez-llm-compress && cargo clippy -p codez-llm-compress --all-targets`
-Expected: 全绿、无 warning
+Expected: all green, no warnings
 
 ```bash
 git add zmod/llm-compress/src/compress/tabular.rs zmod/llm-compress/src/compress/mod.rs \
   zmod/llm-compress/tests/tabular_test.rs
-git commit -m "feat(llm-compress-v2): Task07 tabular.rs TabularCompressor(严格前提 + csv-schema)"
+git commit -m "feat(llm-compress-v2): Task07 tabular.rs TabularCompressor(strict preconditions + csv-schema)"
 ```
-

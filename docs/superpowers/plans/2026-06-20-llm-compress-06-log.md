@@ -1,25 +1,25 @@
-# Task 06: LogCompressor(连续重复折叠 + head/tail 保留)
+# Task 06: LogCompressor (collapse consecutive repeats + head/tail retention)
 
-> 属于 `2026-06-20-llm-compress-00-index.md`。执行前先读 index 的 Global Constraints / 真实类型 / dev-build 决策。依赖 Task 01(config)与 Task 02(`Compressor` trait / `Budget` / `CompressOutcome`)。
+> Part of `2026-06-20-llm-compress-00-index.md`. Before executing, read the index's Global Constraints / real types / dev-build decisions. Depends on Task 01 (config) and Task 02 (`Compressor` trait / `Budget` / `CompressOutcome`).
 
-**Goal:** 实现文本型压缩器 `LogCompressor`,识别多行日志/栈跟踪文本,先把连续完全相同的行折叠为 `行 + [llm-compress: 上一行 ×N]`,再对整体做 `truncate.head_lines` + `truncate.tail_lines` 保留(中间折叠为一行 `[llm-compress: 略 N 行]`)。占位为裸文本标记(log 属文本型)。本任务结束时 `cargo test -p codez-llm-compress --test log_test` 通过。
+**Goal:** Implement the text-type compressor `LogCompressor`, which recognizes multi-line log / stack-trace text. First it collapses runs of identical lines into `line + [llm-compress: 上一行 ×N]`, then applies `truncate.head_lines` + `truncate.tail_lines` retention to the whole thing (collapsing the middle into a single line `[llm-compress: 略 N 行]`). The placeholder is a bare text marker (log is a text type). By the end of this task, `cargo test -p codez-llm-compress --test log_test` passes.
 
-**覆盖 spec:** §6(文本型压缩器 / 裸占位标记 / dedup_repeats / head-tail 保留)。
+**Spec coverage:** §6 (text-type compressor / bare placeholder marker / dedup_repeats / head-tail retention).
 
 **Files:**
 - Create: `zmod/llm-compress/src/compress/log.rs`
-- Modify: `zmod/llm-compress/src/compress/mod.rs`(加 `pub mod log;`;若该文件尚不存在则新建,内容见 Step 4)
-- Modify: `zmod/llm-compress/src/lib.rs`(确保有 `pub mod compress;`)
+- Modify: `zmod/llm-compress/src/compress/mod.rs` (add `pub mod log;`; if the file does not yet exist, create it with the content shown in Step 4)
+- Modify: `zmod/llm-compress/src/lib.rs` (ensure `pub mod compress;` is present)
 - Test: `zmod/llm-compress/tests/log_test.rs`
 
 **Interfaces:**
-- Consumes(from Task 01):`config::{Config, TruncateCfg, LogCfg}`。
-- Consumes(from Task 02):`router::{Budget, CompressOutcome, Compressor}`。
-- Produces(03–06 的压缩器在 Task 08 被装进 `ContentRouter`):
+- Consumes (from Task 01): `config::{Config, TruncateCfg, LogCfg}`.
+- Consumes (from Task 02): `router::{Budget, CompressOutcome, Compressor}`.
+- Produces (the compressors from 03–06 are wired into `ContentRouter` in Task 08):
   - `pub struct LogCompressor;`
-  - `impl Compressor for LogCompressor`,`name()` = `"log"`。
+  - `impl Compressor for LogCompressor`, with `name()` = `"log"`.
 
-**契约(不得改,源自 Task 02):**
+**Contract (do not change; sourced from Task 02):**
 
 ```rust
 pub struct Budget<'a> { pub cfg: &'a Config }
@@ -31,29 +31,29 @@ pub trait Compressor: Send + Sync {
 }
 ```
 
-**行为规格(spec §6):**
+**Behavior spec (spec §6):**
 
-- `name()` = `"log"`。
-- `detect(text)`:**多行**(`≥8` 行)**且**具备以下任一日志特征,才认领。否则不认领(避免误吞普通短文本):
-  1. 含时间戳:行匹配 `\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}`(如 `2026-06-20T12:00:00`)或 `\d{2}:\d{2}:\d{2}`(如 `12:00:00`);
-  2. 栈跟踪特征:某行含 ` at ` 且其后含 `:` 后跟数字(如 `at foo.rs:42`);
-  3. 存在连续完全相同的两行(连续重复)。
+- `name()` = `"log"`.
+- `detect(text)`: claims the text only if it is **multi-line** (`≥8` lines) **and** has at least one of the following log characteristics. Otherwise it does not claim it (to avoid wrongly swallowing ordinary short text):
+  1. Contains a timestamp: a line matches `\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}` (e.g. `2026-06-20T12:00:00`) or `\d{2}:\d{2}:\d{2}` (e.g. `12:00:00`);
+  2. Stack-trace characteristic: some line contains ` at ` followed by a `:` followed by a digit (e.g. `at foo.rs:42`);
+  3. There exist two consecutive identical lines (consecutive repeat).
 - `compress(text, budget)`:
-  1. 取 `cfg = &budget.cfg.log`(`LogCfg`)、`tr = &budget.cfg.truncate`(`TruncateCfg`)。
-  2. **若 `cfg.dedup_repeats`**:连续完全相同的行折叠为 `该行 + 一行裸占位 [llm-compress: 上一行 ×N]`(`N` = 该行连续重复的总次数,即被折叠的行数;`N≥2` 才折叠,`N==1` 原样保留)。
-  3. **再对整体做 head/tail 保留**:若折叠后总行数 `> tr.head_lines + tr.tail_lines`,保留前 `tr.head_lines` 行 + 一行 `[llm-compress: 略 N 行]`(`N` = 被省略的行数)+ 后 `tr.tail_lines` 行。否则不截断。
-  4. 计算 `saved_bytes = 原文 .len() - 产物 .len()`(用 `saturating_sub`);`saved_bytes > 0` → `Compressed`,否则 `Unchanged`。
-- 占位裸文本标记 `[llm-compress: …]`(log 是文本型,**不**包 JSON)。
+  1. Take `cfg = &budget.cfg.log` (`LogCfg`) and `tr = &budget.cfg.truncate` (`TruncateCfg`).
+  2. **If `cfg.dedup_repeats`**: collapse runs of identical lines into `that line + one bare placeholder line [llm-compress: 上一行 ×N]` (`N` = the total number of consecutive repeats of that line, i.e. the number of collapsed lines; collapse only when `N≥2`, keep `N==1` as-is).
+  3. **Then apply head/tail retention to the whole thing**: if the total line count after collapsing is `> tr.head_lines + tr.tail_lines`, keep the first `tr.head_lines` lines + one line `[llm-compress: 略 N 行]` (`N` = the number of omitted lines) + the last `tr.tail_lines` lines. Otherwise do not truncate.
+  4. Compute `saved_bytes = original.len() - result.len()` (using `saturating_sub`); `saved_bytes > 0` → `Compressed`, otherwise `Unchanged`.
+- The placeholder is a bare text marker `[llm-compress: …]` (log is a text type, **not** wrapped in JSON).
 
-**实现注意(钉死,避免歧义):**
-- **行拆分用 `text.lines()`**:按 `\n`(兼容 `\r\n`,`lines()` 会去掉 `\r`),不保留行尾换行;产物用 `"\n"` 重新 `join`。这意味着若原文以 `\n` 结尾,产物可能少一个尾换行——这对 `saved_bytes` 只增不减,符合"保守压缩"。
-- **两步顺序固定**:先 dedup,再 head/tail。head/tail 作用于 dedup 后的行序列(占位行也计入行数)。
-- **占位行是独立的一整行**,不与日志正文同行。
-- 非测试代码不得 `unwrap`/`expect`(本压缩器无需任何 unwrap)。
+**Implementation notes (pinned down, to avoid ambiguity):**
+- **Split lines with `text.lines()`**: split on `\n` (compatible with `\r\n`; `lines()` strips the `\r`), without keeping trailing newlines; rejoin the result with `"\n"`. This means that if the original ends with `\n`, the result may be missing one trailing newline — this only increases `saved_bytes`, never decreases it, which is consistent with "conservative compression".
+- **The two-step order is fixed**: dedup first, then head/tail. head/tail operates on the line sequence after dedup (placeholder lines also count toward the line count).
+- **A placeholder line is its own complete line**, not on the same line as the log body.
+- Non-test code must not use `unwrap`/`expect` (this compressor needs no unwrap at all).
 
 ---
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: Write a failing test**
 
 Create `zmod/llm-compress/tests/log_test.rs`:
 
@@ -66,7 +66,7 @@ fn budget(cfg: &Config) -> Budget<'_> {
     Budget { cfg }
 }
 
-/// 构造一段真实风格、带时间戳的多行日志(≥8 行)。
+/// Build a realistic-style, multi-line log with timestamps (≥8 lines).
 fn timestamped_log(lines: usize) -> String {
     let mut s = String::new();
     for i in 0..lines {
@@ -83,7 +83,7 @@ fn timestamped_log(lines: usize) -> String {
 fn detect_true_for_timestamped_multiline_log() {
     let c = LogCompressor;
     let log = timestamped_log(12);
-    assert!(c.detect(&log), "带时间戳的多行日志应被认领");
+    assert!(c.detect(&log), "a timestamped multi-line log should be claimed");
 }
 
 #[test]
@@ -100,25 +100,25 @@ stack backtrace:
    3: std::rt::lang_start
    4: main
    5: __libc_start_main";
-    assert!(c.detect(trace), "含 `at file:line` 的栈跟踪应被认领");
+    assert!(c.detect(trace), "a stack trace containing `at file:line` should be claimed");
 }
 
 #[test]
 fn detect_false_for_plain_short_text() {
     let c = LogCompressor;
     let txt = "Hello world.\nThis is a short note.\nNothing log-like here.";
-    assert!(!c.detect(txt), "普通短文本不应被认领");
+    assert!(!c.detect(txt), "ordinary short text should not be claimed");
 }
 
 #[test]
 fn detect_false_for_long_plain_text_without_log_features() {
-    // ≥8 行但无任何日志特征 / 无连续重复 → 不认领。
+    // ≥8 lines but no log characteristics / no consecutive repeats → not claimed.
     let c = LogCompressor;
     let mut s = String::new();
     for i in 0..12 {
         s.push_str(&format!("paragraph line number {i} talking about cats\n"));
     }
-    assert!(!c.detect(&s), "多行但无日志特征的普通文本不应被认领");
+    assert!(!c.detect(&s), "multi-line text without log characteristics should not be claimed");
 }
 
 #[test]
@@ -128,13 +128,13 @@ fn detect_true_for_consecutive_repeats() {
     for _ in 0..10 {
         s.push_str("retrying connection...\n");
     }
-    assert!(c.detect(&s), "存在连续重复行应被认领");
+    assert!(c.detect(&s), "presence of consecutive repeated lines should be claimed");
 }
 
 #[test]
 fn dedup_collapses_consecutive_repeats() {
     let c = LogCompressor;
-    let cfg = Config::disabled(); // dedup_repeats 默认 true
+    let cfg = Config::disabled(); // dedup_repeats defaults to true
     assert!(cfg.log.dedup_repeats);
     let mut s = String::new();
     s.push_str("start\n");
@@ -147,23 +147,23 @@ fn dedup_collapses_consecutive_repeats() {
             assert!(text.contains("retrying connection..."));
             assert!(
                 text.contains("[llm-compress: 上一行 ×5]"),
-                "应折叠为 ×5,实际:\n{text}"
+                "should collapse to ×5, actual:\n{text}"
             );
-            // 折叠后 retrying 只出现一次正文 + 一行占位。
+            // After collapsing, retrying appears once as body + one placeholder line.
             assert_eq!(text.matches("retrying connection...").count(), 1);
             assert!(saved_bytes > 0);
         }
-        CompressOutcome::Unchanged => panic!("应折叠重复行"),
+        CompressOutcome::Unchanged => panic!("repeated lines should be collapsed"),
     }
 }
 
 #[test]
 fn dedup_disabled_keeps_repeats() {
     let c = LogCompressor;
-    // 用 disabled() 再改字段构造 dedup_repeats=false 的 Config。
+    // Use disabled() then tweak fields to build a Config with dedup_repeats=false.
     let mut cfg = Config::disabled();
     cfg.log.dedup_repeats = false;
-    // 给足 head/tail 余量,避免触发截断,纯验证 dedup 不发生。
+    // Give plenty of head/tail headroom to avoid triggering truncation; purely verify dedup does not happen.
     cfg.truncate.head_lines = 100;
     cfg.truncate.tail_lines = 100;
     let mut s = String::new();
@@ -171,7 +171,7 @@ fn dedup_disabled_keeps_repeats() {
         s.push_str("retrying connection...\n");
     }
     match c.compress(&s, &budget(&cfg)) {
-        CompressOutcome::Compressed { .. } => panic!("dedup 关闭且未截断时不应有压缩"),
+        CompressOutcome::Compressed { .. } => panic!("with dedup off and no truncation, there should be no compression"),
         CompressOutcome::Unchanged => {}
     }
 }
@@ -180,25 +180,25 @@ fn dedup_disabled_keeps_repeats() {
 fn head_tail_truncates_long_log_with_placeholder() {
     let c = LogCompressor;
     let mut cfg = Config::disabled();
-    cfg.log.dedup_repeats = false; // 隔离 head/tail 行为(各行互不相同)
+    cfg.log.dedup_repeats = false; // isolate head/tail behavior (all lines distinct)
     cfg.truncate.head_lines = 3;
     cfg.truncate.tail_lines = 3;
-    let log = timestamped_log(50); // 50 行,各不相同
+    let log = timestamped_log(50); // 50 lines, all distinct
     match c.compress(&log, &budget(&cfg)) {
         CompressOutcome::Compressed { text, saved_bytes } => {
-            // 中间被省略:50 - 3 - 3 = 44 行。
+            // Middle omitted: 50 - 3 - 3 = 44 lines.
             assert!(
                 text.contains("[llm-compress: 略 44 行]"),
-                "应有 head/tail 占位,实际:\n{text}"
+                "should have a head/tail placeholder, actual:\n{text}"
             );
-            // 产物行数 = 3 + 1(占位) + 3 = 7 行。
+            // Result line count = 3 + 1 (placeholder) + 3 = 7 lines.
             assert_eq!(text.lines().count(), 7);
-            // 保留首行与末行。
+            // First and last lines are retained.
             assert!(text.lines().next().unwrap().contains("id=0"));
             assert!(text.lines().last().unwrap().contains("id=49"));
             assert!(saved_bytes > 0);
         }
-        CompressOutcome::Unchanged => panic!("长日志应被截断"),
+        CompressOutcome::Unchanged => panic!("a long log should be truncated"),
     }
 }
 
@@ -219,12 +219,12 @@ fn dedup_then_head_tail_combined() {
     match c.compress(&s, &budget(&cfg)) {
         CompressOutcome::Compressed { text, saved_bytes } => {
             assert!(text.contains("[llm-compress: 上一行 ×30]"));
-            // dedup 后行数 = boot(1) + retrying(1) + 占位(1) + 3 行 ok = 6 行;
-            // 6 > head(2)+tail(2)=4 → 仍会再截断,出现 head/tail 占位。
+            // After dedup, line count = boot(1) + retrying(1) + placeholder(1) + 3 ok lines = 6 lines;
+            // 6 > head(2)+tail(2)=4 → it will still be truncated, producing a head/tail placeholder.
             assert!(text.contains("[llm-compress: 略"));
             assert!(saved_bytes > 0);
         }
-        CompressOutcome::Unchanged => panic!("应有压缩"),
+        CompressOutcome::Unchanged => panic!("there should be compression"),
     }
 }
 
@@ -235,7 +235,7 @@ fn unchanged_when_nothing_to_do() {
     cfg.log.dedup_repeats = false;
     cfg.truncate.head_lines = 100;
     cfg.truncate.tail_lines = 100;
-    // 10 行带时间戳、各不相同、无重复、未超 head+tail → 无压缩。
+    // 10 timestamped lines, all distinct, no repeats, not exceeding head+tail → no compression.
     let log = timestamped_log(10);
     assert!(matches!(
         c.compress(&log, &budget(&cfg)),
@@ -244,28 +244,28 @@ fn unchanged_when_nothing_to_do() {
 }
 ```
 
-- [ ] **Step 2: 跑测试看失败**
+- [ ] **Step 2: Run the test and watch it fail**
 
-Run(在 `codex-rs/` 目录):
+Run (in the `codex-rs/` directory):
 ```bash
 cargo test -p codez-llm-compress --test log_test
 ```
-Expected: 编译失败(`compress::log` 模块 / `LogCompressor` 未定义)。
+Expected: compilation failure (`compress::log` module / `LogCompressor` undefined).
 
-- [ ] **Step 3: 写 log.rs**
+- [ ] **Step 3: Write log.rs**
 
 Create `zmod/llm-compress/src/compress/log.rs`:
 
 ```rust
-//! LogCompressor:文本型日志压缩器。
-//! 两步保守压缩:① 连续重复行折叠 ② head/tail 保留。占位为裸文本标记 [llm-compress: …]。
+//! LogCompressor: text-type log compressor.
+//! Two-step conservative compression: ① collapse consecutive repeated lines ② head/tail retention. The placeholder is a bare text marker [llm-compress: …].
 
 use crate::router::{Budget, CompressOutcome, Compressor};
 
-/// 识别多行日志 / 栈跟踪文本并做保守压缩。
+/// Recognizes multi-line log / stack-trace text and applies conservative compression.
 pub struct LogCompressor;
 
-/// detect 的"多行"门槛:行数 ≥ 此值才考虑认领。
+/// The "multi-line" threshold for detect: only consider claiming when the line count ≥ this value.
 const MIN_LINES: usize = 8;
 
 impl Compressor for LogCompressor {
@@ -284,7 +284,7 @@ impl Compressor for LogCompressor {
     fn compress(&self, text: &str, budget: &Budget) -> CompressOutcome {
         let lines: Vec<&str> = text.lines().collect();
 
-        // ① 连续重复行折叠(可选)。
+        // ① Collapse consecutive repeated lines (optional).
         let dedup_repeats = budget.cfg.log.dedup_repeats;
         let after_dedup: Vec<String> = if dedup_repeats {
             dedup_consecutive(&lines)
@@ -292,7 +292,7 @@ impl Compressor for LogCompressor {
             lines.iter().map(|s| s.to_string()).collect()
         };
 
-        // ② head/tail 保留。
+        // ② head/tail retention.
         let head = budget.cfg.truncate.head_lines;
         let tail = budget.cfg.truncate.tail_lines;
         let final_lines = head_tail(&after_dedup, head, tail);
@@ -310,16 +310,16 @@ impl Compressor for LogCompressor {
     }
 }
 
-/// 是否含时间戳行:`YYYY-MM-DD[T ]HH:MM:SS` 或裸 `HH:MM:SS`。
-/// 不引入正则依赖,用字符级扫描判定。
+/// Whether it contains a timestamp line: `YYYY-MM-DD[T ]HH:MM:SS` or a bare `HH:MM:SS`.
+/// Avoids pulling in a regex dependency; decided via character-level scanning.
 fn has_timestamp(lines: &[&str]) -> bool {
     lines.iter().any(|l| line_has_full_ts(l) || line_has_clock_ts(l))
 }
 
-/// 检测行内是否出现 `\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}`。
+/// Detect whether the line contains `\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}`.
 fn line_has_full_ts(line: &str) -> bool {
     let bytes = line.as_bytes();
-    // 滑动窗口:date(10) + sep(1) + time(8) = 19 个字符。
+    // Sliding window: date(10) + sep(1) + time(8) = 19 characters.
     if bytes.len() < 19 {
         return false;
     }
@@ -344,7 +344,7 @@ fn line_has_full_ts(line: &str) -> bool {
     false
 }
 
-/// 检测行内是否出现裸 `\d{2}:\d{2}:\d{2}`。
+/// Detect whether the line contains a bare `\d{2}:\d{2}:\d{2}`.
 fn line_has_clock_ts(line: &str) -> bool {
     let bytes = line.as_bytes();
     if bytes.len() < 8 {
@@ -358,7 +358,7 @@ fn line_has_clock_ts(line: &str) -> bool {
     false
 }
 
-/// 8 字节窗口是否为 `dd:dd:dd`。
+/// Whether the 8-byte window is `dd:dd:dd`.
 fn is_clock(w: &[u8]) -> bool {
     w.len() == 8
         && w[0].is_ascii_digit()
@@ -371,7 +371,7 @@ fn is_clock(w: &[u8]) -> bool {
         && w[7].is_ascii_digit()
 }
 
-/// 是否含栈跟踪特征:某行含 ` at ` 且其后存在 `:` 紧跟数字(如 `at foo.rs:42`)。
+/// Whether it has a stack-trace characteristic: some line contains ` at ` followed by a `:` immediately followed by a digit (e.g. `at foo.rs:42`).
 fn has_stacktrace(lines: &[&str]) -> bool {
     lines.iter().any(|l| {
         if let Some(pos) = l.find(" at ") {
@@ -383,7 +383,7 @@ fn has_stacktrace(lines: &[&str]) -> bool {
     })
 }
 
-/// 子串里是否存在 `:` 紧跟一个数字。
+/// Whether the substring contains a `:` immediately followed by a digit.
 fn colon_then_digit(s: &str) -> bool {
     let b = s.as_bytes();
     for i in 0..b.len() {
@@ -394,13 +394,13 @@ fn colon_then_digit(s: &str) -> bool {
     false
 }
 
-/// 是否存在连续两行完全相同。
+/// Whether there exist two consecutive identical lines.
 fn has_consecutive_repeat(lines: &[&str]) -> bool {
     lines.windows(2).any(|w| w[0] == w[1])
 }
 
-/// 把连续完全相同的行折叠为:该行 + 裸占位 `[llm-compress: 上一行 ×N]`(N≥2)。
-/// N==1 的行原样保留(不加占位)。
+/// Collapse runs of identical lines into: that line + a bare placeholder `[llm-compress: 上一行 ×N]` (N≥2).
+/// Lines with N==1 are kept as-is (no placeholder added).
 fn dedup_consecutive(lines: &[&str]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
     let mut i = 0;
@@ -410,7 +410,7 @@ fn dedup_consecutive(lines: &[&str]) -> Vec<String> {
         while j < lines.len() && lines[j] == cur {
             j += 1;
         }
-        let count = j - i; // 该行连续出现的总次数
+        let count = j - i; // total number of consecutive occurrences of this line
         out.push(cur.to_string());
         if count >= 2 {
             out.push(format!("[llm-compress: 上一行 ×{count}]"));
@@ -420,8 +420,8 @@ fn dedup_consecutive(lines: &[&str]) -> Vec<String> {
     out
 }
 
-/// head/tail 保留:总行数 > head+tail 时,保留前 head 行 + `[llm-compress: 略 N 行]` + 后 tail 行。
-/// 否则原样返回。
+/// head/tail retention: when total line count > head+tail, keep the first head lines + `[llm-compress: 略 N 行]` + the last tail lines.
+/// Otherwise return as-is.
 fn head_tail(lines: &[String], head: usize, tail: usize) -> Vec<String> {
     if lines.len() <= head + tail {
         return lines.to_vec();
@@ -435,42 +435,42 @@ fn head_tail(lines: &[String], head: usize, tail: usize) -> Vec<String> {
 }
 ```
 
-> **设计说明(中文):**
-> - 不引入 `regex` 依赖,时间戳/栈跟踪用字符级滑窗判定,廉价且零新依赖。
-> - `dedup_consecutive` 的 `N` 取"连续出现总次数"(含首次出现),与占位文案 `×N` 一致:`retrying` 出现 5 次 → 正文 1 行 + `×5` 占位。
-> - 两步顺序固定:dedup 先于 head/tail;占位行计入 head/tail 的行数统计。
-> - `compress` 内全程无 `unwrap`/`expect`,符合 Global Constraints 的 Rust 风格。
+> **Design notes:**
+> - No `regex` dependency is introduced; timestamps / stack traces are decided via character-level sliding windows — cheap and with zero new dependencies.
+> - `dedup_consecutive`'s `N` is the "total number of consecutive occurrences" (including the first occurrence), consistent with the placeholder wording `×N`: `retrying` occurs 5 times → 1 body line + `×5` placeholder.
+> - The two-step order is fixed: dedup precedes head/tail; placeholder lines count toward the head/tail line statistics.
+> - `compress` uses no `unwrap`/`expect` throughout, consistent with the Rust style in the Global Constraints.
 
-- [ ] **Step 4: 注册模块(compress/mod.rs + lib.rs)**
+- [ ] **Step 4: Register the module (compress/mod.rs + lib.rs)**
 
-Modify `zmod/llm-compress/src/compress/mod.rs`,加一行:
+Modify `zmod/llm-compress/src/compress/mod.rs`, adding one line:
 
 ```rust
 pub mod log;
 ```
 
-> 若 `src/compress/mod.rs` 尚不存在(Task 03–05 未先建该目录),则**新建**该文件,内容为:
+> If `src/compress/mod.rs` does not yet exist (Tasks 03–05 did not create the directory first), then **create** the file with the content:
 > ```rust
-> //! 各内容类型压缩器(truncate / json / diff / log)。
+> //! Per-content-type compressors (truncate / json / diff / log).
 > pub mod log;
 > ```
-> 后续 03/04/05 任务会在此追加各自的 `pub mod`。
+> Subsequent tasks 03/04/05 will append their own `pub mod` here.
 
-Modify `zmod/llm-compress/src/lib.rs`,确保有 `compress` 模块声明(若已被 03–05 加过则跳过)。在 `pub mod router;` 之后加:
+Modify `zmod/llm-compress/src/lib.rs`, ensuring the `compress` module declaration is present (skip if 03–05 already added it). After `pub mod router;` add:
 
 ```rust
 pub mod compress;
 ```
 
-- [ ] **Step 5: 跑测试看通过**
+- [ ] **Step 5: Run the test and watch it pass**
 
-Run(在 `codex-rs/` 目录):
+Run (in the `codex-rs/` directory):
 ```bash
 cargo test -p codez-llm-compress --test log_test
 ```
-Expected: `test result: ok. 10 passed`。
+Expected: `test result: ok. 10 passed`.
 
-- [ ] **Step 6: 提交(仅 zmod + 本计划)**
+- [ ] **Step 6: Commit (zmod + this plan only)**
 
 ```bash
 cd /Users/dfbb/Sites/skycode/codez
@@ -478,6 +478,4 @@ git add zmod/llm-compress docs/superpowers/plans/2026-06-20-llm-compress-06-log.
 git -c core.hooksPath=/dev/null commit -m "feat(llm-compress): LogCompressor (dedup repeats + head/tail)"
 ```
 
-> **不要** `git add codex-rs/core/Cargo.toml`——dev-build 使能器,保持 dirty 至 Task 09。
-</content>
-</invoke>
+> **Do not** `git add codex-rs/core/Cargo.toml` — it is the dev-build enabler; keep it dirty until Task 09.

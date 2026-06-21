@@ -1,38 +1,38 @@
-# Task 01 — crate 骨架与配置
+# Task 01 — Crate Skeleton and Config
 
-> **For agentic workers:** REQUIRED SUB-SKILL: 用 superpowers:subagent-driven-development 或 superpowers:executing-plans 执行。步骤用 `- [ ]` 追踪。先读 [总索引](2026-06-20-llm-switch-00-index.md) 的 Global Constraints。
+> **For agentic workers:** REQUIRED SUB-SKILL: execute with superpowers:subagent-driven-development or superpowers:executing-plans. Track steps with `- [ ]`. First read the Global Constraints in the [master index](2026-06-20-llm-switch-00-index.md).
 
-**Goal:** 建出 `zmod/llm-switch` crate(path 反指 codex-rs),实现 `config.rs` 读取 `~/.codex/config-zmod.toml` 的 `[llm-switch]` 段、`lib.rs` 的 `enabled()` / `route()` 路由判定与 `Route` 类型。本任务结束时:crate 在 codex-rs workspace 内 `cargo test -p codez-llm-switch` 通过,配置解析与 `auth_key` 拒绝规则有测试覆盖。
+**Goal:** Build the `zmod/llm-switch` crate (with a path dependency pointing back into codex-rs), implementing `config.rs` to read the `[llm-switch]` section of `~/.codex/config-zmod.toml`, plus the `enabled()` / `route()` routing decisions and the `Route` type in `lib.rs`. By the end of this task: the crate passes `cargo test -p codez-llm-switch` inside the codex-rs workspace, with test coverage for config parsing and the `auth_key` rejection rule.
 
-> **构建方式见索引「开发期构建与测试」决策段(2026-06-20)+ CLAUDE.md 情况 B「开发期测试」**:本 crate 反向依赖 codex-api,**不独立编译**;开发期用软链 `codex-rs/llm-switch -> ../zmod/llm-switch` + `codex-rs/Cargo.toml` members 加 `"llm-switch"`,使本 crate 成为 codex-rs workspace 真 member,在其中 `cargo test -p codez-llm-switch`(完整支持 dev-deps + 集成测试)。软链与 members 改动是 dev-only 脚手架,**不提交进 codex-rs、不进 patch**。
+> **For the build approach, see the index's "Development-time build and test" decision section (2026-06-20) + CLAUDE.md case B "Development-time testing":** this crate has a reverse dependency on codex-api and is **not compiled standalone**; during development, use the symlink `codex-rs/llm-switch -> ../zmod/llm-switch` plus adding `"llm-switch"` to the members list in `codex-rs/Cargo.toml`, making this crate a real member of the codex-rs workspace so you can run `cargo test -p codez-llm-switch` within it (full support for dev-deps + integration tests). The symlink and members changes are dev-only scaffolding; they are **not committed into codex-rs and not part of any patch**.
 
-**覆盖 spec:** §3(模块布局)、§5.2 / §5.3(config-zmod schema、密钥来源、`auth_key` 拒绝)、§6.1(构建集成情况 B)、§1(命名)。
+**Spec coverage:** §3 (module layout), §5.2 / §5.3 (config-zmod schema, key sources, `auth_key` rejection), §6.1 (build integration case B), §1 (naming).
 
 **Files:**
 - Create: `zmod/llm-switch/Cargo.toml`
 - Create: `zmod/llm-switch/src/lib.rs`
 - Create: `zmod/llm-switch/src/config.rs`
 - Create: `zmod/llm-switch/tests/config_test.rs`
-- Modify: 仓库根 `.gitignore`(已加 `/codex-rs/llm-switch`,忽略 dev 软链)
-- dev-only 脚手架(已由控制方就位,不提交、不进 patch):软链 `codex-rs/llm-switch`、`codex-rs/Cargo.toml` members 的 `"llm-switch"` 行
+- Modify: repo-root `.gitignore` (already has `/codex-rs/llm-switch`, ignoring the dev symlink)
+- dev-only scaffolding (already set up by the controller; not committed, not part of any patch): the symlink `codex-rs/llm-switch` and the `"llm-switch"` line in the members list of `codex-rs/Cargo.toml`
 
 **Interfaces:**
-- Produces(后续任务依赖):
+- Produces (later tasks depend on these):
   - `pub fn enabled() -> bool`
   - `pub fn route(model_provider_id: &str) -> Option<Route>`
   - `pub struct Route { pub provider_id: String, pub cfg: ProviderCfg }`
-  - `pub enum Connector { Chat, Anthropic }`(`responses`/未知 → `route()` 返回 `None`)
+  - `pub enum Connector { Chat, Anthropic }` (`responses`/unknown → `route()` returns `None`)
   - `pub struct ProviderCfg { pub connector: Connector, pub base_url: Option<String>, pub auth: AuthKind, pub key_env: Option<String>, pub auth_key: Option<String>, pub path: Option<String>, pub model: Option<String>, pub anthropic_version: Option<String>, pub default_max_tokens: Option<u32> }`
   - `pub enum AuthKind { Bearer, XApiKey }`
-  - `pub fn load_config_from_str(toml: &str, allow_inline_key: bool) -> Result<Config, ConfigError>`(供测试与运行时复用;运行时 `allow_inline_key=false`,testkey 路径 `true`)
+  - `pub fn load_config_from_str(toml: &str, allow_inline_key: bool) -> Result<Config, ConfigError>` (shared by tests and runtime; runtime uses `allow_inline_key=false`, the testkey path uses `true`)
   - `pub struct Config { pub enabled: bool, pub providers: HashMap<String, ProviderCfg> }`
-- Consumes:无(首个任务)。
+- Consumes: none (first task).
 
 ---
 
-- [ ] **Step 1: 建目录与 `Cargo.toml`**
+- [ ] **Step 1: Create the directory and `Cargo.toml`**
 
-创建 `zmod/llm-switch/Cargo.toml`。注意:**不写 `[workspace]`**;path 反指 codex-rs;不用 `workspace = true`。
+Create `zmod/llm-switch/Cargo.toml`. Note: **do not write `[workspace]`**; point the path dependency back into codex-rs; do not use `workspace = true`.
 
 ```toml
 [package]
@@ -60,28 +60,28 @@ tracing = "0.1"
 tokio = { version = "1", features = ["rt", "macros", "sync", "test-util"] }
 ```
 
-> 注:`codex-api` / `codex-protocol` 的 crate 名已核实为 `codex-api`、`codex-protocol`,路径 `../../codex-rs/codex-api`、`../../codex-rs/protocol`。reqwest / tokio / toml 版本对齐 codex-rs workspace(`grep -E 'reqwest|^tokio|^toml' codex-rs/Cargo.toml`,如 toml 实为 `0.9`),避免重复编译。两条 codex-* path 依赖**保持激活,不注释**。`[dev-dependencies]` 正常声明——软链 member 模式下可用(见下)。
+> Note: the crate names for `codex-api` / `codex-protocol` have been verified as `codex-api` and `codex-protocol`, with paths `../../codex-rs/codex-api` and `../../codex-rs/protocol`. Align the reqwest / tokio / toml versions with the codex-rs workspace (`grep -E 'reqwest|^tokio|^toml' codex-rs/Cargo.toml` — e.g. toml is actually `0.9`) to avoid recompilation. Keep the two codex-* path dependencies **active, not commented out**. Declare `[dev-dependencies]` normally — it works under the symlink-member mode (see below).
 
-- [ ] **Step 1b: 确认 dev 软链脚手架已就位(控制方已配,勿改 codex-rs 源码)**
+- [ ] **Step 1b: Confirm the dev symlink scaffolding is in place (already set up by the controller; do not modify codex-rs source)**
 
-开发期把本 crate 接进 codex-rs workspace 跑测试的软链脚手架**已由控制方就位**(见索引「开发期构建与测试」/ CLAUDE.md 情况 B「开发期测试」):
+The symlink scaffolding that hooks this crate into the codex-rs workspace for development-time testing **has already been set up by the controller** (see the index's "Development-time build and test" / CLAUDE.md case B "Development-time testing"):
 
 ```bash
-codex-rs/llm-switch -> ../zmod/llm-switch      # 软链(已建,已 gitignore)
-codex-rs/Cargo.toml  members 含 "llm-switch"   # 已加(uncommitted dirty)
+codex-rs/llm-switch -> ../zmod/llm-switch      # symlink (created, gitignored)
+codex-rs/Cargo.toml  members contains "llm-switch"   # added (uncommitted dirty)
 ```
 
-你只需**确认**它在位即可,不要重复创建或改 codex-rs 源码:
+You only need to **confirm** it is in place; do not recreate it or modify codex-rs source:
 ```bash
 ls -l codex-rs/llm-switch && grep -n '"llm-switch"' codex-rs/Cargo.toml
 ```
-若缺失(如刚 `git reset --hard` 撤掉了 members 行),按上面两条重建:`ln -s ../zmod/llm-switch codex-rs/llm-switch`(若软链不在)+ 在 members 末尾加 `"llm-switch",`。
+If it is missing (e.g. a recent `git reset --hard` removed the members line), rebuild it with the two commands above: `ln -s ../zmod/llm-switch codex-rs/llm-switch` (if the symlink is gone) + append `"llm-switch",` to the end of the members list.
 
-> **纪律**:软链与 members 行是 dev-only 脚手架,**本任务提交不含 `codex-rs/**`**;`codex-rs/Cargo.toml`(members 行)与构建生成的 `codex-rs/Cargo.lock` 在 Task 01–08 全程保持 dirty,**不得 `git checkout` 还原**,**不进 patch**。生产接入由 Task 09 patch(core path 依赖 + client.rs)负责,与软链无关。
+> **Discipline**: the symlink and members line are dev-only scaffolding; **this task's commit must not include `codex-rs/**`**. The `codex-rs/Cargo.toml` (members line) and the build-generated `codex-rs/Cargo.lock` stay dirty throughout Tasks 01–08; **do not `git checkout` to revert them**, and **do not put them into any patch**. Production wiring is handled by the Task 09 patch (core path dependency + client.rs) and is independent of the symlink.
 
-- [ ] **Step 2: 写失败测试(配置解析)**
+- [ ] **Step 2: Write a failing test (config parsing)**
 
-创建 `zmod/llm-switch/tests/config_test.rs`:
+Create `zmod/llm-switch/tests/config_test.rs`:
 
 ```rust
 use codez_llm_switch::{load_config_from_str, AuthKind, Connector};
@@ -130,10 +130,10 @@ connector = "chat"
 auth = "bearer"
 auth_key = "sk-secret"
 "#;
-    // 运行时路径 allow_inline_key=false:必须报配置错误拒绝启动
+    // Runtime path with allow_inline_key=false: must raise a config error and refuse to start
     let err = load_config_from_str(toml, false).unwrap_err();
     assert!(format!("{err}").contains("auth_key"), "err should mention auth_key: {err}");
-    // testkey 路径 allow_inline_key=true:接受
+    // testkey path with allow_inline_key=true: accepts
     let ok = load_config_from_str(toml, true).expect("testkey path accepts inline key");
     assert_eq!(
         ok.providers.get("deepseek").unwrap().auth_key.as_deref(),
@@ -151,7 +151,7 @@ connector = "responses"
 auth = "bearer"
 "#;
     let cfg = load_config_from_str(toml, false).expect("parse ok");
-    // responses 不进 zmod:解析允许,但 route() 不返回它(见 lib.rs 测试 Step 6)
+    // responses does not enter zmod: parsing allows it, but route() does not return it (see the lib.rs test in Step 6)
     assert!(cfg.providers.get("openai").is_none(), "responses provider dropped from routable map");
 }
 
@@ -163,14 +163,14 @@ fn missing_section_means_disabled() {
 }
 ```
 
-- [ ] **Step 3: 运行测试确认失败**
+- [ ] **Step 3: Run the tests and confirm they fail**
 
 Run: `cd codex-rs && cargo test -p codez-llm-switch --test config_test`
-Expected: 编译失败(`load_config_from_str` 等未定义)。
+Expected: compilation failure (`load_config_from_str` etc. are undefined).
 
-- [ ] **Step 4: 实现 `config.rs`**
+- [ ] **Step 4: Implement `config.rs`**
 
-创建 `zmod/llm-switch/src/config.rs`:
+Create `zmod/llm-switch/src/config.rs`:
 
 ```rust
 use std::collections::HashMap;
@@ -214,7 +214,7 @@ pub struct Config {
     pub providers: HashMap<String, ProviderCfg>,
 }
 
-// ---- 原始 TOML 反序列化层(私有) ----
+// ---- Raw TOML deserialization layer (private) ----
 #[derive(Deserialize)]
 struct RawRoot {
     #[serde(rename = "llm-switch")]
@@ -242,8 +242,8 @@ struct RawProvider {
     default_max_tokens: Option<u32>,
 }
 
-/// 解析 config-zmod 文本。`allow_inline_key=false` 为运行时主路径(出现 auth_key 直接报错);
-/// `true` 仅供从 gitignored tests/testkey.toml 加载时使用。
+/// Parse config-zmod text. `allow_inline_key=false` is the main runtime path (errors out
+/// immediately if auth_key appears); `true` is only for loading from a gitignored tests/testkey.toml.
 pub fn load_config_from_str(toml_text: &str, allow_inline_key: bool) -> Result<Config, ConfigError> {
     let root: RawRoot = toml::from_str(toml_text).map_err(|e| ConfigError::Parse(e.to_string()))?;
     let Some(sw) = root.llm_switch else {
@@ -251,7 +251,7 @@ pub fn load_config_from_str(toml_text: &str, allow_inline_key: bool) -> Result<C
     };
     let mut providers = HashMap::new();
     for (id, raw) in sw.providers {
-        // responses / 未知 connector 不进可路由表(走原生分支,spec §4.1)
+        // responses / unknown connectors do not enter the routable map (they take the native branch, spec §4.1)
         let connector = match raw.connector.as_str() {
             "chat" => Connector::Chat,
             "anthropic" => Connector::Anthropic,
@@ -282,9 +282,9 @@ pub fn load_config_from_str(toml_text: &str, allow_inline_key: bool) -> Result<C
 }
 ```
 
-- [ ] **Step 5: 实现 `lib.rs` 的路由部分**
+- [ ] **Step 5: Implement the routing part of `lib.rs`**
 
-创建 `zmod/llm-switch/src/lib.rs`(本任务只放 config 重导出 + `enabled`/`route`/`Route`;`run` 留到 Task 08,此处先不声明,避免半成品签名):
+Create `zmod/llm-switch/src/lib.rs` (this task only places the config re-exports + `enabled`/`route`/`Route`; `run` is deferred to Task 08 and is not declared here yet, to avoid half-finished signatures):
 
 ```rust
 mod config;
@@ -295,14 +295,14 @@ pub use config::{
 
 use std::sync::OnceLock;
 
-/// 路由结果:命中某个被接管的 provider。
+/// Routing result: a hit on some taken-over provider.
 #[derive(Debug, Clone)]
 pub struct Route {
     pub provider_id: String,
     pub cfg: ProviderCfg,
 }
 
-/// 进程级配置缓存。运行时从 ~/.codex/config-zmod.toml 读一次。
+/// Process-level config cache. At runtime, read once from ~/.codex/config-zmod.toml.
 fn loaded() -> &'static Config {
     static CACHE: OnceLock<Config> = OnceLock::new();
     CACHE.get_or_init(|| {
@@ -312,13 +312,13 @@ fn loaded() -> &'static Config {
                 tracing::warn!("llm-switch disabled: bad config-zmod.toml: {e}");
                 Config { enabled: false, providers: Default::default() }
             }),
-            Err(_) => Config { enabled: false, providers: Default::default() }, // 缺文件 = 关闭
+            Err(_) => Config { enabled: false, providers: Default::default() }, // missing file = disabled
         }
     })
 }
 
 fn dirs_config_zmod_path() -> std::path::PathBuf {
-    // ~/.codex/config-zmod.toml;CODEX_HOME 覆盖优先(与 codex 约定一致,执行前核对其环境变量名)
+    // ~/.codex/config-zmod.toml; CODEX_HOME override takes priority (consistent with the codex convention; verify its env var name before running)
     let home = std::env::var_os("CODEX_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".codex")))
@@ -326,13 +326,13 @@ fn dirs_config_zmod_path() -> std::path::PathBuf {
     home.join("config-zmod.toml")
 }
 
-/// 全局开关:`[llm-switch].enabled`。
+/// Global switch: `[llm-switch].enabled`.
 pub fn enabled() -> bool {
     loaded().enabled
 }
 
-/// 按 codex 的 model_provider_id 判定是否接管。
-/// 未启用 / 未命中 / responses → None(走原生 Responses 分支)。
+/// Decide whether to take over based on codex's model_provider_id.
+/// Disabled / no match / responses → None (takes the native Responses branch).
 pub fn route(model_provider_id: &str) -> Option<Route> {
     let cfg = loaded();
     if !cfg.enabled {
@@ -345,11 +345,11 @@ pub fn route(model_provider_id: &str) -> Option<Route> {
 }
 ```
 
-> 注:`dirs_config_zmod_path` 的 `CODEX_HOME` 环境变量名执行前用 `grep -rn "CODEX_HOME" codex-rs/core/src/config` 核对,与 codex 主配置定位保持一致。
+> Note: before running, verify the `CODEX_HOME` env var name used in `dirs_config_zmod_path` with `grep -rn "CODEX_HOME" codex-rs/core/src/config`, to stay consistent with how codex locates its main config.
 
-- [ ] **Step 6: 加 `route()` 的单元测试**
+- [ ] **Step 6: Add unit tests for `route()`**
 
-在 `zmod/llm-switch/src/lib.rs` 末尾追加(用 `load_config_from_str` 直接构造 `Config`,避免依赖真实文件;`route` 走全局缓存不便测,改测纯逻辑 helper)。重构:把 `route` 的纯逻辑抽成 `fn route_in(cfg: &Config, id: &str) -> Option<Route>`,`route()` 调它;测试测 `route_in`:
+Append to the end of `zmod/llm-switch/src/lib.rs` (build a `Config` directly with `load_config_from_str` to avoid depending on a real file; `route` uses the global cache and is awkward to test, so test the pure logic helper instead). Refactor: extract `route`'s pure logic into `fn route_in(cfg: &Config, id: &str) -> Option<Route>`, with `route()` calling it; the tests target `route_in`:
 
 ```rust
 fn route_in(cfg: &Config, model_provider_id: &str) -> Option<Route> {
@@ -377,22 +377,22 @@ mod tests {
 }
 ```
 
-(把 `route()` 主体改为 `route_in(loaded(), model_provider_id)`。)
+(Change the body of `route()` to `route_in(loaded(), model_provider_id)`.)
 
-- [ ] **Step 7: 运行测试确认通过**
+- [ ] **Step 7: Run the tests and confirm they pass**
 
 Run: `cd codex-rs && cargo test -p codez-llm-switch`
-Expected: `config_test` 4 个 + lib 内 2 个全 PASS。
+Expected: all 4 in `config_test` + 2 in lib PASS.
 
-> 因 Step 1b 的软链使本 crate 成为 workspace member,本命令在 codex-rs workspace 内编译它(集成测试 + dev-deps 完整可用),codex-api/codex-protocol 共享 workspace 锁/target。`config_test.rs` 是真正的集成测试(`tests/` 下),不是 lib 内单元测试。**若是全新 target,首次编译会拉起 codex-api 依赖树,可能数分钟**;用足够长超时耐心等(可先 `cargo build -p codez-llm-switch` 预热)。若真因依赖冲突失败(非单纯慢),停下并报告精确 cargo 错误,不要变通注释依赖。
+> Because the Step 1b symlink makes this crate a workspace member, this command compiles it inside the codex-rs workspace (integration tests + dev-deps fully available), and codex-api/codex-protocol share the workspace lock/target. `config_test.rs` is a true integration test (under `tests/`), not an in-lib unit test. **If it's a brand-new target, the first compile will pull up the codex-api dependency tree and may take several minutes**; wait patiently with a long enough timeout (you can warm it up first with `cargo build -p codez-llm-switch`). If it genuinely fails due to a dependency conflict (not just slowness), stop and report the exact cargo error; do not work around it by commenting out dependencies.
 
-- [ ] **Step 8: 提交(只提交 crate 与 codez 自有文件)**
+- [ ] **Step 8: Commit (commit only the crate and codez's own files)**
 
 ```bash
 git add zmod/llm-switch/Cargo.toml zmod/llm-switch/src/lib.rs zmod/llm-switch/src/config.rs zmod/llm-switch/tests/config_test.rs
 git commit -m "feat(llm-switch): crate skeleton + config-zmod parsing and routing"
 ```
 
->(`.gitignore` 的软链忽略行已由控制方先行提交,本任务不再含。)
+> (The `.gitignore` symlink-ignore line was already committed earlier by the controller and is not included in this task.)
 
-> **不要** `git add codex-rs/`。`codex-rs/Cargo.toml`(members 多了 `"llm-switch"` 行)与构建生成的 `codex-rs/Cargo.lock` 的 dirty 改动是 dev-only 脚手架,留在工作树、不进任何提交。软链 `codex-rs/llm-switch` 已被 `.gitignore` 忽略。提交后 `git status` 应仍显示 `codex-rs/Cargo.toml`、`codex-rs/Cargo.lock` 为 modified——预期状态。
+> **Do not** `git add codex-rs/`. The dirty changes to `codex-rs/Cargo.toml` (the extra `"llm-switch"` members line) and the build-generated `codex-rs/Cargo.lock` are dev-only scaffolding; leave them in the working tree, out of any commit. The symlink `codex-rs/llm-switch` is already ignored by `.gitignore`. After committing, `git status` should still show `codex-rs/Cargo.toml` and `codex-rs/Cargo.lock` as modified — this is the expected state.

@@ -1,27 +1,27 @@
-# Task 05 — JSON 升级:detect 让位 + 连续 RLE 去重 + csv-schema
+# Task 05 — JSON Upgrade: detect Yields + Consecutive RLE Dedup + csv-schema
 
-> 隶属 `2026-06-21-llm-compress-v2-00-index.md`。覆盖 spec §5①。依赖 Task 01(schema.rs、新签名)。可与 06/07/08/09 并行。
+> Part of `2026-06-21-llm-compress-v2-00-index.md`. Covers spec §5①. Depends on Task 01 (schema.rs, new signatures). Can run in parallel with 06/07/08/09.
 
-**Goal:** 把 JSON 压缩器从 v1 的"有损抽样/超深裁剪"改为**只做不删内容步骤**(连续 RLE 去重 + csv-schema),`kind=Json` 恒 `lossy=false` 永不挂 CCR。`detect` 内预判"无损压缩后是否仍超 `truncate.max_bytes`",超则返回 false 让 Truncate 接管(适配 router first-match)。
+**Goal:** Change the JSON compressor from v1's "lossy sampling / over-deep pruning" to a **content-preserving-only** pipeline (consecutive RLE dedup + csv-schema). `kind=Json` is always `lossy=false` and never raises a CCR. `detect` predicts internally "whether the lossless-compressed result still exceeds `truncate.max_bytes`"; if so it returns false and hands off to Truncate (matching the router's first-match behavior).
 
 ## Files
-- Modify: `zmod/llm-compress/src/compress/json.rs`(重写 detect + compress)
-- Test: `zmod/llm-compress/tests/json_test.rs`(扩展,Task 01 已同步旧断言)
+- Modify: `zmod/llm-compress/src/compress/json.rs` (rewrite detect + compress)
+- Test: `zmod/llm-compress/tests/json_test.rs` (extend; Task 01 already synced the old assertions)
 
 **Interfaces:**
-- Consumes: Task 01 的 `schema::to_schema_form`、`Budget`、`CompressOutcome`、`ContentKind`、`config.json.{max_array_items,max_depth,csv_schema}`、`config.truncate.max_bytes`。
-- Produces: 升级后的 `JsonCompressor`(行为变化:不再删元素;detect 会让位)。
+- Consumes: Task 01's `schema::to_schema_form`, `Budget`, `CompressOutcome`, `ContentKind`, `config.json.{max_array_items,max_depth,csv_schema}`, `config.truncate.max_bytes`.
+- Produces: the upgraded `JsonCompressor` (behavior change: no longer deletes elements; detect will yield).
 
-> **核心算法(spec §5①)**:compress 内按序做两步无损变换 ——① 连续重复项 RLE 去重(相邻相等项折叠为首项 + `{"_llm_dup_prev":N}`;原数组已含 `_llm_dup_prev` 形态对象则跳过);② csv-schema(同构对象数组调 `schema::to_schema_form`)。两步都不删数据。detect 预判无损产物是否 ≤ `truncate.max_bytes`,是则认领,否则让位。
+> **Core algorithm (spec §5①)**: inside compress, perform two ordered lossless transforms — ① consecutive duplicate RLE dedup (fold adjacent equal items into the first item + `{"_llm_dup_prev":N}`; skip if the source array already contains objects in `_llm_dup_prev` form); ② csv-schema (call `schema::to_schema_form` for homogeneous object arrays). Neither step deletes data. detect predicts whether the lossless product is ≤ `truncate.max_bytes`; if so it claims the input, otherwise it yields.
 
 ---
 
-- [ ] **Step 1: 写失败测试(RLE + csv-schema + 让位)**
+- [ ] **Step 1: Write failing tests (RLE + csv-schema + yielding)**
 
-向 `zmod/llm-compress/tests/json_test.rs` **追加**(保留 Task 01 已同步的现有用例):
+**Append** to `zmod/llm-compress/tests/json_test.rs` (keep the existing cases that Task 01 already synced):
 
 ```rust
-// ========== Task 05 新增 ==========
+// ========== Task 05 additions ==========
 use codez_llm_compress::compress::json::JsonCompressor;
 use codez_llm_compress::router::{Budget, CompressOutcome, Compressor, ContentKind};
 use codez_llm_compress::config::Config;
@@ -33,17 +33,17 @@ fn budget_t05(cfg: &Config) -> Budget<'_> {
 #[test]
 fn consecutive_rle_folds_adjacent_duplicates() {
     let mut cfg = Config::disabled();
-    cfg.truncate.max_bytes = 100_000; // 不让位
+    cfg.truncate.max_bytes = 100_000; // do not yield
     let c = JsonCompressor;
-    // 4 个相邻相同对象
+    // 4 adjacent identical objects
     let text = r#"[{"a":1},{"a":1},{"a":1},{"a":1},{"b":2}]"#;
     let b = budget_t05(&cfg);
     assert!(c.detect(text, &b));
     if let CompressOutcome::Compressed { text: new, lossy, kind, .. } = c.compress(text, &b) {
-        assert!(!lossy, "RLE 不删内容");
+        assert!(!lossy, "RLE does not delete content");
         assert_eq!(kind, ContentKind::Json);
         let v: serde_json::Value = serde_json::from_str(&new).expect("valid json");
-        // 首项保留 + 计数占位,首项 {"a":1} 仍在
+        // first item preserved + count placeholder; first item {"a":1} still present
         assert_eq!(v[0], serde_json::json!({"a":1}));
         assert!(new.contains("_llm_dup_prev"));
     } else {
@@ -71,12 +71,12 @@ fn csv_schema_applied_to_homogeneous_array() {
 #[test]
 fn detect_yields_to_truncate_when_lossless_insufficient() {
     let mut cfg = Config::disabled();
-    cfg.truncate.max_bytes = 50; // 很小
+    cfg.truncate.max_bytes = 50; // very small
     let c = JsonCompressor;
-    // 大数组、无相邻重复、非同构 → 无损压不下来 → 超 50 字节 → detect false
+    // large array, no adjacent duplicates, non-homogeneous → lossless can't shrink it → exceeds 50 bytes → detect false
     let text = r#"[{"a":1,"x":"aaaa"},{"b":2,"y":"bbbb"},{"c":3,"z":"cccc"}]"#;
     let b = budget_t05(&cfg);
-    assert!(!c.detect(text, &b), "无损压不到 50 字节 → 让位 Truncate");
+    assert!(!c.detect(text, &b), "lossless can't reach 50 bytes → yield to Truncate");
 }
 
 #[test]
@@ -86,7 +86,7 @@ fn detect_accepts_when_small_enough() {
     let c = JsonCompressor;
     let text = r#"{"a":1}"#;
     let b = budget_t05(&cfg);
-    assert!(c.detect(text, &b), "小 JSON 未超阈 → 认领");
+    assert!(c.detect(text, &b), "small JSON under threshold → claim it");
 }
 
 #[test]
@@ -94,30 +94,30 @@ fn rle_skips_existing_marker_objects() {
     let mut cfg = Config::disabled();
     cfg.truncate.max_bytes = 100_000;
     let c = JsonCompressor;
-    // 原数组已含 _llm_dup_prev 形态对象,不应被折叠改写
+    // source array already contains objects in _llm_dup_prev form; they must not be folded/rewritten
     let text = r#"[{"_llm_dup_prev":5},{"_llm_dup_prev":5}]"#;
     let b = budget_t05(&cfg);
     if let CompressOutcome::Compressed { text: new, .. } = c.compress(text, &b) {
-        // 不混淆:两个 _llm_dup_prev 对象不被当作 RLE 折叠产物
+        // no confusion: the two _llm_dup_prev objects are not treated as RLE fold products
         let v: serde_json::Value = serde_json::from_str(&new).unwrap();
         assert!(v.is_array() || v.is_object());
     }
-    // 也允许 Unchanged(无收益);关键是不 panic、产物合法
+    // Unchanged is also allowed (no gain); the key point is no panic and a valid product
 }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [ ] **Step 2: Run and confirm failure**
 
 Run: `cd codex-rs && cargo test -p codez-llm-compress --test json_test 2>&1 | head -20`
-Expected: FAIL(新行为未实现;detect 仍是 Task 01 的纯 parse 判断,无让位)
+Expected: FAIL (new behavior not yet implemented; detect is still Task 01's pure-parse check with no yielding)
 
-- [ ] **Step 3: 重写 json.rs(顶部 + RLE + csv-schema 核心)**
+- [ ] **Step 3: Rewrite json.rs (top + RLE + csv-schema core)**
 
-把 `zmod/llm-compress/src/compress/json.rs` 全量替换为下面两步(本步先写顶部到 `lossless_compress`):
+Replace `zmod/llm-compress/src/compress/json.rs` entirely with the following two steps (this step writes the top through `lossless_compress`):
 
 ```rust
-//! JsonCompressor —— 只做不删内容步骤(连续 RLE 去重 + csv-schema),kind=Json 恒 lossy=false。
-//! detect 内预判:无损压缩后是否仍超 truncate.max_bytes;超则让位 Truncate(spec §5①)。
+//! JsonCompressor — content-preserving-only pipeline (consecutive RLE dedup + csv-schema); kind=Json is always lossy=false.
+//! detect predicts internally: whether the lossless-compressed result still exceeds truncate.max_bytes; if so, yield to Truncate (spec §5①).
 
 use crate::compress::schema::to_schema_form;
 use crate::router::{Budget, CompressOutcome, Compressor, ContentKind};
@@ -132,8 +132,8 @@ impl Compressor for JsonCompressor {
         "json"
     }
 
-    /// 让位判据:能 parse 为对象/数组,且无损压缩后体积 ≤ truncate.max_bytes 才认领。
-    /// 否则(含 parse 失败 / 无损压不下来)返回 false,让 Truncate 兜底。
+    /// Yield criterion: claim the input only if it parses as an object/array and the lossless-compressed size is ≤ truncate.max_bytes.
+    /// Otherwise (including parse failure / lossless can't shrink it) return false and let Truncate take over.
     fn detect(&self, text: &str, budget: &Budget) -> bool {
         let value: Value = match serde_json::from_str(text) {
             Ok(v @ Value::Object(_)) | Ok(v @ Value::Array(_)) => v,
@@ -156,7 +156,7 @@ impl Compressor for JsonCompressor {
             Ok(s) => s,
             Err(_) => return CompressOutcome::Unchanged,
         };
-        // 校验产物可 parse(现有不变量)
+        // verify the product parses (existing invariant)
         if serde_json::from_str::<Value>(&new).is_err() {
             return CompressOutcome::Unchanged;
         }
@@ -169,7 +169,7 @@ impl Compressor for JsonCompressor {
     }
 }
 
-/// 无损压缩:递归对每个数组先做连续 RLE 去重,再尝试 csv-schema。均不删数据。
+/// Lossless compression: recursively apply consecutive RLE dedup to each array first, then attempt csv-schema. Neither deletes data.
 fn lossless_compress(mut value: Value, budget: &Budget) -> Value {
     transform_value(&mut value, budget);
     value
@@ -178,13 +178,13 @@ fn lossless_compress(mut value: Value, budget: &Budget) -> Value {
 fn transform_value(v: &mut Value, budget: &Budget) {
     match v {
         Value::Array(items) => {
-            // 先递归子元素
+            // recurse into children first
             for child in items.iter_mut() {
                 transform_value(child, budget);
             }
-            // 连续 RLE 去重(就地)
+            // consecutive RLE dedup (in place)
             rle_dedup(items);
-            // csv-schema:整段数组同构 → 替换为 schema 形态
+            // csv-schema: if the whole array is homogeneous → replace with schema form
             if budget.cfg.json.csv_schema {
                 let snapshot = Value::Array(items.clone());
                 if let Some(schema_form) = to_schema_form(&snapshot) {
@@ -201,8 +201,8 @@ fn transform_value(v: &mut Value, budget: &Budget) {
     }
 }
 
-/// 连续相邻相等项折叠为:首项 + {"_llm_dup_prev": N}(N=额外重复次数)。
-/// 本身即含 _llm_dup_prev 键的对象不参与折叠(#6,避免占位混淆)。
+/// Fold consecutive adjacent equal items into: first item + {"_llm_dup_prev": N} (N = number of extra repeats).
+/// Objects that already contain the _llm_dup_prev key do not participate in folding (#6, to avoid placeholder confusion).
 fn rle_dedup(items: &mut Vec<Value>) {
     let mut out: Vec<Value> = Vec::with_capacity(items.len());
     let mut i = 0;
@@ -217,7 +217,7 @@ fn rle_dedup(items: &mut Vec<Value>) {
         while j < items.len() && items[j] == *cur && !is_dup_marker(&items[j]) {
             j += 1;
         }
-        let extra = j - i - 1; // 额外重复次数
+        let extra = j - i - 1; // number of extra repeats
         out.push(cur.clone());
         if extra >= 1 {
             let mut m = serde_json::Map::new();
@@ -234,20 +234,19 @@ fn is_dup_marker(v: &Value) -> bool {
 }
 ```
 
-- [ ] **Step 4: 运行 json 测试通过**
+- [ ] **Step 4: Run json tests and pass**
 
 Run: `cd codex-rs && cargo test -p codez-llm-compress --test json_test`
-Expected: PASS(Task 01 同步的旧用例 + Task 05 新用例)
+Expected: PASS (Task 01's synced old cases + Task 05's new cases)
 
-> 若旧用例(v1 抽样相关,如 `long_array_is_sampled_with_placeholder_element`、`deep_subtree_replaced_by_ellipsis_string`)因移除抽样而失败:这些断言的是已删除的 v1 有损行为,**应删除或改写**为新行为断言。删除这些旧用例(它们测的是被 Task 05 移除的功能),保留 `detect_accepts_objects_arrays_rejects_scalars_and_garbage`(若与新 detect 让位冲突也需调整为带 budget 且阈值充足的版本)。
+> If old cases (related to v1 sampling, e.g. `long_array_is_sampled_with_placeholder_element`, `deep_subtree_replaced_by_ellipsis_string`) fail because sampling was removed: these assert the deleted v1 lossy behavior and **should be removed or rewritten** to assert the new behavior. Delete these old cases (they test functionality Task 05 removed) and keep `detect_accepts_objects_arrays_rejects_scalars_and_garbage` (if it conflicts with the new detect yielding, also adjust it to a version that passes a budget with a sufficiently large threshold).
 
-- [ ] **Step 5: clippy + 提交**
+- [ ] **Step 5: clippy + commit**
 
 Run: `cd codex-rs && cargo test -p codez-llm-compress && cargo clippy -p codez-llm-compress --all-targets`
-Expected: 全绿、无 warning
+Expected: all green, no warnings
 
 ```bash
 git add zmod/llm-compress/src/compress/json.rs zmod/llm-compress/tests/json_test.rs
-git commit -m "feat(llm-compress-v2): Task05 JSON 升级 — detect 让位 + 连续RLE + csv-schema(不删内容)"
+git commit -m "feat(llm-compress-v2): Task05 JSON upgrade — detect yields + consecutive RLE + csv-schema (content-preserving)"
 ```
-

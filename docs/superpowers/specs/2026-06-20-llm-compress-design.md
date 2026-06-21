@@ -1,39 +1,39 @@
-# llm-compress zmod 设计文档
+# llm-compress zmod Design Document
 
-**日期**：2026-06-20
-**crate**：`codez-llm-compress`（`zmod/llm-compress/`）
-**目标**：在 codex 的 LLM 请求发送边界，对已组装好的 `ResponsesApiRequest` 做进程内压缩，降低发往上游的 token 体积。借鉴 headroom 的内容路由（content_router）与 rtk 的分段过滤管线（TOML DSL 8 段）。
-
----
-
-## 1. 定位与边界
-
-- **是什么**：一个独立 Rust crate，提供单一入口 `transform(request, provider, queryid) -> ResponsesApiRequest`，在请求发往上游前对其内容做不可逆但保守的压缩。
-- **不是什么**：不换上游（那是姊妹 zmod `llm-switch` 的职责）、不改响应流、不做可逆检索（CCR）、不做 token 计数（留待迭代）。
-- **与 llm-switch 的关系**：两者挂在 codex 同一个集成点，但**职责正交**。llm-compress 是**独立 crate、前置拦截**：先压缩、后路由。压缩对**所有**请求路径生效（含原生 OpenAI responses 路径），不依赖 llm-switch 是否命中路由。
+**Date**: 2026-06-20
+**crate**: `codez-llm-compress` (`zmod/llm-compress/`)
+**Goal**: At codex's LLM request-sending boundary, perform in-process compression on the already-assembled `ResponsesApiRequest` to reduce the token volume sent upstream. It draws on headroom's content routing (content_router) and rtk's staged filtering pipeline (TOML DSL with 8 stages).
 
 ---
 
-## 2. 集成点（单点侵入）
+## 1. Positioning and Boundaries
 
-**文件**：`codex-rs/core/src/client.rs`
-**函数**：`stream_responses_api()`（约 1270 行）
-**位置**：`build_responses_request(...)` 之后、构造 `ApiResponsesClient` / 进入路由分支之前（当前约 1318-1330 行）。
+- **What it is**: A standalone Rust crate that provides a single entry point `transform(request, provider, queryid) -> ResponsesApiRequest`, applying irreversible but conservative compression to the request content before it is sent upstream.
+- **What it is not**: It does not swap the upstream (that's the job of its sibling zmod `llm-switch`), does not alter the response stream, does not do reversible retrieval (CCR), and does not do token counting (deferred to later iterations).
+- **Relationship to llm-switch**: Both hook into the same codex integration point, but their **responsibilities are orthogonal**. llm-compress is a **standalone crate that intercepts up front**: compress first, then route. Compression applies to **all** request paths (including the native OpenAI responses path), independent of whether llm-switch matches a route.
+
+---
+
+## 2. Integration Point (single point of intrusion)
+
+**File**: `codex-rs/core/src/client.rs`
+**Function**: `stream_responses_api()` (around line 1270)
+**Location**: After `build_responses_request(...)`, and before constructing `ApiResponsesClient` / entering the routing branch (currently around lines 1318-1330).
 
 ```rust
 let mut request = self.client.build_responses_request(...)?;
 let store = request.store;
 self.client.prepare_response_items_for_request(&mut request.input, store);
 
-// ── llm-compress 前置拦截（独立 zmod，不依赖 switch）──
-let queryid = &responses_metadata.thread_id;   // codex 现成可达，见 §3
+// ── llm-compress front intercept (standalone zmod, independent of switch) ──
+let queryid = &responses_metadata.thread_id;   // readily reachable in codex, see §3
 let request = codez_llm_compress::transform(
     request,
     &client_setup.api_provider,
     queryid,
 );
 
-// ── 原有路由分支（llm-switch 或原生），拿到的是已压缩的 request ──
+// ── existing routing branch (llm-switch or native), receives the already-compressed request ──
 let stream_result = match codez_llm_switch::route(...) {
     None => {
         let client = ApiResponsesClient::new(transport, client_setup.api_provider, client_setup.api_auth)
@@ -44,199 +44,199 @@ let stream_result = match codez_llm_switch::route(...) {
 };
 ```
 
-**关键性质**：
+**Key properties**:
 
-- `transform()` 入参出参都是 codex 原生 `ResponsesApiRequest`，对下游（switch / 原生 stream_request / SSE 解析 / 错误处理）完全透明。
-- 关闭时（config 无 `[llm_compress]` 或 `enabled=false`）`transform()` 原样返回 request，等价零改动路径。
-- codex 侧侵入仅两处，封装在 `patches/llm-compress.patch`：
-  1. `core/Cargo.toml` 增加依赖 `codez-llm-compress = { path = "../../zmod/llm-compress" }`
-  2. `client.rs` 增加上述 queryid 取值 + `transform()` 调用两行。
-- **不修改任何 codex 函数签名**：`queryid` 由作用域内现成的入参 `responses_metadata.thread_id` 取得。
+- Both the input and output of `transform()` are codex's native `ResponsesApiRequest`, completely transparent to downstream (switch / native stream_request / SSE parsing / error handling).
+- When disabled (config has no `[llm_compress]` or `enabled=false`), `transform()` returns the request unchanged, equivalent to a zero-modification path.
+- The intrusion on the codex side is only two spots, encapsulated in `patches/llm-compress.patch`:
+  1. Add the dependency `codez-llm-compress = { path = "../../zmod/llm-compress" }` to `core/Cargo.toml`.
+  2. Add the two lines above in `client.rs`: the queryid retrieval + the `transform()` call.
+- **No codex function signature is modified**: `queryid` is obtained from the in-scope existing parameter `responses_metadata.thread_id`.
 
 ---
 
-## 3. queryid 来源
+## 3. Source of queryid
 
-`queryid` = `responses_metadata.thread_id`（`CodexResponsesMetadata` 字段，`pub(crate)`，core crate 内可达）。
+`queryid` = `responses_metadata.thread_id` (a `CodexResponsesMetadata` field, `pub(crate)`, reachable within the core crate).
 
-> **修正（与实现/计划索引一致）**：早期草稿写 `session_id`，已改为 `thread_id`。原因：`session_id` 会被子 agent 继承父级、无法定位具体 rollout 文件；`thread_id`（`ThreadId`，UUIDv7）才与 rollout 文件名中的 UUID 精确对应。
+> **Correction (consistent with the implementation/plan index)**: An early draft wrote `session_id`; this has been changed to `thread_id`. Reason: `session_id` is inherited by child agents from the parent and cannot pinpoint a specific rollout file; only `thread_id` (`ThreadId`, UUIDv7) corresponds exactly to the UUID in the rollout file name.
 
-该值即 codex 的 thread UUID，与 rollout 文件名中的 UUID 一致：
+This value is codex's thread UUID, identical to the UUID in the rollout file name:
 
 ```
 ~/.codex/sessions/2026/05/18/rollout-2026-05-18T13-35-50-019e3995-5cd9-75a2-b487-f7959835f69e.jsonl
                                                           └────────────── thread_id ──────────────┘
 ```
 
-来源链：`CodexResponsesMetadata.thread_id`（`core/src/responses_metadata.rs`，由 session 的 `ThreadId.to_string()` 填入）→ 作为入参 `responses_metadata: &CodexResponsesMetadata` 传入 `stream_responses_api`，patch 取 `responses_metadata.thread_id.clone()`。
+Source chain: `CodexResponsesMetadata.thread_id` (`core/src/responses_metadata.rs`, populated from the session's `ThreadId.to_string()`) → passed as the parameter `responses_metadata: &CodexResponsesMetadata` into `stream_responses_api`, and the patch takes `responses_metadata.thread_id.clone()`.
 
-因此压缩日志的 queryid 可与具体 rollout 文件精确对应。
+Therefore the queryid in the compression log corresponds exactly to a specific rollout file.
 
 ---
 
-## 4. 内部两层管线
+## 4. Internal Two-Layer Pipeline
 
-`transform(request, provider, queryid) -> ResponsesApiRequest` 内部：
+Inside `transform(request, provider, queryid) -> ResponsesApiRequest`:
 
 ```
 ResponsesApiRequest
    │
    ▼
-[Layer 0] 开关 & 预算门
-   • 读 config [llm_compress].enabled —— 关 → 原样返回
-   • 估算 request input 文本总体积；低于 min_total_bytes → 原样返回（小请求不折腾）
+[Layer 0] Switch & budget gate
+   • Read config [llm_compress].enabled —— off → return unchanged
+   • Estimate the total text volume of the request input; below min_total_bytes → return unchanged (don't bother with small requests)
    ▼
-[Layer 1] 遍历 request.input[] 各项
-   对每个 InputItem（主要是 function_call_output / 大文本项）:
-     • 取文本载荷，低于 per_item_min_bytes → 跳过（保守阈值）
+[Layer 1] Iterate over each item in request.input[]
+   For each InputItem (mainly function_call_output / large text items):
+     • Take the text payload; below per_item_min_bytes → skip (conservative threshold)
      ▼
-   [Layer 2] ContentRouter 内容识别（借鉴 headroom content_router）
-     按固定优先级依次 detect，第一个命中者负责压缩:
-       ① JsonCompressor      （serde_json 能 parse）
-       ② DiffCompressor      （含 @@/diff --git/--- a/ 头）
-       ③ LogCompressor       （多行 + 重复行/时间戳/栈跟踪特征）
-       ④ TruncateCompressor  （detect 永真，兜底）
+   [Layer 2] ContentRouter content detection (draws on headroom content_router)
+     Detect in fixed priority order; the first match is responsible for compressing:
+       ① JsonCompressor      (serde_json can parse it)
+       ② DiffCompressor      (contains @@/diff --git/--- a/ headers)
+       ③ LogCompressor       (multi-line + repeated lines/timestamps/stack-trace features)
+       ④ TruncateCompressor  (detect always true, fallback)
      ▼
-   [Layer 3] Compressor 内部流水（借鉴 rtk TOML DSL 分段）
-     strip_ansi → (压缩器专属逻辑) → head/tail 保留 → max_bytes 截断
-     → 插入占位标记 "[llm-compress: 略 N 行/字节]"
+   [Layer 3] Compressor internal pipeline (draws on rtk TOML DSL stages)
+     strip_ansi → (compressor-specific logic) → head/tail retention → max_bytes truncation
+     → insert placeholder marker "[llm-compress: omitted N lines/bytes]"
    ▼
-[出口] 若整体 saved_bytes > 0 → 写统计日志（§7）；返回压缩后 request
+[Exit] If overall saved_bytes > 0 → write the stats log (§7); return the compressed request
 ```
 
-### 核心 trait
+### Core trait
 
 ```rust
-/// 内容识别 + 压缩
+/// Content detection + compression
 trait Compressor: Send + Sync {
     fn name(&self) -> &'static str;
-    fn detect(&self, text: &str) -> bool;            // 是否认领这段内容
+    fn detect(&self, text: &str) -> bool;            // does it claim this content
     fn compress(&self, text: &str, budget: &Budget) -> CompressResult;
 }
 
 enum CompressResult {
     Compressed { text: String, saved_bytes: usize },
-    Unchanged,                  // 认领了但判断不值得压
+    Unchanged,                  // claimed it but judged not worth compressing
 }
 ```
 
-**ContentRouter**：固定优先级 `Json → Diff → Log → Truncate`，依次 `detect`，第一个命中的执行 `compress`。Truncate 永远兜底，保证任何超阈文本都有处理者。
+**ContentRouter**: Fixed priority `Json → Diff → Log → Truncate`, running `detect` in turn; the first match executes `compress`. Truncate is always the fallback, guaranteeing that any text over the threshold has a handler.
 
-**fail-open**：任一 compressor 在 `compress()` 中 panic 或异常（`std::panic::catch_unwind` 兜住）→ 该项**原文透传**，绝不让压缩失败影响请求。
+**fail-open**: If any compressor panics or throws during `compress()` (caught by `std::panic::catch_unwind`) → that item is **passed through verbatim**; a compression failure must never affect the request.
 
 ---
 
-## 5. 配置
+## 5. Configuration
 
-文件：`~/.codex/config-zmod.toml`，节 `[llm_compress]`（与 llm-switch 同文件，独立节）。节缺失 = `enabled=false`（fail-safe）。读取在 `src/config.rs`，进程内读一次缓存。
+File: `~/.codex/config-zmod.toml`, section `[llm_compress]` (same file as llm-switch, separate section). A missing section = `enabled=false` (fail-safe). Reading happens in `src/config.rs`, read once and cached in-process.
 
 ```toml
 [llm_compress]
-enabled = false                 # 缺省关闭
-min_total_bytes = 4096          # 请求 input 文本总量小于此值整体跳过
-per_item_min_bytes = 1024       # 单项小于此值不压（保守阈值）
+enabled = false                 # off by default
+min_total_bytes = 4096          # skip the whole request when input text total is below this
+per_item_min_bytes = 1024       # don't compress an item below this size (conservative threshold)
 
 [llm_compress.truncate]
 head_lines = 50
 tail_lines = 50
-max_bytes  = 16384              # 单项压后上限
+max_bytes  = 16384              # per-item post-compression cap
 
 [llm_compress.json]
-max_array_items = 20            # 数组超此长度 → 抽样保留首尾 + 计数
-max_depth = 6                   # 超深嵌套 → 截断为 "…"
+max_array_items = 20            # array longer than this → sample head/tail + count
+max_depth = 6                   # over-deep nesting → truncate to "…"
 
 [llm_compress.diff]
-context_lines = 3               # 每个 hunk 保留的上下文行
+context_lines = 3               # context lines retained per hunk
 
 [llm_compress.log]
-dedup_repeats = true            # 折叠连续重复行为 "（上一行 ×N）"
+dedup_repeats = true            # collapse consecutive repeated lines into "(previous line ×N)"
 ```
 
 ---
 
-## 6. 四个压缩器策略
+## 6. Strategies of the Four Compressors
 
-| 压缩器 | detect 依据 | compress 策略 |
+| Compressor | detect basis | compress strategy |
 |--------|------------|--------------|
-| **Json** | `serde_json::from_str` 成功 | 长数组抽样（首尾保留 + `"…(N more)"`）；超深嵌套截为 `"…"`；其余结构保留。**输出必须仍是合法 JSON**——压后重新 parse 失败则丢弃压缩结果、回退原文。 |
-| **Diff** | 含 `@@ ... @@` / `diff --git` / `--- a/` 行 | 每个 hunk 保留变更行 + `context_lines` 行上下文，丢多余上下文，文件头保留。 |
-| **Log** | 多行 + 时间戳 / 连续重复行 / `at ...:line` 栈特征 | 连续重复行折叠计数；保留 head/tail，中段折叠为 `[llm-compress: 略 N 行]`。 |
-| **Truncate** | 永真（兜底） | strip ANSI → 保留 `head_lines` + `tail_lines`，中间替换为 `[llm-compress: 略 N 行 / M 字节]`。 |
+| **Json** | `serde_json::from_str` succeeds | Sample long arrays (keep head/tail + `"…(N more)"`); truncate over-deep nesting to `"…"`; preserve the rest of the structure. **The output must still be valid JSON** —— if re-parsing the compressed result fails, discard it and fall back to the original. |
+| **Diff** | contains `@@ ... @@` / `diff --git` / `--- a/` lines | For each hunk, keep the changed lines + `context_lines` of context, drop excess context, and keep file headers. |
+| **Log** | multi-line + timestamps / consecutive repeated lines / `at ...:line` stack features | Collapse consecutive repeated lines with a count; keep head/tail, collapse the middle into `[llm-compress: omitted N lines]`. |
+| **Truncate** | always true (fallback) | strip ANSI → keep `head_lines` + `tail_lines`, replace the middle with `[llm-compress: omitted N lines / M bytes]`. |
 
-**占位标记**统一格式 `[llm-compress: …]`，让模型明确知道此处有省略（不可逆但显式）。
+The **placeholder marker** uses a unified format `[llm-compress: …]`, making it clear to the model that something has been omitted here (irreversible but explicit).
 
 ---
 
-## 7. 压缩统计日志
+## 7. Compression Stats Log
 
-**文件**：`~/.codex/log/llm-compress.log`（目录不存在则创建；append 模式）。
-**触发**：一次请求**有效压缩**（整体 `saved_bytes > 0`）后追加一行。直通 / 未命中 / 关闭状态**不记录**。
-**格式**：CSV，四列，无表头：
+**File**: `~/.codex/log/llm-compress.log` (create the directory if it doesn't exist; append mode).
+**Trigger**: Append one line after a request is **effectively compressed** (overall `saved_bytes > 0`). Pass-through / no-match / disabled states are **not recorded**.
+**Format**: CSV, four columns, no header:
 
 ```
-时间戳,queryid,压缩前字节,压缩后字节
+timestamp,queryid,bytes_before,bytes_after
 ```
 
-示例：
+Example:
 
 ```
 2026-06-20T08:15:30Z,019e3995-5cd9-75a2-b487-f7959835f69e,18432,5120
 ```
 
-| 列 | 来源 |
+| Column | Source |
 |----|------|
-| 时间戳 | RFC3339 UTC（`chrono`） |
-| queryid | `responses_metadata.thread_id`（rollout 文件名 UUID） |
-| 压缩前字节 | transform 入口 input 项文本总字节 |
-| 压缩后字节 | transform 出口 input 项文本总字节 |
+| timestamp | RFC3339 UTC (`chrono`) |
+| queryid | `responses_metadata.thread_id` (the rollout file name UUID) |
+| bytes_before | total text bytes of the input items at the transform entry |
+| bytes_after | total text bytes of the input items at the transform exit |
 
-**大小口径**：input 项文本字节总和（压缩器实际作用对象），非整 request 序列化字节。
-**实现**：`src/stats.rs` 的 `log_compression(queryid, before, after)`，`OpenOptions::append`。
-**fail-open**：写日志失败（磁盘满 / 权限）仅记一条 tracing warn，绝不影响请求。
-
----
-
-## 8. 错误处理（全程 fail-open）
-
-- `transform()` 签名为 `-> ResponsesApiRequest`（**不返回 Result**），从类型上杜绝"压缩失败阻断请求"。
-- 单个 compressor 内部 panic → `catch_unwind` 兜住 → 该项原文透传。
-- config 解析失败 → 视为 `enabled=false`，记 warn，走零改动路径。
-- JSON 压缩后必须能重新 parse；否则丢弃压缩结果、回退原文（不产出坏 JSON）。
-- 统计日志写失败 → warn，不影响请求。
+**Size measure**: the sum of the text bytes of the input items (the actual target of the compressors), not the serialized bytes of the whole request.
+**Implementation**: `log_compression(queryid, before, after)` in `src/stats.rs`, using `OpenOptions::append`.
+**fail-open**: If writing the log fails (disk full / permissions), only record a single tracing warn; never affect the request.
 
 ---
 
-## 9. 测试策略
+## 8. Error Handling (fail-open throughout)
 
-独立 crate，纯单元测试，不依赖 codex 运行时。
-
-- **每个 compressor**：`detect` 真值表 + `compress` 快照测试（`insta`，real fixtures：真实 git diff、真实 JSON 工具输出、真实日志）。
-- **ContentRouter**：优先级命中测试（一段既像 log 又能 parse JSON 时谁赢）。
-- **fail-open**：注入会 panic 的假 compressor，断言原文透传。
-- **阈值边界**：低于 `per_item_min_bytes` 不动；`enabled=false` 全直通且 `request` 逐字节不变。
-- **不可逆但安全**：断言压后体积 ≤ 压前（不会越压越胖），占位标记存在。
-- **统计日志**：有效压缩写一行 CSV、四列、格式正确；无压缩不写；写失败不 panic。
+- The signature of `transform()` is `-> ResponsesApiRequest` (**does not return a Result**), structurally ruling out "a compression failure blocking the request".
+- A panic inside a single compressor → caught by `catch_unwind` → that item is passed through verbatim.
+- Config parse failure → treated as `enabled=false`, record a warn, take the zero-modification path.
+- The compressed JSON must be re-parseable; otherwise discard the compressed result and fall back to the original (never emit broken JSON).
+- Stats log write failure → warn, does not affect the request.
 
 ---
 
-## 10. 可观测性
+## 9. Test Strategy
 
-- `transform()` 内用 `tracing` 记 `saved_bytes` 汇总（debug 级），不污染正常输出。
-- 占位标记本身是给模型和人看的可见信号。
-- CSV 统计日志供离线分析压缩效果。
-- v1 不做持久化指标 / 不做 token 计数（YAGNI）。
+A standalone crate, pure unit tests, no dependency on the codex runtime.
+
+- **Each compressor**: `detect` truth table + `compress` snapshot tests (`insta`, real fixtures: real git diffs, real JSON tool outputs, real logs).
+- **ContentRouter**: priority-match tests (when a chunk looks like a log yet also parses as JSON, who wins).
+- **fail-open**: inject a fake compressor that panics, assert verbatim pass-through.
+- **Threshold boundaries**: below `per_item_min_bytes` untouched; `enabled=false` fully passes through and `request` is byte-for-byte unchanged.
+- **Irreversible but safe**: assert that post-compression size ≤ pre-compression size (never grows under compression), and that the placeholder marker is present.
+- **Stats log**: an effective compression writes one CSV line, four columns, correct format; no compression writes nothing; a write failure does not panic.
 
 ---
 
-## 11. 模块文件布局
+## 10. Observability
+
+- Inside `transform()`, use `tracing` to record the `saved_bytes` summary (debug level), without polluting normal output.
+- The placeholder marker itself is a visible signal for both the model and humans.
+- The CSV stats log supports offline analysis of compression effectiveness.
+- v1 does not do persistent metrics / does not do token counting (YAGNI).
+
+---
+
+## 11. Module File Layout
 
 ```
 zmod/llm-compress/
   Cargo.toml                  # name = "codez-llm-compress"
   src/
-    lib.rs                    # transform() 入口 + enabled()
-    config.rs                 # 读 [llm_compress]
-    stats.rs                  # 压缩统计日志 log_compression()
+    lib.rs                    # transform() entry + enabled()
+    config.rs                 # read [llm_compress]
+    stats.rs                  # compression stats log log_compression()
     router.rs                 # ContentRouter + Compressor trait + Budget
     compress/
       mod.rs
@@ -245,21 +245,21 @@ zmod/llm-compress/
       diff.rs
       log.rs
   tests/
-    fixtures/                 # 真实 diff/json/log 样本
-    snapshots/                # insta 快照
+    fixtures/                 # real diff/json/log samples
+    snapshots/                # insta snapshots
 
-patches/llm-compress.patch    # core/Cargo.toml + client.rs 两处改动
+patches/llm-compress.patch    # the two changes in core/Cargo.toml + client.rs
 ```
 
 ---
 
-## 12. 关键决策记录
+## 12. Key Decision Record
 
-| 决策 | 选择 | 理由 |
+| Decision | Choice | Rationale |
 |------|------|------|
-| Connector/HTTP 处理 | 不自建，由后续路由（switch/原生）承担 | llm-compress 只变换 request，传输由下游负责，风险最低 |
-| 与 llm-switch 关系 | 独立 crate，集成点前置拦截 | 压缩对所有路径生效，含原生 OpenAI；不绑定 switch 命中 |
-| v1 压缩范围 | 内容路由 + 4 压缩器（Json/Diff/Log/Truncate） | 覆盖工具输出主要形态 |
-| 可逆性 | 不可逆 + 保守阈值 + fail-open | 简单可靠；占位标记显式告知省略 |
-| queryid | `responses_metadata.thread_id` | 现成可达、与 rollout 文件名 UUID 一致、子 agent 不串，不改 codex 签名 |
-| 日志格式 | CSV 四列无表头 | 简洁，易解析 |
+| Connector/HTTP handling | Don't build our own; handled by the downstream router (switch/native) | llm-compress only transforms the request; transport is the downstream's responsibility, lowest risk |
+| Relationship to llm-switch | Standalone crate, front-intercept at the integration point | Compression applies to all paths, including native OpenAI; not bound to a switch match |
+| v1 compression scope | Content routing + 4 compressors (Json/Diff/Log/Truncate) | Covers the main shapes of tool output |
+| Reversibility | Irreversible + conservative thresholds + fail-open | Simple and reliable; the placeholder marker explicitly signals omission |
+| queryid | `responses_metadata.thread_id` | Readily reachable, identical to the rollout file name UUID, not crossed between child agents, and doesn't change codex signatures |
+| Log format | CSV, four columns, no header | Concise, easy to parse |

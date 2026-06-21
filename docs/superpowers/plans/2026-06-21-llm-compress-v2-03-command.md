@@ -1,22 +1,22 @@
-# Task 03 — command.rs:call_id → CommandHint 索引
+# Task 03 — command.rs: call_id → CommandHint index
 
-> 隶属 `2026-06-21-llm-compress-v2-00-index.md`。覆盖 spec §4.3。依赖 Task 01(CommandHint 类型已在 01 建立,本任务实现 `index()` 真逻辑)。可与 02/04 并行。
+> Part of `2026-06-21-llm-compress-v2-00-index.md`. Covers spec §4.3. Depends on Task 01 (the `CommandHint` type is established in 01; this task implements the real `index()` logic). Can run in parallel with 02/04.
 
-**Goal:** 实现 `command::index`——遍历 `request.input` 的 `FunctionCall`,从 `shell_command.command` / `exec_command.cmd`(单字符串命令行)轻量解析出 `program` + `argv`,建 `call_id → CommandHint` 映射。`CommandHint` 类型与 is_* 方法已由 Task 01 建立,本任务替换 Task 01 的空占位 `index()`。
+**Goal:** Implement `command::index` — iterate over the `FunctionCall`s in `request.input`, lightly parse a `program` + `argv` out of `shell_command.command` / `exec_command.cmd` (a single command-line string), and build a `call_id → CommandHint` map. The `CommandHint` type and its is_* methods were established in Task 01; this task replaces Task 01's empty placeholder `index()`.
 
 ## Files
-- Modify: `zmod/llm-compress/src/command.rs`(替换 Task 01 的占位 `index()`,加 shell 解析)
+- Modify: `zmod/llm-compress/src/command.rs` (replace Task 01's placeholder `index()`, add shell parsing)
 - Test: `zmod/llm-compress/tests/command_test.rs`
 
 **Interfaces:**
-- Consumes: Task 01 的 `CommandHint { program, argv }` 及其 is_* 方法。codex 类型 `codex_protocol::models::ResponseItem::FunctionCall { name, arguments, call_id, .. }`(`codex-rs/protocol/src/models.rs:973`)。
-- Produces: `pub fn index(request: &codex_api::ResponsesApiRequest) -> HashMap<String, CommandHint>`(替换占位实现)。
+- Consumes: Task 01's `CommandHint { program, argv }` and its is_* methods. The codex type `codex_protocol::models::ResponseItem::FunctionCall { name, arguments, call_id, .. }` (`codex-rs/protocol/src/models.rs:973`).
+- Produces: `pub fn index(request: &codex_api::ResponsesApiRequest) -> HashMap<String, CommandHint>` (replaces the placeholder implementation).
 
 ---
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: Write a failing test**
 
-创建 `zmod/llm-compress/tests/command_test.rs`:
+Create `zmod/llm-compress/tests/command_test.rs`:
 
 ```rust
 use codez_llm_compress::command::index;
@@ -98,21 +98,21 @@ fn non_shell_tool_uses_name_as_program() {
 }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [ ] **Step 2: Run and confirm failure**
 
 Run: `cd codex-rs && cargo test -p codez-llm-compress --test command_test 2>&1 | head`
-Expected: FAIL(占位 index 返回空 HashMap,所有 get 断言失败)
+Expected: FAIL (the placeholder index returns an empty HashMap, so every get assertion fails)
 
-- [ ] **Step 3: 实现真 index() + shell 解析**
+- [ ] **Step 3: Implement the real index() + shell parsing**
 
-把 `zmod/llm-compress/src/command.rs` 的占位 `index()` 替换为(保留文件顶部 CommandHint 定义与 is_* 方法不动,只换 index 函数,并加 use serde_json):
+Replace the placeholder `index()` in `zmod/llm-compress/src/command.rs` with the following (keep the CommandHint definition and is_* methods at the top of the file unchanged, only swap out the index function, and add use serde_json):
 
 ```rust
 use codex_protocol::models::ResponseItem;
 
-/// 遍历 request.input 的 FunctionCall,建 call_id → CommandHint 索引。
-/// shell_command.command / exec_command.cmd 是单字符串命令行(spec §4.3,已核实)。
-/// 解析失败/非 JSON/取不到命令字段 → 该 call_id 不入索引(fail-open)。
+/// Iterate over the FunctionCalls in request.input, building a call_id → CommandHint index.
+/// shell_command.command / exec_command.cmd is a single command-line string (spec §4.3, verified).
+/// Parse failure / non-JSON / missing command field → that call_id is not indexed (fail-open).
 pub fn index(request: &codex_api::ResponsesApiRequest) -> HashMap<String, CommandHint> {
     let mut map = HashMap::new();
     for item in &request.input {
@@ -126,7 +126,7 @@ pub fn index(request: &codex_api::ResponsesApiRequest) -> HashMap<String, Comman
 }
 
 fn parse_hint(name: &str, arguments: &str) -> Option<CommandHint> {
-    // shell 类工具:从 JSON 取命令行字符串
+    // shell-style tools: extract the command-line string from JSON
     let cmdline: Option<String> = match name {
         "shell_command" => serde_json::from_str::<serde_json::Value>(arguments)
             .ok()
@@ -145,7 +145,7 @@ fn parse_hint(name: &str, arguments: &str) -> Option<CommandHint> {
             Some(CommandHint { program, argv })
         }
         None => {
-            // 非 shell 工具:program = name,argv 空。仅当 name 非空时入索引。
+            // non-shell tool: program = name, argv empty. Indexed only when name is non-empty.
             if name.is_empty() {
                 None
             } else {
@@ -155,7 +155,7 @@ fn parse_hint(name: &str, arguments: &str) -> Option<CommandHint> {
     }
 }
 
-/// 轻量 shell 分词:按空白切,尊重单/双引号(只读不执行,失败容忍)。
+/// Lightweight shell tokenization: split on whitespace, honoring single/double quotes (read-only, never executed, fault-tolerant).
 fn shell_split(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
@@ -193,19 +193,19 @@ fn shell_split(line: &str) -> Vec<String> {
 }
 ```
 
-> 注意:文件顶部已有的 `use std::collections::HashMap;`(Task 01)保留;新增 `use codex_protocol::models::ResponseItem;`。删除 Task 01 占位 index 的 `_request` 版本。
+> Note: the existing `use std::collections::HashMap;` at the top of the file (Task 01) is kept; add `use codex_protocol::models::ResponseItem;`. Delete the `_request` version of Task 01's placeholder index.
 
-- [ ] **Step 4: 运行测试通过**
+- [ ] **Step 4: Run the tests and pass**
 
 Run: `cd codex-rs && cargo test -p codez-llm-compress --test command_test`
-Expected: PASS(5 个)
+Expected: PASS (5 tests)
 
-- [ ] **Step 5: clippy + 提交**
+- [ ] **Step 5: clippy + commit**
 
 Run: `cd codex-rs && cargo clippy -p codez-llm-compress --all-targets`
-Expected: 无 warning
+Expected: no warnings
 
 ```bash
 git add zmod/llm-compress/src/command.rs zmod/llm-compress/tests/command_test.rs
-git commit -m "feat(llm-compress-v2): Task03 command.rs call_id→CommandHint 索引 + shell 解析"
+git commit -m "feat(llm-compress-v2): Task03 command.rs call_id→CommandHint index + shell parsing"
 ```

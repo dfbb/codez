@@ -1,38 +1,38 @@
 # Task 05 — chat SSE→ResponseEvent
 
-> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development 或 executing-plans。先读 [总索引](2026-06-20-llm-switch-00-index.md) Global Constraints,尤其 §4.5 合成 assistant 完成项。
+> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development or executing-plans. First read the [master index](2026-06-20-llm-switch-00-index.md) Global Constraints, especially §4.5 on synthesizing the assistant completion item.
 
-**Goal:** 实现 chat 的**入站方向**:把 Chat Completions 的 SSE chunk 序列翻成 `Vec<ResponseEvent>`(纯函数式状态机,便于离线测试)。覆盖文本 delta 展示并累计、tool_calls 按 index 聚合、§4.5 合成 assistant message 完成项、`Completed` 三字段补全、`[DONE]` 收尾。实际 HTTP/spawn 接线在 Task 08。
+**Goal:** Implement the **inbound direction** of chat: translate the sequence of Chat Completions SSE chunks into a `Vec<ResponseEvent>` (a pure functional state machine, convenient for offline testing). Cover displaying and accumulating text deltas, aggregating tool_calls by index, synthesizing the assistant message completion item (§4.5), filling in the three fields of `Completed`, and wrapping up on `[DONE]`. The actual HTTP/spawn wiring happens in Task 08.
 
-**覆盖 spec:** §4.2(响应)、§4.5(合成完成项 + Completed)、§4.8(call_id 回填)。
+**Spec coverage:** §4.2 (responses), §4.5 (synthesized completion item + Completed), §4.8 (call_id backfill).
 
 **Files:**
 - Create: `zmod/llm-switch/src/connector/chat_sse.rs`
-- Modify: `zmod/llm-switch/src/connector/chat.rs`(`mod chat_sse;`)
+- Modify: `zmod/llm-switch/src/connector/chat.rs` (`mod chat_sse;`)
 - Test: `zmod/llm-switch/tests/chat_sse_test.rs`
 
 **Interfaces:**
-- Consumes:`ResponseEvent`、`ResponseItem`、`ContentItem`、`TokenUsage`、`ConnError`。
-- Produces(Task 08 依赖):
-  - `pub(crate) struct ChatSseState { ... }`(累计文本、tool_calls 聚合器、response_id、usage)
-  - `pub(crate) fn ChatSseState::push_chunk(&mut self, chunk: &serde_json::Value) -> Result<Vec<codex_api::ResponseEvent>, ConnError>`(喂一个解析好的 JSON chunk,返回该 chunk 产生的事件)
-  - `pub(crate) fn ChatSseState::finish(&mut self) -> Vec<codex_api::ResponseEvent>`(收到 `[DONE]` 时调用:发合成 assistant message + Completed)
-  - 便于测试:`pub(crate) fn translate_chat_sse(chunks: &[serde_json::Value], done: bool) -> Result<Vec<codex_api::ResponseEvent>, ConnError>`(把整段序列跑完)
+- Consumes: `ResponseEvent`, `ResponseItem`, `ContentItem`, `TokenUsage`, `ConnError`.
+- Produces (Task 08 depends on these):
+  - `pub(crate) struct ChatSseState { ... }` (accumulated text, tool_calls aggregator, response_id, usage)
+  - `pub(crate) fn ChatSseState::push_chunk(&mut self, chunk: &serde_json::Value) -> Result<Vec<codex_api::ResponseEvent>, ConnError>` (feed one parsed JSON chunk, return the events produced by that chunk)
+  - `pub(crate) fn ChatSseState::finish(&mut self) -> Vec<codex_api::ResponseEvent>` (called on `[DONE]`: emit the synthesized assistant message + Completed)
+  - For ease of testing: `pub(crate) fn translate_chat_sse(chunks: &[serde_json::Value], done: bool) -> Result<Vec<codex_api::ResponseEvent>, ConnError>` (run the whole sequence to completion)
 
 ---
 
-- [ ] **Step 0: 钉死 ResponseEvent / ResponseItem 构造形态**
+- [ ] **Step 0: Nail down the ResponseEvent / ResponseItem construction shapes**
 
 Run:
 ```bash
 grep -n "pub enum ResponseEvent" -A 45 codex-rs/codex-api/src/common.rs
 grep -n "OutputItemDone\|OutputTextDelta\|Completed" codex-rs/codex-api/src/common.rs
 ```
-确认:`OutputTextDelta(String)`、`OutputItemDone(ResponseItem)`、`Completed{response_id:String, token_usage:Option<TokenUsage>, end_turn:Option<bool>}`。`TokenUsage` 5 个 i64 字段(`input_tokens/cached_input_tokens/output_tokens/reasoning_output_tokens/total_tokens`)。
+Confirm: `OutputTextDelta(String)`, `OutputItemDone(ResponseItem)`, `Completed{response_id:String, token_usage:Option<TokenUsage>, end_turn:Option<bool>}`. `TokenUsage` has 5 i64 fields (`input_tokens/cached_input_tokens/output_tokens/reasoning_output_tokens/total_tokens`).
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: Write a failing test**
 
-创建 `zmod/llm-switch/tests/chat_sse_test.rs`:
+Create `zmod/llm-switch/tests/chat_sse_test.rs`:
 
 ```rust
 use codez_llm_switch::testing::translate_chat_sse_for_test as run;
@@ -53,16 +53,16 @@ fn accumulates_text_and_synthesizes_assistant_message() {
                "usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}),
     ];
     let events = run(&chunks, true).unwrap();
-    // 至少两条 OutputTextDelta(展示)
+    // At least two OutputTextDelta events (for display)
     let deltas: Vec<&String> = events.iter().filter_map(|e| match e {
         ResponseEvent::OutputTextDelta(s) => Some(s), _ => None }).collect();
     assert_eq!(deltas, vec!["Hello", " world"]);
-    // 合成 assistant message 完成项(§4.5)
+    // Synthesized assistant message completion item (§4.5)
     let synth = events.iter().find_map(|e| match e {
         ResponseEvent::OutputItemDone(ResponseItem::Message { role, content, .. }) if role == "assistant" => Some(content),
         _ => None }).expect("synth assistant message present");
     assert!(matches!(&synth[0], ContentItem::OutputText { text } if text == "Hello world"));
-    // Completed 三字段
+    // The three Completed fields
     let completed = events.iter().find_map(|e| match e {
         ResponseEvent::Completed { response_id, token_usage, end_turn } => Some((response_id, token_usage, end_turn)),
         _ => None }).expect("Completed present");
@@ -86,9 +86,9 @@ fn aggregates_tool_call_arguments_by_index() {
         ResponseEvent::OutputItemDone(ResponseItem::FunctionCall { name, arguments, call_id, .. }) => Some((name, arguments, call_id)),
         _ => None }).expect("FunctionCall present");
     assert_eq!(fc.0, "get_weather");
-    assert_eq!(fc.1, "{\"city\":\"SF\"}"); // 按 index 聚合完整 arguments
-    assert_eq!(fc.2, "call_1");            // call_id 回填(§4.8)
-    // tool_calls 时 end_turn=false
+    assert_eq!(fc.1, "{\"city\":\"SF\"}"); // arguments fully aggregated by index
+    assert_eq!(fc.2, "call_1");            // call_id backfill (§4.8)
+    // end_turn=false for tool_calls
     let end_turn = events.iter().find_map(|e| match e {
         ResponseEvent::Completed { end_turn, .. } => Some(*end_turn), _ => None }).unwrap();
     assert_eq!(end_turn, Some(false));
@@ -104,12 +104,12 @@ fn missing_id_synthesizes_response_id() {
 }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [ ] **Step 2: Run and confirm failure**
 
 Run: `cd zmod/llm-switch && cargo test --test chat_sse_test`
-Expected: 编译失败。
+Expected: compile failure.
 
-- [ ] **Step 3: 实现 `chat_sse.rs`**
+- [ ] **Step 3: Implement `chat_sse.rs`**
 
 ```rust
 use serde_json::Value;
@@ -150,7 +150,7 @@ impl ChatSseState {
         if let Some(content) = delta.and_then(|d| d.get("content")).and_then(|v| v.as_str()) {
             if !content.is_empty() {
                 self.text.push_str(content);
-                out.push(ResponseEvent::OutputTextDelta(content.to_string())); // 仅展示
+                out.push(ResponseEvent::OutputTextDelta(content.to_string())); // display only
             }
         }
         if let Some(tcs) = delta.and_then(|d| d.get("tool_calls")).and_then(|v| v.as_array()) {
@@ -169,7 +169,7 @@ impl ChatSseState {
         Ok(out)
     }
 
-    /// [DONE] 时:先发各 FunctionCall 完成项,再发合成 assistant message,最后 Completed(§4.5 顺序)。
+    /// On [DONE]: first emit each FunctionCall completion item, then the synthesized assistant message, and finally Completed (§4.5 order).
     pub(crate) fn finish(&mut self) -> Vec<ResponseEvent> {
         let mut out = Vec::new();
         for (_idx, acc) in std::mem::take(&mut self.tool_calls) {
@@ -211,7 +211,7 @@ fn map_end_turn(fr: Option<&str>) -> Option<bool> {
     match fr {
         Some("stop") => Some(true),
         Some("tool_calls") => Some(false),
-        _ => None, // length / 未知
+        _ => None, // length / unknown
     }
 }
 
@@ -227,11 +227,11 @@ fn map_usage(u: &Value) -> TokenUsage {
 }
 ```
 
-> `synth_id` 用递增计数器而非随机/时间(crate 内无随机源,保证测试可复现);只要在一次流内 call/synth 一致即可。spec §4.5 说"缺则合成 `llmswitch-<uuid>`",这里用确定计数器满足"缺则合成且稳定"。
+> `synth_id` uses an incrementing counter rather than random/time (the crate has no random source, so this keeps tests reproducible); it only needs to be consistent between call/synth within a single stream. Spec §4.5 says "if missing, synthesize `llmswitch-<uuid>`"; here a deterministic counter satisfies "synthesize when missing, and be stable".
 
-- [ ] **Step 4: 测试转发函数**
+- [ ] **Step 4: Test-forwarding function**
 
-在 `lib.rs` 的 `testing` 模块加:
+Add to the `testing` module in `lib.rs`:
 
 ```rust
 pub fn translate_chat_sse_for_test(chunks: &[serde_json::Value], done: bool) -> Result<Vec<codex_api::ResponseEvent>, crate::ConnError> {
@@ -243,18 +243,18 @@ pub fn translate_chat_sse_for_test(chunks: &[serde_json::Value], done: bool) -> 
 }
 ```
 
-(相应在 `connector/chat.rs` 把 `mod chat_sse;` 设为 `pub(crate) mod chat_sse;` 以便 testing 访问。)
+(Correspondingly, change `mod chat_sse;` to `pub(crate) mod chat_sse;` in `connector/chat.rs` so that testing can access it.)
 
-- [ ] **Step 5: 运行测试确认通过**
+- [ ] **Step 5: Run the tests and confirm they pass**
 
 Run: `cd zmod/llm-switch && cargo test --test chat_sse_test`
-Expected: 3 个测试 PASS。
+Expected: 3 tests PASS.
 
-- [ ] **Step 6: 黄金 SSE fixture**
+- [ ] **Step 6: Golden SSE fixture**
 
-从 `../3rd/proxy/rust-llm-proxy` 的 OpenAiChat 流式测试取 1 段真实 chunk 序列,落 `tests/fixtures/chat_sse_*.jsonl`(每行一个 chunk),测试里逐行解析喂 `push_chunk`,断言事件序列。
+Take one real chunk sequence from the OpenAiChat streaming tests in `../3rd/proxy/rust-llm-proxy`, drop it into `tests/fixtures/chat_sse_*.jsonl` (one chunk per line), and in the test parse it line by line, feed `push_chunk`, and assert the event sequence.
 
-- [ ] **Step 7: 提交**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add zmod/llm-switch/src/connector/chat_sse.rs zmod/llm-switch/src/connector/chat.rs zmod/llm-switch/src/lib.rs zmod/llm-switch/tests/chat_sse_test.rs zmod/llm-switch/tests/fixtures

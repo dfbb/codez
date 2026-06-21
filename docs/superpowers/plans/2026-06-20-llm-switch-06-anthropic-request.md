@@ -1,26 +1,26 @@
-# Task 06 — anthropic 出站请求构造
+# Task 06 — anthropic Outbound Request Construction
 
-> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development 或 executing-plans。先读 [总索引](2026-06-20-llm-switch-00-index.md) Global Constraints。结构与 [Task 04](2026-06-20-llm-switch-04-chat-request.md) 对称,但目标是 Anthropic Messages,差异点见下。
+> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development or executing-plans. First read the [master index](2026-06-20-llm-switch-00-index.md) Global Constraints. The structure mirrors [Task 04](2026-06-20-llm-switch-04-chat-request.md), but the target is Anthropic Messages; see the differences below.
 
-**Goal:** 实现 `connector/anthropic_req.rs`:codex `ResponsesApiRequest` → Anthropic Messages 请求 JSON。差异于 chat:`system` 走顶层;消息 role 仅 user/assistant;`FunctionCall` → assistant `content[tool_use]`(**arguments 字符串 parse 成对象**);`FunctionCallOutput` → user `content[tool_result]`(`is_error` 原生);**`max_tokens` 必填**(default_max_tokens 兜底 4096);`parallel_tool_calls==false` → `tool_choice.disable_parallel_tool_use=true`;**无** tool 消息扁平重排(content block 按回合归组)。
+**Goal:** Implement `connector/anthropic_req.rs`: codex `ResponsesApiRequest` → Anthropic Messages request JSON. Differences from chat: `system` goes at the top level; message roles are limited to user/assistant; `FunctionCall` → assistant `content[tool_use]` (**arguments string parsed into an object**); `FunctionCallOutput` → user `content[tool_result]` (`is_error` native); **`max_tokens` is required** (default_max_tokens falls back to 4096); `parallel_tool_calls==false` → `tool_choice.disable_parallel_tool_use=true`; **no** tool-message flattening/reordering (content blocks are grouped by turn).
 
-**覆盖 spec:** §4.3、§4.0/§4.0b、§4.6、§4.8、§4.9、§4.10(孤儿修复,无重排)、§4.11、§7.1。
+**Spec coverage:** §4.3, §4.0/§4.0b, §4.6, §4.8, §4.9, §4.10 (orphan repair, no reordering), §4.11, §7.1.
 
 **Files:**
 - Create: `zmod/llm-switch/src/connector/anthropic_req.rs`
-- Modify: `zmod/llm-switch/src/connector/anthropic.rs`(`mod anthropic_req;`)
+- Modify: `zmod/llm-switch/src/connector/anthropic.rs` (`mod anthropic_req;`)
 - Test: `zmod/llm-switch/tests/anthropic_request_test.rs`
 
 **Interfaces:**
-- Produces:`pub(crate) fn build_anthropic_request(req, ctx) -> Result<serde_json::Value, ConnError>`;testing 转发 `build_anthropic_request_for_test`。
+- Produces: `pub(crate) fn build_anthropic_request(req, ctx) -> Result<serde_json::Value, ConnError>`; testing forwards via `build_anthropic_request_for_test`.
 
 ---
 
-- [ ] **Step 0: 沿用 Task 04 Step 0 已钉死的类型**(ContentItem / FunctionCallOutputBody / FunctionCallOutputContentItem / ResponseItem 全变体)。
+- [ ] **Step 0: Reuse the types already pinned down in Task 04 Step 0** (ContentItem / FunctionCallOutputBody / FunctionCallOutputContentItem / all ResponseItem variants).
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: Write failing tests**
 
-创建 `zmod/llm-switch/tests/anthropic_request_test.rs`:
+Create `zmod/llm-switch/tests/anthropic_request_test.rs`:
 
 ```rust
 use codez_llm_switch::testing::{build_anthropic_request_for_test as build, dummy_ctx_anthropic, sample_request};
@@ -68,7 +68,7 @@ fn function_call_becomes_tool_use_with_parsed_object() {
     assert_eq!(block["type"], "tool_use");
     assert_eq!(block["id"], "call_1");
     assert_eq!(block["name"], "get_weather");
-    assert_eq!(block["input"]["city"], "SF"); // arguments 字符串 → 对象
+    assert_eq!(block["input"]["city"], "SF"); // arguments string → object
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn tool_output_maps_is_error() {
             output: FunctionCallOutputPayload { body: FunctionCallOutputBody::Text("boom".into()), success: Some(false) }, metadata: None },
     ];
     let v = build(&req, &ctx()).unwrap();
-    // tool_result 在某个 user 消息的 content block 里
+    // tool_result lives in a content block of some user message
     let tr = find_block(&v, "tool_result").expect("tool_result present");
     assert_eq!(tr["tool_use_id"], "c");
     assert_eq!(tr["is_error"], true);
@@ -104,9 +104,9 @@ fn tools_map_to_input_schema() {
     assert_eq!(v["tools"][0]["input_schema"]["type"], "object");
 }
 
-// 硬失败 / 丢弃断言与 Task 04 同款:namespaced call、custom tool、image、encrypted、
+// Hard-fail / drop assertions are the same as in Task 04: namespaced call, custom tool, image, encrypted,
 // LocalShellCall/ToolSearch*/WebSearch/ImageGeneration/Custom*/Compaction/ContextCompaction/Other → is_err();
-// Reasoning / CompactionTrigger → 不报错且不进 messages。逐个补齐。
+// Reasoning / CompactionTrigger → no error and not added to messages. Fill these in one by one.
 
 fn find_block<'a>(v: &'a serde_json::Value, ty: &str) -> Option<&'a serde_json::Value> {
     v["messages"].as_array()?.iter()
@@ -116,14 +116,14 @@ fn find_block<'a>(v: &'a serde_json::Value, ty: &str) -> Option<&'a serde_json::
 }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [ ] **Step 2: Run to confirm failure**
 
 Run: `cd zmod/llm-switch && cargo test --test anthropic_request_test`
-Expected: 编译失败。
+Expected: compilation failure.
 
-- [ ] **Step 3: 实现 `anthropic_req.rs`**
+- [ ] **Step 3: Implement `anthropic_req.rs`**
 
-要点:Anthropic 把 tool_use(assistant)与 tool_result(user)都作为 content block;需要把相邻同 role 的 block 合并进同一条消息(简化:逐 item 产出消息,连续同 role 合并)。
+Key points: Anthropic represents both tool_use (assistant) and tool_result (user) as content blocks; you need to merge adjacent same-role blocks into a single message (simplification: emit messages item by item, merging consecutive same-role items).
 
 ```rust
 use serde_json::{json, Value};
@@ -136,7 +136,7 @@ pub(crate) fn build_anthropic_request(
     req: &codex_api::ResponsesApiRequest,
     ctx: &EgressCtx,
 ) -> Result<Value, ConnError> {
-    // (role, Vec<content block>) 的有序列;连续同 role 合并 block
+    // An ordered list of (role, Vec<content block>); merge blocks for consecutive same roles
     let mut turns: Vec<(String, Vec<Value>)> = Vec::new();
     let mut push_block = |role: &str, block: Value, turns: &mut Vec<(String, Vec<Value>)>| {
         if let Some(last) = turns.last_mut() {
@@ -151,7 +151,7 @@ pub(crate) fn build_anthropic_request(
     for item in &req.input {
         match item {
             ResponseItem::Message { role, content, .. } => {
-                let r = if role == "assistant" { "assistant" } else { "user" }; // system 已走顶层
+                let r = if role == "assistant" { "assistant" } else { "user" }; // system already at top level
                 for c in content {
                     push_block(r, content_item_to_block(c)?, &mut turns);
                 }
@@ -187,7 +187,7 @@ pub(crate) fn build_anthropic_request(
         }
     }
 
-    // 孤儿调用 → 注入占位 tool_result(§4.10)
+    // Orphan calls → inject placeholder tool_result (§4.10)
     for call_id in calls_needing_result {
         tracing::warn!("injecting placeholder tool_result for orphan call {call_id}");
         push_block("user", json!({"type":"tool_result","tool_use_id":call_id,
@@ -206,43 +206,43 @@ pub(crate) fn build_anthropic_request(
     });
     if !req.instructions.is_empty() { body["system"] = json!(req.instructions); }
 
-    let tools = map_tools(&req.tools)?; // 与 chat 同款分级,但输出 {name,description,input_schema}
+    let tools = map_tools(&req.tools)?; // same tiering as chat, but outputs {name,description,input_schema}
     if let Some(tools) = tools {
         body["tools"] = Value::Array(tools);
-        let mut tc = map_tool_choice(&req.tool_choice)?; // auto/any/tool;不可表达强制 → 硬失败
+        let mut tc = map_tool_choice(&req.tool_choice)?; // auto/any/tool; cannot express forced → hard fail
         if !req.parallel_tool_calls {
             let obj = tc.get_or_insert_with(|| json!({"type":"auto"}));
             obj["disable_parallel_tool_use"] = json!(true); // §4.11
         }
         if let Some(tc) = tc { body["tool_choice"] = tc; }
     }
-    apply_field_downgrade(&mut body, req); // §7.1:reasoning→thinking、text.format→降级/warn,见下
+    apply_field_downgrade(&mut body, req); // §7.1: reasoning→thinking, text.format→downgrade/warn, see below
     Ok(body)
 }
 ```
 
-helper:
-- `content_item_to_block(&ContentItem)`:`InputText{text}`/`OutputText{text}` → `{"type":"text","text":...}`;`InputImage` → `ConnError::HardFail`(§4.9)。
-- `tool_result_block(call_id, payload)`:body 文本 → `{"type":"tool_result","tool_use_id":call_id,"content":<text>}`;`ContentItems` 图片/加密 → 硬失败;`success==Some(false)` → 加 `"is_error": true`(§4.6)。
-- `map_tools`:与 chat 同分级(只放行 `function`),输出 `{"name","description","input_schema": parameters}`。
-- `map_tool_choice(&str)`:`"auto"`→`{"type":"auto"}`;`"none"`→`{"type":"none"}`;`"required"`→`{"type":"any"}`;`{"type":"function","name":...}`(JSON-in-string)→`{"type":"tool","name":...}`;其它不可表达 → `ConnError::HardFail`(§4.11)。
-- `apply_field_downgrade`(§7.1):① `req.reasoning` 有 → `body["thinking"]={"type":"enabled",...}`(按 effort 近似),否则若 `Some` warn 丢弃;② `req.text` 含结构化输出 schema → anthropic 无原生 response_format,降级为系统指令追加或仅 warn(实现者择一并注明),不得静默丢失输出约束;`store`/`include`/`prompt_cache_key`/`service_tier`/`client_metadata` 不复制(静默丢)。
-- `variant_name`:复用 chat_req 的(抽到 `connector/mod.rs` 公共 `pub(crate) fn variant_name(&ResponseItem) -> &'static str`,chat/anthropic 共用)。
+helpers:
+- `content_item_to_block(&ContentItem)`: `InputText{text}`/`OutputText{text}` → `{"type":"text","text":...}`; `InputImage` → `ConnError::HardFail` (§4.9).
+- `tool_result_block(call_id, payload)`: body text → `{"type":"tool_result","tool_use_id":call_id,"content":<text>}`; `ContentItems` image/encrypted → hard fail; `success==Some(false)` → add `"is_error": true` (§4.6).
+- `map_tools`: same tiering as chat (only `function` allowed through), outputs `{"name","description","input_schema": parameters}`.
+- `map_tool_choice(&str)`: `"auto"`→`{"type":"auto"}`; `"none"`→`{"type":"none"}`; `"required"`→`{"type":"any"}`; `{"type":"function","name":...}` (JSON-in-string)→`{"type":"tool","name":...}`; anything else that cannot be expressed → `ConnError::HardFail` (§4.11).
+- `apply_field_downgrade` (§7.1): ① if `req.reasoning` is present → `body["thinking"]={"type":"enabled",...}` (approximated by effort), otherwise warn and drop if `Some`; ② if `req.text` contains a structured-output schema → anthropic has no native response_format, so downgrade by appending it to the system instructions or just warn (the implementer picks one and notes it), and must not silently drop the output constraint; `store`/`include`/`prompt_cache_key`/`service_tier`/`client_metadata` are not copied (silently dropped).
+- `variant_name`: reuse the one from chat_req (extracted into a shared `pub(crate) fn variant_name(&ResponseItem) -> &'static str` in `connector/mod.rs`, shared by chat/anthropic).
 
-- [ ] **Step 4: 挂模块 + testing 转发**
+- [ ] **Step 4: Wire up the module + testing forwarding**
 
-`connector/anthropic.rs` 加 `mod anthropic_req; pub(crate) use anthropic_req::build_anthropic_request;`。`lib.rs` testing 模块加 `build_anthropic_request_for_test`、`dummy_ctx_anthropic(model, default_max_tokens)`(`auth=XApiKey`、`anthropic_version=Some("2023-06-01")`)。
+In `connector/anthropic.rs` add `mod anthropic_req; pub(crate) use anthropic_req::build_anthropic_request;`. In the `lib.rs` testing module add `build_anthropic_request_for_test` and `dummy_ctx_anthropic(model, default_max_tokens)` (`auth=XApiKey`, `anthropic_version=Some("2023-06-01")`).
 
-- [ ] **Step 5: 运行测试确认通过**
+- [ ] **Step 5: Run tests to confirm they pass**
 
 Run: `cd zmod/llm-switch && cargo test --test anthropic_request_test`
-Expected: 全 PASS。
+Expected: all PASS.
 
-- [ ] **Step 6: 黄金 fixture(基准来源,§8 必须明确)**
+- [ ] **Step 6: Golden fixture (baseline source, §8 must be explicit)**
 
-anthropic 无 Rust 基准 → 用 `../3rd/proxy/llm-rosetta` 的 Python anthropic converter(`tests/converters/anthropic`)生成期望输出,固化成 `tests/fixtures/anthropic_req_*.expected.json`;或声明**自建 fixture**(人工核对 Anthropic Messages 官方格式)。在测试文件头注释里写明你采用哪一种,**不得**笼统写"对应 converter"。
+anthropic has no Rust baseline → use the Python anthropic converter in `../3rd/proxy/llm-rosetta` (`tests/converters/anthropic`) to generate the expected output and freeze it into `tests/fixtures/anthropic_req_*.expected.json`; or declare a **self-authored fixture** (manually verified against the official Anthropic Messages format). State which one you used in a comment at the top of the test file; **do not** vaguely write "corresponds to the converter".
 
-- [ ] **Step 7: 提交**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add zmod/llm-switch/src/connector/anthropic_req.rs zmod/llm-switch/src/connector/anthropic.rs zmod/llm-switch/src/lib.rs zmod/llm-switch/tests/anthropic_request_test.rs zmod/llm-switch/tests/fixtures
