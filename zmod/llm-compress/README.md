@@ -62,16 +62,20 @@ per_item_min_bytes = 512   # 低于此字节数的 item 跳过
 max_bytes = 65536
 
 [llm_compress.preprocess]
-strip_ansi = true
-strip_progress = true
+strip_progress = true       # 删进度条/下载行
+collapse_blank = true       # 连续空行归一
+truncate_line_bytes = 2000  # 超长单行按字节截断(0=关闭)
+dedup_consecutive = true    # 连续重复行折叠为计数
+blob_min_bytes = 256        # 超此长度的 base64/blob 行折叠(0=关闭)
 
 [llm_compress.ccr]
 enabled = true
-max_age_secs = 3600
+max_files_per_thread = 200      # 单线程目录文件数上限
+max_thread_bytes = 67108864     # 单线程目录总字节上限(64 MiB)
+max_file_bytes = 4194304        # 单个落盘文件上限(4 MiB),超限则放弃压缩返回原文
 
 [llm_compress.protect]
-# 保护正则(命中则整段不压缩)
-patterns = []
+error_max_bytes = 8192      # 含错误标记且小于此字节的输出整段不压缩(0=关闭保护)
 ```
 
 缺失文件或 table 时,对应功能默认**关闭**(fail-safe)。
