@@ -1,0 +1,5 @@
+PASSED test_foo
+PASSED test_bar
+FAILED test_baz
+assert 1 == 2
+# variant 1

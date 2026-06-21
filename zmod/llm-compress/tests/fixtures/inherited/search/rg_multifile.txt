@@ -1,0 +1,15 @@
+src/config.rs
+10:pub struct Config {
+11:    pub enabled: bool,
+12:    pub timeout: u64,
+13:}
+
+src/server.rs
+45:    let config = Config::load();
+46:    if config.enabled {
+47:        start_server(config.timeout);
+48:    }
+
+tests/config_test.rs
+8:    let cfg = Config { enabled: true, timeout: 30 };
+9:    assert!(cfg.enabled);

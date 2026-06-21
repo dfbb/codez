@@ -1,0 +1,177 @@
+diff --git a/file_0.py b/file_0.py
+--- a/file_0.py
++++ b/file_0.py
+@@ -1,10 +1,12 @@
+ context_0_0
+ context_1_0
+ context_2_0
+ context_3_0
+ context_4_0
+-removed_0_0
+-removed_1_0
+-removed_2_0
++added_0_0
++added_1_0
++added_2_0
++added_3_0
++added_4_0
+ tail_0_0
+ tail_1_0
+ tail_2_0
+ tail_3_0
+ tail_4_0
+diff --git a/file_1.py b/file_1.py
+--- a/file_1.py
++++ b/file_1.py
+@@ -1,10 +1,12 @@
+ context_0_1
+ context_1_1
+ context_2_1
+ context_3_1
+ context_4_1
+-removed_0_1
+-removed_1_1
+-removed_2_1
++added_0_1
++added_1_1
++added_2_1
++added_3_1
++added_4_1
+ tail_0_1
+ tail_1_1
+ tail_2_1
+ tail_3_1
+ tail_4_1
+diff --git a/file_2.py b/file_2.py
+--- a/file_2.py
++++ b/file_2.py
+@@ -1,10 +1,12 @@
+ context_0_2
+ context_1_2
+ context_2_2
+ context_3_2
+ context_4_2
+-removed_0_2
+-removed_1_2
+-removed_2_2
++added_0_2
++added_1_2
++added_2_2
++added_3_2
++added_4_2
+ tail_0_2
+ tail_1_2
+ tail_2_2
+ tail_3_2
+ tail_4_2
+diff --git a/file_3.py b/file_3.py
+--- a/file_3.py
++++ b/file_3.py
+@@ -1,10 +1,12 @@
+ context_0_3
+ context_1_3
+ context_2_3
+ context_3_3
+ context_4_3
+-removed_0_3
+-removed_1_3
+-removed_2_3
++added_0_3
++added_1_3
++added_2_3
++added_3_3
++added_4_3
+ tail_0_3
+ tail_1_3
+ tail_2_3
+ tail_3_3
+ tail_4_3
+diff --git a/file_4.py b/file_4.py
+--- a/file_4.py
++++ b/file_4.py
+@@ -1,10 +1,12 @@
+ context_0_4
+ context_1_4
+ context_2_4
+ context_3_4
+ context_4_4
+-removed_0_4
+-removed_1_4
+-removed_2_4
++added_0_4
++added_1_4
++added_2_4
++added_3_4
++added_4_4
+ tail_0_4
+ tail_1_4
+ tail_2_4
+ tail_3_4
+ tail_4_4
+diff --git a/file_5.py b/file_5.py
+--- a/file_5.py
++++ b/file_5.py
+@@ -1,10 +1,12 @@
+ context_0_5
+ context_1_5
+ context_2_5
+ context_3_5
+ context_4_5
+-removed_0_5
+-removed_1_5
+-removed_2_5
++added_0_5
++added_1_5
++added_2_5
++added_3_5
++added_4_5
+ tail_0_5
+ tail_1_5
+ tail_2_5
+ tail_3_5
+ tail_4_5
+diff --git a/file_6.py b/file_6.py
+--- a/file_6.py
++++ b/file_6.py
+@@ -1,10 +1,12 @@
+ context_0_6
+ context_1_6
+ context_2_6
+ context_3_6
+ context_4_6
+-removed_0_6
+-removed_1_6
+-removed_2_6
++added_0_6
++added_1_6
++added_2_6
++added_3_6
++added_4_6
+ tail_0_6
+ tail_1_6
+ tail_2_6
+ tail_3_6
+ tail_4_6
+diff --git a/file_7.py b/file_7.py
+--- a/file_7.py
++++ b/file_7.py
+@@ -1,10 +1,12 @@
+ context_0_7
+ context_1_7
+ context_2_7
+ context_3_7
+ context_4_7
+-removed_0_7
+-removed_1_7
+-removed_2_7
++added_0_7
++added_1_7
++added_2_7
++added_3_7
++added_4_7
+ tail_0_7
+ tail_1_7
+ tail_2_7
+ tail_3_7
+ tail_4_7
+# variant 1
