@@ -16,9 +16,16 @@ impl Compressor for JsonCompressor {
         "json"
     }
 
-    /// 能被 serde_json 解析即认领。
+    /// 能被 serde_json 解析为对象/数组才认领。
+    ///
+    /// 顶层标量(字符串/数字/布尔/null)虽是合法 JSON,但 JsonCompressor 对其
+    /// 无结构可压(只会 Unchanged),若认领会挡住兜底链——例如一段几十 KB 的纯
+    /// 文本恰好是合法 JSON 字符串字面量时,Truncate 永远轮不到。故让渡给下游。
     fn detect(&self, text: &str) -> bool {
-        serde_json::from_str::<Value>(text).is_ok()
+        matches!(
+            serde_json::from_str::<Value>(text),
+            Ok(Value::Object(_)) | Ok(Value::Array(_))
+        )
     }
 
     fn compress(&self, text: &str, budget: &Budget) -> CompressOutcome {
@@ -71,7 +78,7 @@ fn compress_value(v: &mut Value, depth: usize, cfg: &JsonCfg) {
             // 先抽样(如超长),再对保留下来的元素递归(深度 +1)。
             if items.len() > cfg.max_array_items {
                 let len = items.len();
-                let keep_head = (cfg.max_array_items + 1) / 2; // ceil
+                let keep_head = cfg.max_array_items.div_ceil(2); // ceil
                 let keep_tail = cfg.max_array_items / 2; // floor
                 let omitted = len.saturating_sub(keep_head + keep_tail);
 

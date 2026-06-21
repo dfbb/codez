@@ -16,12 +16,14 @@ fn budget(cfg: &Config) -> Budget<'_> {
 }
 
 #[test]
-fn detect_accepts_valid_json_rejects_garbage() {
+fn detect_accepts_objects_arrays_rejects_scalars_and_garbage() {
     let c = JsonCompressor;
+    // 对象/数组:认领
     assert!(c.detect(r#"{"a":1,"b":[1,2,3]}"#));
     assert!(c.detect("[1, 2, 3]"));
-    assert!(c.detect("\"a quoted string is valid json\""));
-    assert!(c.detect("123"));
+    // 顶层标量虽是合法 JSON,但无结构可压 → 让渡给兜底链,不认领
+    assert!(!c.detect("\"a quoted string is valid json\""));
+    assert!(!c.detect("123"));
     // 非 JSON
     assert!(!c.detect("not json {"));
     assert!(!c.detect("{unquoted: key}"));

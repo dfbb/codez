@@ -75,6 +75,28 @@ fn ansi_escapes_are_stripped() {
 }
 
 #[test]
+fn lone_esc_before_multibyte_char_preserves_utf8() {
+    // 非 CSI 的孤立 ESC 紧跟多字节 UTF-8 字符(中文):
+    // strip_ansi 只能删 ESC 本字节,绝不能盲吞后续字节(否则切断"中"字的首字节,
+    // 留下悬空续字节 → 破坏 UTF-8)。这里验证 ESC 被删、中文完整保留。
+    let cfg = cfg_with(1, 1, 16384);
+    // 每行一个孤立 ESC(非 '[' 跟随)+ 较长中文,造足够多行使省略收益超过占位标记开销。
+    let lines: Vec<String> = (0..50)
+        .map(|i| format!("\x1b中文行{i:02}内容填充填充填充填充填充"))
+        .collect();
+    let input = lines.join("\n");
+    let out = TruncateCompressor.compress(&input, &budget(&cfg));
+    let CompressOutcome::Compressed { text, .. } = out else {
+        panic!("expected Compressed");
+    };
+    // ESC 被剥离;
+    assert!(!text.contains('\x1b'));
+    // 头尾中文字符完整保留(未被切断为非法 UTF-8);
+    assert!(text.contains("中文行00内容填充"));
+    assert!(text.contains("中文行49内容填充"));
+}
+
+#[test]
 fn hard_truncate_does_not_split_utf8() {
     // head=tail=0 → 全体进占位;占位标记本身含中文(多字节),
     // 设极小 max_bytes 逼出硬截断,断言输出仍是合法 UTF-8(能成功转回 &str)。

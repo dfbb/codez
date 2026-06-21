@@ -26,7 +26,7 @@ let store = request.store;
 self.client.prepare_response_items_for_request(&mut request.input, store);
 
 // ── llm-compress 前置拦截（独立 zmod，不依赖 switch）──
-let queryid = &responses_metadata.session_id;   // codex 现成可达，见 §3
+let queryid = &responses_metadata.thread_id;   // codex 现成可达，见 §3
 let request = codez_llm_compress::transform(
     request,
     &client_setup.api_provider,
@@ -51,24 +51,26 @@ let stream_result = match codez_llm_switch::route(...) {
 - codex 侧侵入仅两处，封装在 `patches/llm-compress.patch`：
   1. `core/Cargo.toml` 增加依赖 `codez-llm-compress = { path = "../../zmod/llm-compress" }`
   2. `client.rs` 增加上述 queryid 取值 + `transform()` 调用两行。
-- **不修改任何 codex 函数签名**：`queryid` 由作用域内现成的入参 `responses_metadata.session_id` 取得。
+- **不修改任何 codex 函数签名**：`queryid` 由作用域内现成的入参 `responses_metadata.thread_id` 取得。
 
 ---
 
 ## 3. queryid 来源
 
-`queryid` = `responses_metadata.session_id`（`CodexResponsesMetadata` 字段，`pub(crate)`，core crate 内可达）。
+`queryid` = `responses_metadata.thread_id`（`CodexResponsesMetadata` 字段，`pub(crate)`，core crate 内可达）。
 
-该值即 codex 的 session/thread UUID，与 rollout 文件名中的 UUID 一致：
+> **修正（与实现/计划索引一致）**：早期草稿写 `session_id`，已改为 `thread_id`。原因：`session_id` 会被子 agent 继承父级、无法定位具体 rollout 文件；`thread_id`（`ThreadId`，UUIDv7）才与 rollout 文件名中的 UUID 精确对应。
+
+该值即 codex 的 thread UUID，与 rollout 文件名中的 UUID 一致：
 
 ```
 ~/.codex/sessions/2026/05/18/rollout-2026-05-18T13-35-50-019e3995-5cd9-75a2-b487-f7959835f69e.jsonl
-                                                          └────────────── session_id ──────────────┘
+                                                          └────────────── thread_id ──────────────┘
 ```
 
-来源链：rollout 首行 `session_meta.payload.id`（`ThreadId`，`protocol/src/protocol.rs` 的 `SessionMeta.id`）→ 转 String 存入 `CodexResponsesMetadata.session_id`（`core/src/responses_metadata.rs`）→ 作为入参传入 `stream_responses_api`。
+来源链：`CodexResponsesMetadata.thread_id`（`core/src/responses_metadata.rs`，由 session 的 `ThreadId.to_string()` 填入）→ 作为入参 `responses_metadata: &CodexResponsesMetadata` 传入 `stream_responses_api`，patch 取 `responses_metadata.thread_id.clone()`。
 
-因此压缩日志的 queryid 可与具体 rollout session 精确对应。
+因此压缩日志的 queryid 可与具体 rollout 文件精确对应。
 
 ---
 
@@ -184,7 +186,7 @@ dedup_repeats = true            # 折叠连续重复行为 "（上一行 ×N）"
 | 列 | 来源 |
 |----|------|
 | 时间戳 | RFC3339 UTC（`chrono`） |
-| queryid | `responses_metadata.session_id`（rollout 文件名 UUID） |
+| queryid | `responses_metadata.thread_id`（rollout 文件名 UUID） |
 | 压缩前字节 | transform 入口 input 项文本总字节 |
 | 压缩后字节 | transform 出口 input 项文本总字节 |
 
@@ -259,5 +261,5 @@ patches/llm-compress.patch    # core/Cargo.toml + client.rs 两处改动
 | 与 llm-switch 关系 | 独立 crate，集成点前置拦截 | 压缩对所有路径生效，含原生 OpenAI；不绑定 switch 命中 |
 | v1 压缩范围 | 内容路由 + 4 压缩器（Json/Diff/Log/Truncate） | 覆盖工具输出主要形态 |
 | 可逆性 | 不可逆 + 保守阈值 + fail-open | 简单可靠；占位标记显式告知省略 |
-| queryid | `responses_metadata.session_id` | 现成可达、与 rollout UUID 一致，不改 codex 签名 |
+| queryid | `responses_metadata.thread_id` | 现成可达、与 rollout 文件名 UUID 一致、子 agent 不串，不改 codex 签名 |
 | 日志格式 | CSV 四列无表头 | 简洁，易解析 |

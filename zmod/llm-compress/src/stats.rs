@@ -59,7 +59,13 @@ pub fn log_compression_to(
         std::fs::create_dir_all(parent)?;
     }
     let mut file = OpenOptions::new().append(true).create(true).open(path)?;
-    let line = format!("{timestamp_rfc3339},{queryid},{before},{after}\n");
+    // 清洗 queryid:剔除会破坏 CSV 行结构的字符(逗号 / CR / LF),保证恒为四列。
+    // 当前 queryid = thread_id(UUID)本不含这些字符;此处加固公开 API,防未来其它调用方传入任意串。
+    let safe_qid: String = queryid
+        .chars()
+        .filter(|&c| c != ',' && c != '\r' && c != '\n')
+        .collect();
+    let line = format!("{timestamp_rfc3339},{safe_qid},{before},{after}\n");
     file.write_all(line.as_bytes())?;
     Ok(())
 }

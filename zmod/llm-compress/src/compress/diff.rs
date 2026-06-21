@@ -129,25 +129,11 @@ impl Compressor for DiffCompressor {
                 continue;
             }
             // 上下文行:检查上方 ctx 行内是否有变更行。
-            let mut near_change = false;
-            // 向上看 ctx 行。
+            // 向上看 ctx 行 [lo, i),向下看 ctx 行 [i+1, hi)。
             let lo = i.saturating_sub(ctx);
-            for j in lo..i {
-                if is_change[j] {
-                    near_change = true;
-                    break;
-                }
-            }
-            // 向下看 ctx 行。
-            if !near_change {
-                let hi = (i + ctx + 1).min(n);
-                for j in (i + 1)..hi {
-                    if is_change[j] {
-                        near_change = true;
-                        break;
-                    }
-                }
-            }
+            let hi = (i + ctx + 1).min(n);
+            let near_change =
+                is_change[lo..i].iter().any(|&c| c) || is_change[i + 1..hi].iter().any(|&c| c);
             keep[i] = near_change;
         }
 

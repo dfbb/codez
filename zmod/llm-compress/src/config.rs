@@ -1,8 +1,10 @@
 //! 读取 ~/.codex/config-zmod.toml 的 [llm_compress] 段。
 //! fail-safe:文件/节缺失或解析失败 → enabled=false + 默认阈值。
+//! `load()` 进程内读一次缓存(spec §5);`load_from()` 不缓存,供测试注入路径。
 
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -108,16 +110,30 @@ pub fn load_from(path: &std::path::Path) -> Config {
     match toml::from_str::<RootFile>(&text) {
         Ok(root) => root.llm_compress.unwrap_or_else(Config::disabled),
         Err(e) => {
-            tracing::warn!("llm-compress: config parse failed, disabling: {e}");
+            // 仅记错误位置(行列),不回显 message——它可能携带用户配置内容片段。
+            match e.span() {
+                Some(span) => tracing::warn!(
+                    "llm-compress: config parse failed at bytes {}..{}, disabling",
+                    span.start,
+                    span.end
+                ),
+                None => tracing::warn!("llm-compress: config parse failed, disabling"),
+            }
             Config::disabled()
         }
     }
 }
 
 /// 从默认路径 ~/.codex/config-zmod.toml 读取。
+///
+/// 进程内读一次缓存(spec §5):首次解析后存入 `OnceLock`,后续请求复用,
+/// 不再每次 transform 都读盘 + parse。测试用 `load_from` 绕开缓存。
 pub fn load() -> Config {
-    match config_path() {
-        Some(p) => load_from(&p),
-        None => Config::disabled(),
-    }
+    static CACHE: OnceLock<Config> = OnceLock::new();
+    CACHE
+        .get_or_init(|| match config_path() {
+            Some(p) => load_from(&p),
+            None => Config::disabled(),
+        })
+        .clone()
 }

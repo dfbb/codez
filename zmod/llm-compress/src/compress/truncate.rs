@@ -73,8 +73,10 @@ fn strip_ansi(input: &str) -> String {
                 // j 指向终止字节(若存在);整段连终止字节一并丢弃。
                 i = if j < bytes.len() { j + 1 } else { j };
             } else {
-                // 孤立 ESC 或非 CSI:丢弃 ESC 及其后一个字节(若有)。
-                i = if i + 1 < bytes.len() { i + 2 } else { i + 1 };
+                // 孤立 ESC 或非 CSI:只丢弃 ESC 本字节,保留其后字节。
+                // (不盲吞后一字节——它可能是多字节 UTF-8 的首字节,吞掉会留下
+                //  悬空续字节、破坏 UTF-8;ESC 自身是单字节 ASCII,删它安全。)
+                i += 1;
             }
         } else {
             out.push(bytes[i]);
