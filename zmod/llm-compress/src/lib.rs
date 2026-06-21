@@ -8,6 +8,8 @@ pub mod router;
 pub mod score;
 pub mod compress;
 pub mod stats;
+pub mod protect;
+pub mod preprocess;
 
 /// 是否启用压缩(读 ~/.codex/config-zmod.toml 的 [llm_compress].enabled)。
 pub fn enabled() -> bool {
