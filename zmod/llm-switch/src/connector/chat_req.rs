@@ -232,6 +232,13 @@ fn map_message(role: &str, content: &[ContentItem]) -> Result<Value, ConnError> 
             }
         }
     }
+    // role 归一到 Chat Completions 认得的集合：codex 会发 `developer`（开发者指令，
+    // 新版 OpenAI 约定），但 DeepSeek 等只认 system/user/assistant/tool —— 语义上
+    // developer 指令属系统级，归到 `system`。其余原样透传。
+    let role = match role {
+        "developer" => "system",
+        other => other,
+    };
     Ok(json!({"role": role, "content": text}))
 }
 

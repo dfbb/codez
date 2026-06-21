@@ -53,6 +53,34 @@ fn instructions_become_system_message() {
 }
 
 #[test]
+fn developer_role_maps_to_system() {
+    // codex 会发 role=developer（开发者指令），DeepSeek 等只认 system/user/assistant/tool。
+    let mut req = base_req();
+    req.instructions = "".into();
+    req.input = vec![
+        ResponseItem::Message {
+            id: None,
+            role: "developer".into(),
+            content: vec![ContentItem::InputText { text: "dev rules".into() }],
+            phase: None,
+            metadata: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "user".into(),
+            content: vec![ContentItem::InputText { text: "hi".into() }],
+            phase: None,
+            metadata: None,
+        },
+    ];
+    let v = build(&req, &ctx()).unwrap();
+    let msgs = v["messages"].as_array().unwrap();
+    assert_eq!(msgs[0]["role"], "system", "developer 应归一到 system");
+    assert_eq!(msgs[0]["content"], "dev rules");
+    assert_eq!(msgs[1]["role"], "user");
+}
+
+#[test]
 fn empty_instructions_no_system_message() {
     let mut req = base_req();
     req.instructions = "".into();
