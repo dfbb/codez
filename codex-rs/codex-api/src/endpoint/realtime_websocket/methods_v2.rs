@@ -40,19 +40,12 @@ pub(super) fn conversation_item_create_message(
     text: String,
     role: ConversationTextRole,
 ) -> RealtimeOutboundMessage {
-    let content_type = match role {
-        ConversationTextRole::Assistant => ConversationContentType::OutputText,
-        ConversationTextRole::User | ConversationTextRole::Developer => {
-            ConversationContentType::InputText
-        }
-    };
-
     RealtimeOutboundMessage::ConversationItemCreate {
         item: ConversationItemPayload::Message(ConversationMessageItem {
             r#type: ConversationItemType::Message,
             role,
             content: vec![ConversationItemContent {
-                r#type: content_type,
+                r#type: ConversationContentType::InputText,
                 text,
             }],
         }),

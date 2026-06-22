@@ -7,7 +7,6 @@ use codex_apply_patch::ApplyPatchAction;
 use codex_apply_patch::ApplyPatchFileChange;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::FileSystemSandboxPolicy;
-use codex_utils_path_uri::PathUri;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -92,11 +91,9 @@ pub(crate) fn convert_apply_patch_to_protocol(
                 new_content: _new_content,
             } => FileChange::Update {
                 unified_diff: unified_diff.clone(),
-                move_path: move_path.as_ref().map(PathUri::to_path_buf),
+                move_path: move_path.clone(),
             },
         };
-        // TODO(anp): Carry PathUri through patch protocol events once app-server and rollout
-        // compatibility no longer require path-flavored strings.
         result.insert(path.to_path_buf(), protocol_change);
     }
     result

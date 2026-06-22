@@ -133,7 +133,6 @@ impl McpConnectionManager {
         host_owned_codex_apps_enabled: bool,
         prefix_mcp_tool_names: bool,
         client_elicitation_capability: ElicitationCapability,
-        supports_openai_form_elicitation: bool,
         tool_plugin_provenance: ToolPluginProvenance,
         auth: Option<&CodexAuth>,
         elicitation_reviewer: Option<ElicitationReviewerHandle>,
@@ -210,7 +209,6 @@ impl McpConnectionManager {
                 runtime_context.clone(),
                 runtime_auth_provider,
                 client_elicitation_capability.clone(),
-                supports_openai_form_elicitation,
             );
             clients.insert(server_name.clone(), async_managed_client.clone());
             let tx_event = tx_event.clone();
@@ -370,12 +368,6 @@ impl McpConnectionManager {
             .get(server_name)
             .and_then(|metadata| metadata.origin.as_ref())
             .map(super::server::McpServerOrigin::as_str)
-    }
-
-    pub fn server_environment_id(&self, server_name: &str) -> Option<&str> {
-        self.server_metadata
-            .get(server_name)
-            .map(|metadata| metadata.environment_id.as_str())
     }
 
     pub fn server_pollutes_memory(&self, server_name: &str) -> bool {
@@ -547,20 +539,14 @@ impl McpConnectionManager {
         ))
     }
 
-    /// Returns resources from servers selected by `include_server`. Each key
-    /// is the server name and the value is a vector of resources.
-    pub async fn list_all_resources(
-        &self,
-        include_server: impl Fn(&str) -> bool,
-    ) -> HashMap<String, Vec<Resource>> {
+    /// Returns a single map that contains all resources. Each key is the
+    /// server name and the value is a vector of resources.
+    pub async fn list_all_resources(&self) -> HashMap<String, Vec<Resource>> {
         let mut join_set = JoinSet::new();
 
         let clients_snapshot = &self.clients;
 
-        for (server_name, async_managed_client) in clients_snapshot
-            .iter()
-            .filter(|(server_name, _)| include_server(server_name))
-        {
+        for (server_name, async_managed_client) in clients_snapshot {
             let server_name = server_name.clone();
             let Ok(managed_client) = async_managed_client.client().await else {
                 continue;
@@ -618,20 +604,14 @@ impl McpConnectionManager {
         aggregated
     }
 
-    /// Returns resource templates from servers selected by `include_server`.
-    /// Each key is the server name and the value is a vector of templates.
-    pub async fn list_all_resource_templates(
-        &self,
-        include_server: impl Fn(&str) -> bool,
-    ) -> HashMap<String, Vec<ResourceTemplate>> {
+    /// Returns a single map that contains all resource templates. Each key is the
+    /// server name and the value is a vector of resource templates.
+    pub async fn list_all_resource_templates(&self) -> HashMap<String, Vec<ResourceTemplate>> {
         let mut join_set = JoinSet::new();
 
         let clients_snapshot = &self.clients;
 
-        for (server_name, async_managed_client) in clients_snapshot
-            .iter()
-            .filter(|(server_name, _)| include_server(server_name))
-        {
+        for (server_name, async_managed_client) in clients_snapshot {
             let server_name_cloned = server_name.clone();
             let Ok(managed_client) = async_managed_client.client().await else {
                 continue;

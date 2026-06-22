@@ -1,5 +1,4 @@
 use codex_protocol::protocol::TokenUsage;
-use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AutoCompactWindowSnapshot {
@@ -14,8 +13,7 @@ enum AutoCompactWindowPrefill {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct AutoCompactWindow {
-    window_number: u64,
-    window_id: Uuid,
+    window_id: u64,
     new_context_window_requested: bool,
     /// Absolute input-token baseline for the current compaction window.
     ///
@@ -28,8 +26,7 @@ pub(super) struct AutoCompactWindow {
 impl AutoCompactWindow {
     pub(super) fn new() -> Self {
         Self {
-            window_number: 0,
-            window_id: Uuid::now_v7(),
+            window_id: 0,
             new_context_window_requested: false,
             prefill_input_tokens: None,
         }
@@ -39,24 +36,18 @@ impl AutoCompactWindow {
         self.prefill_input_tokens = None;
     }
 
-    pub(super) fn window_number(&self) -> u64 {
-        self.window_number
-    }
-
-    pub(super) fn window_id(&self) -> Uuid {
+    pub(super) fn window_id(&self) -> u64 {
         self.window_id
     }
 
-    pub(super) fn restore(&mut self, window_number: u64, window_id: Uuid) {
-        self.window_number = window_number;
+    pub(super) fn set_window_id(&mut self, window_id: u64) {
         self.window_id = window_id;
     }
 
-    pub(super) fn advance(&mut self) -> (u64, Uuid) {
-        self.window_number = self.window_number.saturating_add(1);
-        self.window_id = Uuid::now_v7();
+    pub(super) fn advance_window_id(&mut self) -> u64 {
+        self.window_id = self.window_id.saturating_add(1);
         self.new_context_window_requested = false;
-        (self.window_number, self.window_id)
+        self.window_id
     }
 
     pub(super) fn request_new_context_window(&mut self) {
@@ -117,22 +108,15 @@ mod tests {
     fn tracks_prefill_and_window_boundaries() {
         let mut window = AutoCompactWindow::new();
 
-        assert_eq!(window.window_number(), 0);
-        assert_eq!(window.window_id().get_version_num(), 7);
-        let restored_window_id = Uuid::now_v7();
-        window.restore(/*window_number*/ 3, restored_window_id);
-        assert_eq!(window.window_number(), 3);
-        assert_eq!(window.window_id(), restored_window_id);
+        assert_eq!(window.window_id(), 0);
+        window.set_window_id(/*window_id*/ 3);
+        assert_eq!(window.window_id(), 3);
         window.request_new_context_window();
         assert!(window.take_new_context_window_request());
         assert!(!window.take_new_context_window_request());
         window.request_new_context_window();
-        let (window_number, window_id) = window.advance();
-        assert_eq!(window_number, 4);
-        assert_eq!(window.window_number(), 4);
-        assert_eq!(window.window_id(), window_id);
-        assert_eq!(window_id.get_version_num(), 7);
-        assert_ne!(window_id, restored_window_id);
+        assert_eq!(window.advance_window_id(), 4);
+        assert_eq!(window.window_id(), 4);
         assert!(!window.take_new_context_window_request());
 
         assert_eq!(

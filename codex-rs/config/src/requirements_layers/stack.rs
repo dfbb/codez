@@ -18,7 +18,6 @@ use crate::ConfigRequirementsWithSources;
 use crate::RequirementSource;
 use crate::Sourced;
 use crate::merge::merge_toml_values;
-use std::cell::OnceCell;
 use std::io;
 use thiserror::Error;
 use toml::Value as TomlValue;
@@ -58,59 +57,29 @@ impl From<RequirementsCompositionError> for io::Error {
 pub fn compose_requirements(
     layers: impl IntoIterator<Item = RequirementsLayerEntry>,
 ) -> Result<Option<ConfigRequirementsWithSources>, RequirementsCompositionError> {
-    compose_requirements_with_hostname_resolver(layers, crate::host_name)
+    let hostname = crate::host_name();
+    compose_requirements_for_hostname(layers, hostname.as_deref())
 }
 
-#[cfg(test)]
 pub(super) fn compose_requirements_for_hostname(
     layers: impl IntoIterator<Item = RequirementsLayerEntry>,
     hostname: Option<&str>,
 ) -> Result<Option<ConfigRequirementsWithSources>, RequirementsCompositionError> {
-    let hostname = hostname.map(str::to_string);
-    compose_requirements_with_hostname_resolver_and_hook_directory(
+    compose_requirements_for_hostname_and_hook_directory(
         layers,
-        move || hostname.clone(),
+        hostname,
         HookDirectoryField::current_platform(),
     )
 }
 
-#[cfg(test)]
 pub(super) fn compose_requirements_for_hostname_and_hook_directory(
     layers: impl IntoIterator<Item = RequirementsLayerEntry>,
     hostname: Option<&str>,
     hook_directory_field: HookDirectoryField,
 ) -> Result<Option<ConfigRequirementsWithSources>, RequirementsCompositionError> {
-    let hostname = hostname.map(str::to_string);
-    compose_requirements_with_hostname_resolver_and_hook_directory(
-        layers,
-        move || hostname.clone(),
-        hook_directory_field,
-    )
-}
-
-fn compose_requirements_with_hostname_resolver(
-    layers: impl IntoIterator<Item = RequirementsLayerEntry>,
-    hostname_resolver: impl Fn() -> Option<String>,
-) -> Result<Option<ConfigRequirementsWithSources>, RequirementsCompositionError> {
-    compose_requirements_with_hostname_resolver_and_hook_directory(
-        layers,
-        hostname_resolver,
-        HookDirectoryField::current_platform(),
-    )
-}
-
-fn compose_requirements_with_hostname_resolver_and_hook_directory(
-    layers: impl IntoIterator<Item = RequirementsLayerEntry>,
-    hostname_resolver: impl Fn() -> Option<String>,
-    hook_directory_field: HookDirectoryField,
-) -> Result<Option<ConfigRequirementsWithSources>, RequirementsCompositionError> {
-    // Evaluate every layer in this composition against the same hostname while
-    // keeping resolution lazy when no layer needs remote sandbox matching.
-    let hostname = OnceCell::new();
-    let cached_hostname_resolver = || hostname.get_or_init(&hostname_resolver).clone();
     let mut stack = RequirementsLayerStack::new(hook_directory_field);
     for layer in layers {
-        stack.add_layer(layer, &cached_hostname_resolver)?;
+        stack.add_layer(layer, hostname)?;
     }
     stack.compose()
 }
@@ -131,12 +100,10 @@ impl RequirementsLayerStack {
     fn add_layer(
         &mut self,
         layer: RequirementsLayerEntry,
-        hostname_resolver: &dyn Fn() -> Option<String>,
+        hostname: Option<&str>,
     ) -> Result<(), RequirementsCompositionError> {
-        self.layers.push(ComposableRequirementsLayer::from_entry(
-            layer,
-            hostname_resolver,
-        )?);
+        self.layers
+            .push(ComposableRequirementsLayer::from_entry(layer, hostname)?);
         Ok(())
     }
 

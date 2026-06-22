@@ -1,27 +1,22 @@
 use crate::app_mcp_routing::apply_app_mcp_routing_policy;
 use crate::app_mcp_routing::apps_route_available;
 use crate::is_openai_curated_marketplace_name;
-use crate::manifest::PluginManifest;
 use crate::manifest::PluginManifestHooks;
-use crate::manifest::PluginManifestMcpServers;
 use crate::manifest::PluginManifestPaths;
 use crate::manifest::load_plugin_manifest;
 use crate::marketplace::MarketplacePluginSource;
-use crate::marketplace::find_marketplace_plugin;
 use crate::marketplace::list_marketplaces;
 use crate::marketplace::load_marketplace;
 use crate::remote::REMOTE_GLOBAL_MARKETPLACE_NAME;
 use crate::remote::RemoteInstalledPlugin;
 use crate::store::PluginStore;
 use crate::store::plugin_version_for_source;
-use crate::store::plugin_version_for_source_with_fallback_manifest;
 use codex_app_server_protocol::AuthMode;
 use codex_config::ConfigLayerStack;
 use codex_config::HooksFile;
 use codex_config::types::McpServerConfig;
 use codex_config::types::PluginConfig;
 use codex_config::types::PluginMcpServerConfig;
-use codex_core_skills::PluginSkillSnapshots;
 use codex_core_skills::SkillMetadata;
 use codex_core_skills::config_rules::SkillConfigRules;
 use codex_core_skills::config_rules::resolve_disabled_skill_paths;
@@ -38,6 +33,7 @@ use codex_plugin::PluginCapabilitySummary;
 use codex_plugin::PluginHookSource;
 use codex_plugin::PluginId;
 use codex_plugin::PluginIdError;
+use codex_plugin::PluginLoadOutcome;
 use codex_plugin::PluginTelemetryMetadata;
 use codex_plugin::app_connector_ids_from_declarations;
 use codex_protocol::protocol::Product;
@@ -75,7 +71,6 @@ enum PluginLoadScope<'a> {
     AllCapabilities {
         restriction_product: Option<Product>,
         skill_config_rules: &'a SkillConfigRules,
-        plugin_skill_snapshots: Option<&'a PluginSkillSnapshots>,
     },
     HooksOnly,
 }
@@ -86,8 +81,12 @@ enum NonCuratedCacheRefreshMode {
     ForceReinstall,
 }
 
-pub(crate) fn log_plugin_load_errors(plugins: &[LoadedPlugin<McpServerConfig>]) {
-    for plugin in plugins.iter().filter(|plugin| plugin.error.is_some()) {
+pub fn log_plugin_load_errors(outcome: &PluginLoadOutcome<McpServerConfig>) {
+    for plugin in outcome
+        .plugins()
+        .iter()
+        .filter(|plugin| plugin.error.is_some())
+    {
         if let Some(error) = plugin.error.as_deref() {
             warn!(
                 plugin = plugin.config_name,
@@ -111,16 +110,14 @@ struct PluginAppConfig {
     category: Option<String>,
 }
 
-/// Load configured plugins without applying auth-dependent runtime policies.
 #[instrument(level = "trace", skip_all)]
-pub(crate) async fn load_plugins_from_layer_stack(
+pub async fn load_plugins_from_layer_stack(
     config_layer_stack: &ConfigLayerStack,
     extra_plugins: HashMap<String, PluginConfig>,
     store: &PluginStore,
-    plugin_skill_snapshots: Option<&PluginSkillSnapshots>,
     restriction_product: Option<Product>,
     prefer_remote_curated_conflicts: bool,
-) -> Vec<LoadedPlugin<McpServerConfig>> {
+) -> PluginLoadOutcome<McpServerConfig> {
     let skill_config_rules = skill_config_rules_from_stack(config_layer_stack);
     load_plugins_from_layer_stack_with_scope(
         config_layer_stack,
@@ -130,7 +127,6 @@ pub(crate) async fn load_plugins_from_layer_stack(
         PluginLoadScope::AllCapabilities {
             restriction_product,
             skill_config_rules: &skill_config_rules,
-            plugin_skill_snapshots,
         },
     )
     .await
@@ -142,7 +138,7 @@ async fn load_plugins_from_layer_stack_with_scope(
     store: &PluginStore,
     prefer_remote_curated_conflicts: bool,
     scope: PluginLoadScope<'_>,
-) -> Vec<LoadedPlugin<McpServerConfig>> {
+) -> PluginLoadOutcome<McpServerConfig> {
     let configured_plugins = merge_configured_plugins_with_remote_installed(
         configured_plugins_from_stack(config_layer_stack),
         extra_plugins,
@@ -171,7 +167,7 @@ async fn load_plugins_from_layer_stack_with_scope(
         plugins.push(loaded_plugin);
     }
 
-    plugins
+    PluginLoadOutcome::from_plugins(plugins)
 }
 
 /// Load hooks from enabled plugins without loading their skills, MCP servers, or apps.
@@ -181,7 +177,7 @@ pub async fn load_plugin_hooks_from_layer_stack(
     store: &PluginStore,
     prefer_remote_curated_conflicts: bool,
 ) -> PluginHookLoadOutcome {
-    let plugins = load_plugins_from_layer_stack_with_scope(
+    let outcome = load_plugins_from_layer_stack_with_scope(
         config_layer_stack,
         extra_plugins,
         store,
@@ -190,16 +186,8 @@ pub async fn load_plugin_hooks_from_layer_stack(
     )
     .await;
     PluginHookLoadOutcome {
-        hook_sources: plugins
-            .iter()
-            .filter(|plugin| plugin.is_active())
-            .flat_map(|plugin| plugin.hook_sources.iter().cloned())
-            .collect(),
-        hook_load_warnings: plugins
-            .iter()
-            .filter(|plugin| plugin.is_active())
-            .flat_map(|plugin| plugin.hook_load_warnings.iter().cloned())
-            .collect(),
+        hook_sources: outcome.effective_plugin_hook_sources(),
+        hook_load_warnings: outcome.effective_plugin_hook_warnings(),
     }
 }
 
@@ -466,7 +454,7 @@ fn refresh_non_curated_plugin_cache_with_mode(
     let store = PluginStore::try_new(codex_home.to_path_buf()).map_err(|err| err.to_string())?;
     let marketplace_outcome = list_marketplaces(additional_roots)
         .map_err(|err| format!("failed to discover marketplaces for cache refresh: {err}"))?;
-    let mut plugin_sources = HashMap::<String, (MarketplacePluginSource, Option<String>)>::new();
+    let mut plugin_sources = HashMap::<String, MarketplacePluginSource>::new();
 
     for marketplace in marketplace_outcome.marketplaces {
         if is_openai_curated_marketplace_name(&marketplace.name) {
@@ -495,31 +483,14 @@ fn refresh_non_curated_plugin_cache_with_mode(
                 continue;
             }
 
-            let manifest_fallback = find_marketplace_plugin(&marketplace.path, &plugin.name)
-                .map(|resolved| {
-                    resolved
-                        .manifest_fallback
-                        .contents_if_has_metadata()
-                        .map(str::to_string)
-                })
-                .unwrap_or_else(|err| {
-                    warn!(
-                        plugin = plugin.name,
-                        marketplace = marketplace.name,
-                        error = %err,
-                        "failed to resolve marketplace plugin manifest fallback during cache refresh"
-                    );
-                    None
-                });
-            plugin_sources.insert(plugin_key, (plugin.source, manifest_fallback));
+            plugin_sources.insert(plugin_key, plugin.source);
         }
     }
 
     let mut cache_refreshed = false;
     for plugin_id in configured_non_curated_plugin_ids {
         let plugin_key = plugin_id.as_key();
-        let Some((source, manifest_fallback_contents)) = plugin_sources.get(&plugin_key).cloned()
-        else {
+        let Some(source) = plugin_sources.get(&plugin_key).cloned() else {
             warn!(
                 plugin = plugin_id.plugin_name,
                 marketplace = plugin_id.marketplace_name,
@@ -532,14 +503,8 @@ fn refresh_non_curated_plugin_cache_with_mode(
                 format!("failed to materialize plugin source for {plugin_key}: {err}")
             })?;
         let source_path = materialized.path.clone();
-        let plugin_version = match manifest_fallback_contents.as_deref() {
-            Some(manifest_contents) => plugin_version_for_source_with_fallback_manifest(
-                source_path.as_path(),
-                manifest_contents,
-            ),
-            None => plugin_version_for_source(source_path.as_path()),
-        }
-        .map_err(|err| format!("failed to read plugin version for {plugin_key}: {err}"))?;
+        let plugin_version = plugin_version_for_source(source_path.as_path())
+            .map_err(|err| format!("failed to read plugin version for {plugin_key}: {err}"))?;
 
         if mode == NonCuratedCacheRefreshMode::IfVersionChanged
             && store.active_plugin_version(&plugin_id).as_deref() == Some(plugin_version.as_str())
@@ -547,16 +512,9 @@ fn refresh_non_curated_plugin_cache_with_mode(
             continue;
         }
 
-        match manifest_fallback_contents.as_deref() {
-            Some(manifest_contents) => store.install_with_version_and_fallback_manifest(
-                source_path,
-                plugin_id.clone(),
-                plugin_version,
-                manifest_contents,
-            ),
-            None => store.install_with_version(source_path, plugin_id.clone(), plugin_version),
-        }
-        .map_err(|err| format!("failed to refresh plugin cache for {plugin_key}: {err}"))?;
+        store
+            .install_with_version(source_path, plugin_id.clone(), plugin_version)
+            .map_err(|err| format!("failed to refresh plugin cache for {plugin_key}: {err}"))?;
         cache_refreshed = true;
     }
 
@@ -701,7 +659,6 @@ async fn load_plugin(
     let mut loaded_plugin = LoadedPlugin {
         config_name,
         manifest_name: None,
-        plugin_namespace: None,
         manifest_description: None,
         root,
         enabled: plugin.enabled,
@@ -744,12 +701,10 @@ async fn load_plugin(
     };
 
     let manifest_paths = &manifest.paths;
-    loaded_plugin.plugin_namespace = Some(manifest.name.clone());
     match scope {
         PluginLoadScope::AllCapabilities {
             restriction_product,
             skill_config_rules,
-            plugin_skill_snapshots,
         } => {
             loaded_plugin.manifest_name = Some(manifest.display_name().to_string());
             loaded_plugin.manifest_description = manifest.description.clone();
@@ -757,21 +712,33 @@ async fn load_plugin(
             let resolved_skills = load_plugin_skills(
                 &plugin_root,
                 &loaded_plugin_id,
-                &manifest,
+                manifest_paths,
                 *restriction_product,
                 skill_config_rules,
-                *plugin_skill_snapshots,
             )
             .await;
             let has_enabled_skills = resolved_skills.has_enabled_skills();
             loaded_plugin.disabled_skill_paths = resolved_skills.disabled_skill_paths;
             loaded_plugin.has_enabled_skills = has_enabled_skills;
-            loaded_plugin.mcp_servers = load_plugin_mcp_servers_from_manifest(
-                plugin_root.as_path(),
-                manifest_paths,
-                Some(&plugin.mcp_servers),
-            )
-            .await;
+            let mut mcp_servers = HashMap::new();
+            for mcp_config_path in plugin_mcp_config_paths(plugin_root.as_path(), manifest_paths) {
+                let plugin_mcp =
+                    load_mcp_servers_from_file(plugin_root.as_path(), &mcp_config_path).await;
+                for (name, mut config) in plugin_mcp.mcp_servers {
+                    if let Some(policy) = plugin.mcp_servers.get(&name) {
+                        apply_plugin_mcp_server_policy(&mut config, policy);
+                    }
+                    if mcp_servers.insert(name.clone(), config).is_some() {
+                        warn!(
+                            plugin = %plugin_root.display(),
+                            path = %mcp_config_path.display(),
+                            server = name,
+                            "plugin MCP file overwrote an earlier server definition"
+                        );
+                    }
+                }
+            }
+            loaded_plugin.mcp_servers = mcp_servers;
             loaded_plugin.apps = load_plugin_apps(plugin_root.as_path()).await;
         }
         PluginLoadScope::HooksOnly => {}
@@ -806,29 +773,6 @@ fn apply_plugin_mcp_server_policy(config: &mut McpServerConfig, policy: &PluginM
     }
 }
 
-pub(crate) struct PluginSkillInventory {
-    skills: Vec<SkillMetadata>,
-    had_errors: bool,
-}
-
-impl PluginSkillInventory {
-    pub(crate) fn has_enabled_skills(&self, skill_config_rules: &SkillConfigRules) -> bool {
-        contains_enabled_skill(
-            &self.skills,
-            &resolve_disabled_skill_paths(&self.skills, skill_config_rules),
-        )
-    }
-
-    fn resolve(self, skill_config_rules: &SkillConfigRules) -> ResolvedPluginSkills {
-        let disabled_skill_paths = resolve_disabled_skill_paths(&self.skills, skill_config_rules);
-        ResolvedPluginSkills {
-            skills: self.skills,
-            disabled_skill_paths,
-            had_errors: self.had_errors,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct ResolvedPluginSkills {
     pub skills: Vec<SkillMetadata>,
@@ -838,76 +782,55 @@ pub struct ResolvedPluginSkills {
 
 impl ResolvedPluginSkills {
     pub fn has_enabled_skills(&self) -> bool {
-        self.had_errors || contains_enabled_skill(&self.skills, &self.disabled_skill_paths)
+        self.had_errors
+            || self
+                .skills
+                .iter()
+                .any(|skill| !self.disabled_skill_paths.contains(&skill.path_to_skills_md))
     }
-}
-
-fn contains_enabled_skill(
-    skills: &[SkillMetadata],
-    disabled_skill_paths: &HashSet<AbsolutePathBuf>,
-) -> bool {
-    skills
-        .iter()
-        .any(|skill| !disabled_skill_paths.contains(&skill.path_to_skills_md))
 }
 
 pub async fn load_plugin_skills(
     plugin_root: &AbsolutePathBuf,
     plugin_id: &PluginId,
-    manifest: &PluginManifest,
+    manifest_paths: &PluginManifestPaths,
     restriction_product: Option<Product>,
     skill_config_rules: &SkillConfigRules,
-    plugin_skill_snapshots: Option<&PluginSkillSnapshots>,
 ) -> ResolvedPluginSkills {
-    load_plugin_skill_inventory(
-        plugin_root,
-        plugin_id,
-        manifest,
-        restriction_product,
-        plugin_skill_snapshots,
-    )
-    .await
-    .resolve(skill_config_rules)
-}
-
-pub(crate) async fn load_plugin_skill_inventory(
-    plugin_root: &AbsolutePathBuf,
-    plugin_id: &PluginId,
-    manifest: &PluginManifest,
-    restriction_product: Option<Product>,
-    plugin_skill_snapshots: Option<&PluginSkillSnapshots>,
-) -> PluginSkillInventory {
-    let roots = plugin_skill_roots(plugin_root, &manifest.paths)
+    let roots = plugin_skill_roots(plugin_root, manifest_paths)
         .into_iter()
         .map(|path| SkillRoot {
             path,
             scope: SkillScope::User,
             file_system: Arc::clone(&LOCAL_FS),
             plugin_id: Some(plugin_id.as_key()),
-            plugin_namespace: Some(manifest.name.clone()),
             plugin_root: Some(plugin_root.clone()),
         })
         .collect::<Vec<_>>();
-    let outcome = load_skills_from_roots(roots, plugin_skill_snapshots).await;
+    let outcome = load_skills_from_roots(roots).await;
     let had_errors = !outcome.errors.is_empty();
     let skills = outcome
         .skills
         .into_iter()
         .filter(|skill| skill.matches_product_restriction_for_product(restriction_product))
         .collect::<Vec<_>>();
+    let disabled_skill_paths = resolve_disabled_skill_paths(&skills, skill_config_rules);
 
-    PluginSkillInventory { skills, had_errors }
+    ResolvedPluginSkills {
+        skills,
+        disabled_skill_paths,
+        had_errors,
+    }
 }
 
 fn plugin_skill_roots(
     plugin_root: &AbsolutePathBuf,
     manifest_paths: &PluginManifestPaths,
 ) -> Vec<AbsolutePathBuf> {
-    let mut paths = if manifest_paths.skills.is_empty() {
-        default_skill_roots(plugin_root)
-    } else {
-        manifest_paths.skills.clone()
-    };
+    let mut paths = default_skill_roots(plugin_root);
+    if let Some(path) = &manifest_paths.skills {
+        paths.push(path.clone());
+    }
     paths.sort_unstable();
     paths.dedup();
     paths
@@ -926,7 +849,7 @@ fn plugin_mcp_config_paths(
     plugin_root: &Path,
     manifest_paths: &PluginManifestPaths,
 ) -> Vec<AbsolutePathBuf> {
-    if let Some(PluginManifestMcpServers::Path(path)) = &manifest_paths.mcp_servers {
+    if let Some(path) = &manifest_paths.mcp_servers {
         return vec![path.clone()];
     }
     default_mcp_config_paths(plugin_root)
@@ -947,20 +870,13 @@ fn default_mcp_config_paths(plugin_root: &Path) -> Vec<AbsolutePathBuf> {
 
 pub async fn load_plugin_apps(plugin_root: &Path) -> Vec<AppDeclaration> {
     if let Some(manifest) = load_plugin_manifest(plugin_root) {
-        return load_plugin_apps_from_manifest(plugin_root, &manifest.paths).await;
+        return load_apps_from_paths(
+            plugin_root,
+            plugin_app_config_paths(plugin_root, &manifest.paths),
+        )
+        .await;
     }
     load_apps_from_paths(plugin_root, default_app_config_paths(plugin_root)).await
-}
-
-pub(crate) async fn load_plugin_apps_from_manifest(
-    plugin_root: &Path,
-    manifest_paths: &PluginManifestPaths,
-) -> Vec<AppDeclaration> {
-    load_apps_from_paths(
-        plugin_root,
-        plugin_app_config_paths(plugin_root, manifest_paths),
-    )
-    .await
 }
 
 pub fn plugin_app_declarations_from_value(value: &JsonValue) -> Vec<AppDeclaration> {
@@ -1174,14 +1090,15 @@ pub async fn plugin_telemetry_metadata_from_root(
 
     let manifest_paths = &manifest.paths;
     let has_skills = !plugin_skill_roots(plugin_root, manifest_paths).is_empty();
-    let mut mcp_server_names = load_plugin_mcp_servers_from_manifest(
-        plugin_root.as_path(),
-        manifest_paths,
-        /*plugin_policy*/ None,
-    )
-    .await
-    .into_keys()
-    .collect::<Vec<_>>();
+    let mut mcp_server_names = Vec::new();
+    for path in plugin_mcp_config_paths(plugin_root.as_path(), manifest_paths) {
+        mcp_server_names.extend(
+            load_mcp_servers_from_file(plugin_root.as_path(), &path)
+                .await
+                .mcp_servers
+                .into_keys(),
+        );
+    }
     mcp_server_names.sort_unstable();
     mcp_server_names.dedup();
 
@@ -1230,49 +1147,11 @@ async fn load_declared_plugin_mcp_servers(plugin_root: &Path) -> HashMap<String,
         return HashMap::new();
     };
 
-    load_plugin_mcp_servers_from_manifest(plugin_root, &manifest.paths, /*plugin_policy*/ None)
-        .await
-}
-
-pub(crate) async fn load_plugin_mcp_servers_from_manifest(
-    plugin_root: &Path,
-    manifest_paths: &PluginManifestPaths,
-    plugin_policy: Option<&HashMap<String, PluginMcpServerConfig>>,
-) -> HashMap<String, McpServerConfig> {
     let mut mcp_servers = HashMap::new();
-    match &manifest_paths.mcp_servers {
-        Some(PluginManifestMcpServers::Object(object_servers)) => {
-            let plugin_mcp = load_mcp_servers_from_manifest_object(plugin_root, object_servers);
-            for (name, mut config) in plugin_mcp.mcp_servers {
-                if let Some(policy) = plugin_policy.and_then(|policy| policy.get(&name)) {
-                    apply_plugin_mcp_server_policy(&mut config, policy);
-                }
-                if mcp_servers.insert(name.clone(), config).is_some() {
-                    warn!(
-                        plugin = %plugin_root.display(),
-                        server = name,
-                        "plugin manifest MCP object overwrote an earlier server definition"
-                    );
-                }
-            }
-        }
-        Some(PluginManifestMcpServers::Path(_)) | None => {
-            for mcp_config_path in plugin_mcp_config_paths(plugin_root, manifest_paths) {
-                let plugin_mcp = load_mcp_servers_from_file(plugin_root, &mcp_config_path).await;
-                for (name, mut config) in plugin_mcp.mcp_servers {
-                    if let Some(policy) = plugin_policy.and_then(|policy| policy.get(&name)) {
-                        apply_plugin_mcp_server_policy(&mut config, policy);
-                    }
-                    if mcp_servers.insert(name.clone(), config).is_some() {
-                        warn!(
-                            plugin = %plugin_root.display(),
-                            path = %mcp_config_path.display(),
-                            server = name,
-                            "plugin MCP file overwrote an earlier server definition"
-                        );
-                    }
-                }
-            }
+    for mcp_config_path in plugin_mcp_config_paths(plugin_root, &manifest.paths) {
+        let plugin_mcp = load_mcp_servers_from_file(plugin_root, &mcp_config_path).await;
+        for (name, config) in plugin_mcp.mcp_servers {
+            mcp_servers.entry(name).or_insert(config);
         }
     }
 
@@ -1322,37 +1201,6 @@ async fn load_mcp_servers_from_file(
             path = %mcp_config_path.display(),
             error = error.message,
             "failed to parse plugin MCP server"
-        );
-    }
-    PluginMcpDiscovery {
-        mcp_servers: parsed.servers.into_iter().collect(),
-    }
-}
-
-fn load_mcp_servers_from_manifest_object(
-    plugin_root: &Path,
-    object_config: &str,
-) -> PluginMcpDiscovery {
-    let parsed = match parse_plugin_mcp_config(
-        plugin_root,
-        object_config,
-        PluginMcpServerPlacement::Declared,
-    ) {
-        Ok(parsed) => parsed,
-        Err(err) => {
-            warn!(
-                plugin = %plugin_root.display(),
-                "failed to parse plugin manifest MCP object: {err}"
-            );
-            return PluginMcpDiscovery::default();
-        }
-    };
-    for error in parsed.errors {
-        warn!(
-            plugin = %plugin_root.display(),
-            server = error.name,
-            error = error.message,
-            "failed to parse plugin manifest MCP object server"
         );
     }
     PluginMcpDiscovery {

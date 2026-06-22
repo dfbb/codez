@@ -47,24 +47,9 @@ fn assert_single_plugin_raw_error(
         ExternalAgentConfigMigrationItemType::Plugins
     );
     assert_eq!(raw_error.failure_stage, failure_stage);
-    assert_eq!(raw_error.error_type, None);
     assert_eq!(raw_error.cwd, None);
     assert_eq!(raw_error.source.as_deref(), Some(source));
     assert!(!raw_error.message.is_empty());
-}
-
-fn import_success(
-    item_type: ExternalAgentConfigMigrationItemType,
-    cwd: Option<PathBuf>,
-    source: impl Into<String>,
-    target: impl Into<String>,
-) -> ExternalAgentConfigImportSuccess {
-    ExternalAgentConfigImportSuccess {
-        item_type,
-        cwd,
-        source: Some(source.into()),
-        target: Some(target.into()),
-    }
 }
 
 #[tokio::test]
@@ -561,7 +546,8 @@ async fn import_repo_migrates_mcp_hooks_commands_and_subagents() {
             details: None,
         },
     ])
-    .await;
+    .await
+    .expect("import");
 
     let config: TomlValue = toml::from_str(
         &fs::read_to_string(repo_root.join(".codex").join("config.toml")).expect("read config"),
@@ -723,7 +709,8 @@ url = "https://example.com/mixed-transport"
             cwd: Some(repo_root.clone()),
             details: None,
         }])
-        .await;
+        .await
+        .expect("import");
 
     assert_eq!(
         fs::read_to_string(repo_root.join(".codex").join("config.toml")).expect("read config"),
@@ -836,7 +823,8 @@ async fn import_home_migrates_supported_config_fields_skills_and_agents_md() {
                 details: None,
             },
         ])
-        .await;
+        .await
+        .expect("import");
 
     assert_eq!(
         fs::read_to_string(codex_home.join("AGENTS.md")).expect("read agents"),
@@ -891,7 +879,8 @@ async fn import_home_config_uses_local_settings_over_project_settings() {
             cwd: None,
             details: None,
         }])
-        .await;
+        .await
+        .expect("import");
 
     let config: TomlValue =
         toml::from_str(&fs::read_to_string(codex_home.join("config.toml")).expect("read config"))
@@ -935,7 +924,8 @@ async fn import_home_config_ignores_invalid_local_settings() {
             cwd: None,
             details: None,
         }])
-        .await;
+        .await
+        .expect("import");
 
     assert_eq!(
         fs::read_to_string(codex_home.join("config.toml")).expect("read config"),
@@ -960,7 +950,8 @@ async fn import_home_skips_empty_config_migration() {
             cwd: None,
             details: None,
         }])
-        .await;
+        .await
+        .expect("import");
 
     assert_eq!(
         outcome.item_results,
@@ -1037,7 +1028,8 @@ async fn import_local_plugins_returns_completed_status() {
                 ..Default::default()
             }),
         }])
-        .await;
+        .await
+        .expect("import");
 
     assert_eq!(
         outcome.pending_plugin_imports,
@@ -1097,7 +1089,8 @@ async fn import_git_plugins_returns_pending_async_status() {
                 ..Default::default()
             }),
         }])
-        .await;
+        .await
+        .expect("import");
 
     assert_eq!(
         outcome.pending_plugin_imports,
@@ -1227,7 +1220,8 @@ async fn import_repo_agents_md_rewrites_terms_and_skips_non_empty_targets() {
             details: None,
         },
     ])
-    .await;
+    .await
+    .expect("import");
 
     assert_eq!(
         outcome.item_results,
@@ -1238,15 +1232,7 @@ async fn import_repo_agents_md_rewrites_terms_and_skips_non_empty_targets() {
                 cwd: Some(repo_root.clone()),
                 success_count: 1,
                 error_count: 0,
-                successes: vec![import_success(
-                    ExternalAgentConfigMigrationItemType::AgentsMd,
-                    Some(repo_root.clone()),
-                    repo_root
-                        .join(EXTERNAL_AGENT_CONFIG_MD)
-                        .display()
-                        .to_string(),
-                    repo_root.join("AGENTS.md").display().to_string(),
-                )],
+                successes: Vec::new(),
                 raw_errors: Vec::new(),
             },
             ExternalAgentConfigImportItemResult {
@@ -1293,7 +1279,8 @@ async fn import_repo_agents_md_overwrites_empty_targets() {
         cwd: Some(repo_root.clone()),
         details: None,
     }])
-    .await;
+    .await
+    .expect("import");
 
     assert_eq!(
         outcome.item_results,
@@ -1303,15 +1290,7 @@ async fn import_repo_agents_md_overwrites_empty_targets() {
             cwd: Some(repo_root.clone()),
             success_count: 1,
             error_count: 0,
-            successes: vec![import_success(
-                ExternalAgentConfigMigrationItemType::AgentsMd,
-                Some(repo_root.clone()),
-                repo_root
-                    .join(EXTERNAL_AGENT_CONFIG_MD)
-                    .display()
-                    .to_string(),
-                repo_root.join("AGENTS.md").display().to_string(),
-            )],
+            successes: Vec::new(),
             raw_errors: Vec::new(),
         }]
     );
@@ -1393,7 +1372,8 @@ async fn import_repo_hooks_preserves_disabled_codex_hooks_feature() {
         cwd: Some(repo_root.clone()),
         details: None,
     }])
-    .await;
+    .await
+    .expect("import");
 
     assert_eq!(
         outcome.item_results,
@@ -1403,12 +1383,7 @@ async fn import_repo_hooks_preserves_disabled_codex_hooks_feature() {
             cwd: Some(repo_root.clone()),
             success_count: 1,
             error_count: 0,
-            successes: vec![import_success(
-                ExternalAgentConfigMigrationItemType::Hooks,
-                Some(repo_root.clone()),
-                "Stop",
-                "Stop",
-            )],
+            successes: Vec::new(),
             raw_errors: Vec::new(),
         }]
     );
@@ -1470,7 +1445,8 @@ async fn import_repo_mcp_uses_home_settings_toggles_when_repo_settings_missing()
             cwd: Some(repo_root.clone()),
             details: None,
         }])
-        .await;
+        .await
+        .expect("import");
 
     assert_eq!(
         outcome.item_results,
@@ -1480,12 +1456,7 @@ async fn import_repo_mcp_uses_home_settings_toggles_when_repo_settings_missing()
             cwd: Some(repo_root.clone()),
             success_count: 1,
             error_count: 0,
-            successes: vec![import_success(
-                ExternalAgentConfigMigrationItemType::McpServerConfig,
-                Some(repo_root.clone()),
-                "allowed",
-                "allowed",
-            )],
+            successes: Vec::new(),
             raw_errors: Vec::new(),
         }]
     );
@@ -1547,7 +1518,8 @@ async fn import_repo_mcp_uses_local_settings_toggles_over_project_settings() {
             cwd: Some(repo_root.clone()),
             details: None,
         }])
-        .await;
+        .await
+        .expect("import");
 
     let config: TomlValue = toml::from_str(
         &fs::read_to_string(repo_root.join(".codex").join("config.toml")).expect("read config"),
@@ -1594,7 +1566,8 @@ async fn import_repo_mcp_ignores_invalid_home_settings_when_repo_settings_missin
             cwd: Some(repo_root.clone()),
             details: None,
         }])
-        .await;
+        .await
+        .expect("import");
 
     let config: TomlValue = toml::from_str(
         &fs::read_to_string(repo_root.join(".codex").join("config.toml")).expect("read config"),
@@ -1635,7 +1608,8 @@ async fn import_repo_uses_non_empty_external_agent_agents_source() {
         cwd: Some(repo_root.clone()),
         details: None,
     }])
-    .await;
+    .await
+    .expect("import");
 
     assert_eq!(
         fs::read_to_string(repo_root.join("AGENTS.md")).expect("read target"),
@@ -1668,7 +1642,8 @@ async fn import_continues_after_failed_migration_item() {
             details: None,
         },
     ])
-    .await;
+    .await
+    .expect("import continues");
 
     assert_eq!(
         fs::read_to_string(repo_root.join("AGENTS.md")).expect("read target"),
@@ -2770,7 +2745,7 @@ async fn import_plugins_supports_project_relative_external_agent_plugin_marketpl
 }
 
 #[test]
-fn import_skills_returns_only_new_skill_directory_names() {
+fn import_skills_returns_only_new_skill_directory_count() {
     let (_root, external_agent_home, codex_home) = fixture_paths();
     let agents_skills = codex_home
         .parent()
@@ -2782,9 +2757,9 @@ fn import_skills_returns_only_new_skill_directory_names() {
         .expect("create source b");
     fs::create_dir_all(agents_skills.join("skill-a")).expect("create existing target");
 
-    let copied_names = service_for_paths(external_agent_home, codex_home)
+    let copied_count = service_for_paths(external_agent_home, codex_home)
         .import_skills(/*cwd*/ None)
         .expect("import skills");
 
-    assert_eq!(copied_names, vec!["skill-b".to_string()]);
+    assert_eq!(copied_count, 1);
 }

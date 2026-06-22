@@ -1,5 +1,4 @@
 use super::*;
-use std::time::Duration;
 
 #[derive(Clone)]
 pub(crate) struct EnvironmentRequestProcessor {
@@ -18,11 +17,7 @@ impl EnvironmentRequestProcessor {
         params: EnvironmentAddParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.environment_manager
-            .upsert_environment(
-                params.environment_id,
-                params.exec_server_url,
-                params.connect_timeout_ms.map(Duration::from_millis),
-            )
+            .upsert_environment(params.environment_id, params.exec_server_url)
             .map_err(|err| invalid_request(err.to_string()))?;
         Ok(Some(EnvironmentAddResponse {}.into()))
     }

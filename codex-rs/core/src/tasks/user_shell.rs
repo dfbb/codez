@@ -41,7 +41,6 @@ use codex_shell_command::parse_command::parse_command;
 
 use super::SessionTask;
 use super::SessionTaskContext;
-use super::SessionTaskResult;
 use crate::session::session::Session;
 use codex_protocol::models::PermissionProfile;
 
@@ -83,7 +82,7 @@ impl SessionTask for UserShellCommandTask {
         turn_context: Arc<TurnContext>,
         _input: Vec<TurnInput>,
         cancellation_token: CancellationToken,
-    ) -> SessionTaskResult {
+    ) -> Option<String> {
         execute_user_shell_command(
             session.clone_session(),
             turn_context,
@@ -92,7 +91,7 @@ impl SessionTask for UserShellCommandTask {
             UserShellCommandMode::StandaloneTurn,
         )
         .await;
-        Ok(None)
+        None
     }
 }
 
@@ -145,20 +144,9 @@ pub(crate) async fn execute_user_shell_command(
     // We do not source rc files or otherwise reformat the script.
     let use_login_shell = true;
     let display_command = environment_shell.derive_exec_args(&command, use_login_shell);
-    // TODO(anp): Migrate user-shell events and execution plumbing to PathUri so this local-only
-    // feature does not need to project the selected environment cwd onto the Codex host.
-    let Ok(cwd) = turn_environment.cwd().to_abs_path() else {
-        send_user_shell_error(
-            &session,
-            turn_context.as_ref(),
-            "shell working directory is not native to the Codex host",
-        )
-        .await;
-        return;
-    };
-    let shell_snapshot_location = turn_environment.shell_snapshot(&cwd);
+    let shell_snapshot_location = turn_environment.shell_snapshot(turn_environment.cwd());
     let mut exec_env_map = create_env(
-        &turn_context.config.permissions.shell_environment_policy,
+        &turn_context.shell_environment_policy,
         Some(session.thread_id),
     );
     if exec_env_map.contains_key(PROXY_ACTIVE_ENV_KEY) {
@@ -168,16 +156,13 @@ pub(crate) async fn execute_user_shell_command(
         &display_command,
         environment_shell,
         shell_snapshot_location.as_ref(),
-        &turn_context
-            .config
-            .permissions
-            .shell_environment_policy
-            .r#set,
+        &turn_context.shell_environment_policy.r#set,
         &mut exec_env_map,
     );
 
     let call_id = Uuid::new_v4().to_string();
     let raw_command = command;
+    let cwd = turn_environment.cwd().clone();
 
     let parsed_cmd = parse_command(&display_command);
     session
@@ -189,7 +174,7 @@ pub(crate) async fn execute_user_shell_command(
                 turn_id: turn_context.sub_id.clone(),
                 started_at_ms: now_unix_timestamp_ms(),
                 command: display_command.clone(),
-                cwd: cwd.clone().into(),
+                cwd: cwd.clone(),
                 parsed_cmd: parsed_cmd.clone(),
                 source: ExecCommandSource::UserShell,
                 interaction_input: None,
@@ -200,19 +185,18 @@ pub(crate) async fn execute_user_shell_command(
     let permission_profile = PermissionProfile::Disabled;
     let exec_env = ExecRequest {
         command: exec_command.clone(),
-        cwd: cwd.clone().into(),
+        cwd: cwd.clone(),
         env: exec_env_map,
         exec_server_env_config: None,
         // `/shell` is the explicit full-access escape hatch, so it must not
         // inherit a managed proxy from the surrounding session or turn.
         network: None,
-        network_environment_id: None,
         // TODO(zhao-oai): Now that we have ExecExpiration::Cancellation, we
         // should use that instead of an "arbitrarily large" timeout here.
         expiration: USER_SHELL_TIMEOUT_MS.into(),
         capture_policy: ExecCapturePolicy::ShellTool,
         sandbox: SandboxType::None,
-        windows_sandbox_policy_cwd: cwd.clone().into(),
+        windows_sandbox_policy_cwd: cwd.clone(),
         windows_sandbox_workspace_roots: turn_context.config.effective_workspace_roots(),
         windows_sandbox_level: turn_context.windows_sandbox_level,
         windows_sandbox_private_desktop: turn_context
@@ -264,7 +248,7 @@ pub(crate) async fn execute_user_shell_command(
                         turn_id: turn_context.sub_id.clone(),
                         completed_at_ms: now_unix_timestamp_ms(),
                         command: display_command.clone(),
-                        cwd: cwd.clone().into(),
+                        cwd: cwd.clone(),
                         parsed_cmd: parsed_cmd.clone(),
                         source: ExecCommandSource::UserShell,
                         interaction_input: None,
@@ -289,7 +273,7 @@ pub(crate) async fn execute_user_shell_command(
                         turn_id: turn_context.sub_id.clone(),
                         completed_at_ms: now_unix_timestamp_ms(),
                         command: display_command.clone(),
-                        cwd: cwd.clone().into(),
+                        cwd: cwd.clone(),
                         parsed_cmd: parsed_cmd.clone(),
                         source: ExecCommandSource::UserShell,
                         interaction_input: None,
@@ -300,7 +284,7 @@ pub(crate) async fn execute_user_shell_command(
                         duration: output.duration,
                         formatted_output: format_exec_output_str(
                             &output,
-                            turn_context.model_info.truncation_policy.into(),
+                            turn_context.truncation_policy,
                         ),
                         status: if output.exit_code == 0 {
                             ExecCommandStatus::Completed
@@ -334,7 +318,7 @@ pub(crate) async fn execute_user_shell_command(
                         turn_id: turn_context.sub_id.clone(),
                         completed_at_ms: now_unix_timestamp_ms(),
                         command: display_command,
-                        cwd: cwd.into(),
+                        cwd,
                         parsed_cmd,
                         source: ExecCommandSource::UserShell,
                         interaction_input: None,
@@ -345,7 +329,7 @@ pub(crate) async fn execute_user_shell_command(
                         duration: exec_output.duration,
                         formatted_output: format_exec_output_str(
                             &exec_output,
-                            turn_context.model_info.truncation_policy.into(),
+                            turn_context.truncation_policy,
                         ),
                         status: ExecCommandStatus::Failed,
                     }),

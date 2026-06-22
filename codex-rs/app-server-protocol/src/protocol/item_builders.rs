@@ -23,7 +23,6 @@ use crate::protocol::v2::PatchApplyStatus;
 use crate::protocol::v2::PatchChangeKind;
 use crate::protocol::v2::ThreadItem;
 use codex_protocol::ThreadId;
-use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
 use codex_protocol::protocol::ExecApprovalRequestEvent;
 use codex_protocol::protocol::ExecCommandBeginEvent;
@@ -35,11 +34,8 @@ use codex_protocol::protocol::PatchApplyBeginEvent;
 use codex_protocol::protocol::PatchApplyEndEvent;
 use codex_shell_command::parse_command::parse_command;
 use codex_shell_command::parse_command::shlex_join;
-use codex_utils_path_uri::PathConvention;
-use codex_utils_path_uri::PathUri;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tracing::warn;
 
 pub fn build_file_change_approval_request_item(
     payload: &ApplyPatchApprovalRequestEvent,
@@ -73,7 +69,7 @@ pub fn build_command_execution_approval_request_item(
     ThreadItem::CommandExecution {
         id: payload.call_id.clone(),
         command: shlex_join(&payload.command),
-        cwd: payload.cwd.clone().into(),
+        cwd: payload.cwd.clone(),
         process_id: None,
         source: CommandExecutionSource::Agent,
         status: CommandExecutionStatus::InProgress,
@@ -90,15 +86,19 @@ pub fn build_command_execution_approval_request_item(
 }
 
 pub fn build_command_execution_begin_item(payload: &ExecCommandBeginEvent) -> ThreadItem {
-    let command_actions = command_actions_for_path_uri(&payload.parsed_cmd, &payload.cwd);
     ThreadItem::CommandExecution {
         id: payload.call_id.clone(),
         command: shlex_join(&payload.command),
-        cwd: payload.cwd.clone().into(),
+        cwd: payload.cwd.clone(),
         process_id: payload.process_id.clone(),
         source: payload.source.into(),
         status: CommandExecutionStatus::InProgress,
-        command_actions,
+        command_actions: payload
+            .parsed_cmd
+            .iter()
+            .cloned()
+            .map(|parsed| CommandAction::from_core_with_cwd(parsed, &payload.cwd))
+            .collect(),
         aggregated_output: None,
         exit_code: None,
         duration_ms: None,
@@ -112,61 +112,24 @@ pub fn build_command_execution_end_item(payload: &ExecCommandEndEvent) -> Thread
         Some(payload.aggregated_output.clone())
     };
     let duration_ms = i64::try_from(payload.duration.as_millis()).unwrap_or(i64::MAX);
-    let command_actions = command_actions_for_path_uri(&payload.parsed_cmd, &payload.cwd);
 
     ThreadItem::CommandExecution {
         id: payload.call_id.clone(),
         command: shlex_join(&payload.command),
-        cwd: payload.cwd.clone().into(),
+        cwd: payload.cwd.clone(),
         process_id: payload.process_id.clone(),
         source: payload.source.into(),
         status: (&payload.status).into(),
-        command_actions,
+        command_actions: payload
+            .parsed_cmd
+            .iter()
+            .cloned()
+            .map(|parsed| CommandAction::from_core_with_cwd(parsed, &payload.cwd))
+            .collect(),
         aggregated_output,
         exit_code: Some(payload.exit_code),
         duration_ms: Some(duration_ms),
     }
-}
-
-fn command_actions_for_path_uri(parsed_cmd: &[ParsedCommand], cwd: &PathUri) -> Vec<CommandAction> {
-    // TODO(anp): Carry PathUri into CommandAction so foreign Read actions retain resolved paths.
-    // Until then, omit those actions rather than project a foreign cwd onto the host.
-    let native_cwd = if cwd.infer_path_convention() == Some(PathConvention::native()) {
-        cwd.to_abs_path().ok()
-    } else {
-        None
-    };
-
-    parsed_cmd
-        .iter()
-        .cloned()
-        .filter_map(|parsed| match parsed {
-            ParsedCommand::Read { cmd, name, path } => match native_cwd.as_ref() {
-                Some(native_cwd) => Some(CommandAction::Read {
-                    command: cmd,
-                    name,
-                    path: native_cwd.join(path),
-                }),
-                None => {
-                    warn!(
-                        command = cmd,
-                        %cwd,
-                        "omitting read command action whose path cannot be resolved against a foreign cwd"
-                    );
-                    None
-                }
-            },
-            ParsedCommand::ListFiles { cmd, path } => {
-                Some(CommandAction::ListFiles { command: cmd, path })
-            }
-            ParsedCommand::Search { cmd, query, path } => Some(CommandAction::Search {
-                command: cmd,
-                query,
-                path,
-            }),
-            ParsedCommand::Unknown { cmd } => Some(CommandAction::Unknown { command: cmd }),
-        })
-        .collect()
 }
 
 /// Build a guardian-derived [`ThreadItem`].
@@ -187,7 +150,7 @@ pub fn build_item_from_guardian_event(
             Some(ThreadItem::CommandExecution {
                 id: id.clone(),
                 command,
-                cwd: cwd.clone().into(),
+                cwd: cwd.clone(),
                 process_id: None,
                 source: CommandExecutionSource::Agent,
                 status,
@@ -223,7 +186,7 @@ pub fn build_item_from_guardian_event(
             Some(ThreadItem::CommandExecution {
                 id: id.clone(),
                 command,
-                cwd: cwd.clone().into(),
+                cwd: cwd.clone(),
                 process_id: None,
                 source: CommandExecutionSource::Agent,
                 status,
@@ -352,7 +315,3 @@ fn format_file_change_diff(change: &FileChange) -> String {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "item_builders_tests.rs"]
-mod tests;

@@ -35,8 +35,13 @@ impl RemoteProcess {
         &self,
         params: ExecParams,
     ) -> Result<StartedExecProcess, crate::ExecServerError> {
+        let process_id = params.process_id.clone();
         let client = self.client.get().await?;
-        let session = client.start_process(params).await?;
+        let session = client.register_session(&process_id).await?;
+        if let Err(err) = client.exec(params).await {
+            session.unregister().await;
+            return Err(err);
+        }
 
         Ok(StartedExecProcess {
             process: Arc::new(RemoteExecProcess { session }),

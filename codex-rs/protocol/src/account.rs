@@ -34,21 +34,8 @@ pub enum PlanType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderAccount {
     ApiKey,
-    Chatgpt {
-        email: String,
-        plan_type: PlanType,
-    },
-    AmazonBedrock {
-        credential_source: AmazonBedrockCredentialSource,
-    },
-}
-
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(rename_all = "camelCase")]
-pub enum AmazonBedrockCredentialSource {
-    CodexManaged,
-    AwsManaged,
+    Chatgpt { email: String, plan_type: PlanType },
+    AmazonBedrock,
 }
 
 impl PlanType {

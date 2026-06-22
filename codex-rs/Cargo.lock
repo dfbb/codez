@@ -1946,6 +1946,7 @@ dependencies = [
  "schemars 0.8.22",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-test",
@@ -2418,7 +2419,6 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
- "codex-agent-identity",
  "codex-backend-client",
  "codex-config",
  "codex-core",
@@ -2761,7 +2761,6 @@ dependencies = [
  "codex-otel",
  "codex-plugin",
  "codex-protocol",
- "codex-tools",
  "codex-utils-absolute-path",
  "codex-utils-path-uri",
  "codex-utils-plugins",
@@ -2892,7 +2891,6 @@ dependencies = [
  "ctor 0.6.3",
  "futures",
  "http 1.4.0",
- "libc",
  "pretty_assertions",
  "prost 0.14.3",
  "reqwest 0.12.28",
@@ -2908,7 +2906,6 @@ dependencies = [
  "toml 0.9.11+spec-1.1.0",
  "tracing",
  "uuid",
- "windows-sys 0.52.0",
  "wiremock",
 ]
 
@@ -3043,11 +3040,9 @@ dependencies = [
 name = "codex-file-system"
 version = "0.0.0"
 dependencies = [
- "bytes",
  "codex-protocol",
  "codex-utils-absolute-path",
  "codex-utils-path-uri",
- "futures",
  "serde",
 ]
 
@@ -3290,7 +3285,6 @@ dependencies = [
  "codex-plugin",
  "codex-protocol",
  "codex-rmcp-client",
- "codex-utils-path-uri",
  "codex-utils-plugins",
  "futures",
  "pretty_assertions",
@@ -3794,9 +3788,7 @@ dependencies = [
  "codex-network-proxy",
  "codex-protocol",
  "codex-utils-absolute-path",
- "codex-utils-home-dir",
  "codex-utils-path-uri",
- "codex-windows-sandbox",
  "dunce",
  "libc",
  "pretty_assertions",
@@ -4272,6 +4264,7 @@ name = "codex-utils-plugins"
 version = "0.0.0"
 dependencies = [
  "codex-exec-server",
+ "codex-login",
  "codex-utils-absolute-path",
  "codex-utils-path-uri",
  "serde",
@@ -13603,7 +13596,7 @@ dependencies = [
 [[package]]
 name = "tokio-tungstenite"
 version = "0.28.0"
-source = "git+https://github.com/openai-oss-forks/tokio-tungstenite?rev=e5e64b86722c5453c4038131c3193faa49a648ad#e5e64b86722c5453c4038131c3193faa49a648ad"
+source = "git+https://github.com/openai-oss-forks/tokio-tungstenite?rev=132f5b39c862e3a970f731d709608b3e6276d5f6#132f5b39c862e3a970f731d709608b3e6276d5f6"
 dependencies = [
  "futures-util",
  "log",

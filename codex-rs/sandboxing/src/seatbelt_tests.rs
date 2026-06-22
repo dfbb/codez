@@ -205,11 +205,9 @@ fn explicit_unreadable_paths_are_excluded_from_full_disk_read_and_write_access()
         network_sandbox_policy: NetworkSandboxPolicy::Restricted,
         sandbox_policy_cwd: Path::new("/"),
         enforce_managed_network: false,
-        environment_id: None,
         network: None,
         extra_allow_unix_sockets: &[],
-    })
-    .unwrap();
+    });
 
     let policy = seatbelt_policy_arg(&args);
     let unreadable_roots = file_system_policy.get_unreadable_roots_with_cwd(Path::new("/"));
@@ -279,11 +277,9 @@ fn explicit_unreadable_paths_are_excluded_from_readable_roots() {
         network_sandbox_policy: NetworkSandboxPolicy::Restricted,
         sandbox_policy_cwd: Path::new("/"),
         enforce_managed_network: false,
-        environment_id: None,
         network: None,
         extra_allow_unix_sockets: &[],
-    })
-    .unwrap();
+    });
 
     let policy = seatbelt_policy_arg(&args);
     let readable_roots = file_system_policy.get_readable_roots_with_cwd(Path::new("/"));
@@ -396,8 +392,7 @@ fn seatbelt_args_without_extension_profile_keep_legacy_preferences_read_access()
         cwd.as_path(),
         /*enforce_managed_network*/ false,
         /*network*/ None,
-    )
-    .unwrap();
+    );
     let policy = &args[1];
     assert!(policy.contains("(allow user-preference-read)"));
     assert!(!policy.contains("(allow user-preference-write)"));
@@ -585,11 +580,9 @@ fn create_seatbelt_args_allowlists_explicit_unix_socket_paths_without_proxy() {
         network_sandbox_policy: NetworkSandboxPolicy::Restricted,
         sandbox_policy_cwd: cwd.path(),
         enforce_managed_network: false,
-        environment_id: None,
         network: None,
         extra_allow_unix_sockets: &extra_allow_unix_sockets,
-    })
-    .unwrap();
+    });
     let policy = seatbelt_policy_arg(&args);
 
     assert!(
@@ -645,11 +638,9 @@ async fn create_seatbelt_args_merges_proxy_and_explicit_unix_socket_paths() -> a
         network_sandbox_policy: NetworkSandboxPolicy::Restricted,
         sandbox_policy_cwd: cwd.path(),
         enforce_managed_network: false,
-        environment_id: None,
         network: Some(&network_proxy),
         extra_allow_unix_sockets: &extra_allow_unix_sockets,
-    })
-    .unwrap();
+    });
 
     let expected_explicit_socket = normalize_path_for_sandbox(Path::new(explicit_socket))
         .expect("explicit socket root should normalize");
@@ -688,11 +679,9 @@ fn create_seatbelt_args_preserves_full_network_with_explicit_unix_socket_paths()
         network_sandbox_policy: NetworkSandboxPolicy::Enabled,
         sandbox_policy_cwd: cwd.path(),
         enforce_managed_network: false,
-        environment_id: None,
         network: None,
         extra_allow_unix_sockets: &extra_allow_unix_sockets,
-    })
-    .unwrap();
+    });
     let policy = seatbelt_policy_arg(&args);
 
     assert!(
@@ -880,8 +869,7 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
         &cwd,
         /*enforce_managed_network*/ false,
         /*network*/ None,
-    )
-    .unwrap();
+    );
 
     let policy_text = seatbelt_policy_arg(&args);
     assert!(
@@ -1020,8 +1008,7 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
         &cwd,
         /*enforce_managed_network*/ false,
         /*network*/ None,
-    )
-    .unwrap();
+    );
     let output = Command::new(MACOS_PATH_TO_SEATBELT_EXECUTABLE)
         .args(&write_hooks_file_args)
         .current_dir(&cwd)
@@ -1057,8 +1044,7 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
         &cwd,
         /*enforce_managed_network*/ false,
         /*network*/ None,
-    )
-    .unwrap();
+    );
     let output = Command::new(MACOS_PATH_TO_SEATBELT_EXECUTABLE)
         .args(&write_allowed_file_args)
         .current_dir(&cwd)
@@ -1122,8 +1108,7 @@ fn create_seatbelt_args_block_first_time_dot_codex_creation_with_metadata_name_r
         repo_root.as_path(),
         /*enforce_managed_network*/ false,
         /*network*/ None,
-    )
-    .unwrap();
+    );
 
     let policy_text = seatbelt_policy_arg(&args);
     assert!(
@@ -1175,8 +1160,7 @@ fn create_seatbelt_args_with_read_only_git_pointer_file() {
         &cwd,
         /*enforce_managed_network*/ false,
         /*network*/ None,
-    )
-    .unwrap();
+    );
 
     let output = Command::new(MACOS_PATH_TO_SEATBELT_EXECUTABLE)
         .args(&args)
@@ -1212,8 +1196,7 @@ fn create_seatbelt_args_with_read_only_git_pointer_file() {
         &cwd,
         /*enforce_managed_network*/ false,
         /*network*/ None,
-    )
-    .unwrap();
+    );
     let output = Command::new(MACOS_PATH_TO_SEATBELT_EXECUTABLE)
         .args(&gitdir_args)
         .current_dir(&cwd)
@@ -1276,8 +1259,7 @@ fn create_seatbelt_args_for_cwd_as_git_repo() {
         vulnerable_root.as_path(),
         /*enforce_managed_network*/ false,
         /*network*/ None,
-    )
-    .unwrap();
+    );
 
     let slash_tmp = PathBuf::from("/tmp")
         .canonicalize()

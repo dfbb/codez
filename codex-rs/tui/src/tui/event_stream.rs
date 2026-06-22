@@ -239,16 +239,7 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
             Event::Key(key_event) => {
                 #[cfg(unix)]
                 if crate::tui::job_control::SUSPEND_KEY.is_press(key_event) {
-                    self.broker.pause_events();
-                    let suspend_result = self.suspend_context.suspend(&self.alt_screen_active);
-                    self.broker.resume_events();
-                    if let Err(err) = suspend_result {
-                        tracing::warn!(
-                            event = "tui_suspend_failed",
-                            error = %err,
-                            "failed to suspend TUI process"
-                        );
-                    }
+                    let _ = self.suspend_context.suspend(&self.alt_screen_active);
                     return Some(TuiEvent::Draw);
                 }
                 Some(TuiEvent::Key(key_event))

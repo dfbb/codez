@@ -120,7 +120,6 @@ use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use codex_utils_path_uri::PathUri;
 use color_eyre::eyre::ContextCompat;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
@@ -328,7 +327,7 @@ impl AppServerSession {
                     true,
                 )
             }
-            Some(Account::AmazonBedrock { .. }) => {
+            Some(Account::AmazonBedrock {}) => {
                 (None, None, None, None, FeedbackAudience::External, false)
             }
             None => (None, None, None, None, FeedbackAudience::External, false),
@@ -392,10 +391,7 @@ impl AppServerSession {
             .client
             .request_typed(ClientRequest::ExternalAgentConfigImport {
                 request_id,
-                params: ExternalAgentConfigImportParams {
-                    migration_items,
-                    source: None,
-                },
+                params: ExternalAgentConfigImportParams { migration_items },
             })
             .await
             .wrap_err("externalAgentConfig/import failed during Claude Code import");
@@ -786,7 +782,6 @@ impl AppServerSession {
                     personality,
                     output_schema,
                     collaboration_mode,
-                    multi_agent_mode: None,
                 },
             })
             .await
@@ -1563,7 +1558,7 @@ async fn thread_session_state_from_thread_start_response(
         response.active_permission_profile.clone().map(Into::into),
         response.cwd.clone(),
         response.runtime_workspace_roots.clone(),
-        response.instruction_source_path_uris(),
+        response.instruction_sources.clone(),
         response.reasoning_effort.clone(),
         config,
     )
@@ -1604,7 +1599,7 @@ async fn thread_session_state_from_thread_resume_response(
         response.active_permission_profile.clone().map(Into::into),
         response.cwd.clone(),
         response.runtime_workspace_roots.clone(),
-        response.instruction_source_path_uris(),
+        response.instruction_sources.clone(),
         response.reasoning_effort.clone(),
         config,
     )
@@ -1636,7 +1631,7 @@ async fn thread_session_state_from_thread_fork_response(
         response.active_permission_profile.clone().map(Into::into),
         response.cwd.clone(),
         response.runtime_workspace_roots.clone(),
-        response.instruction_source_path_uris(),
+        response.instruction_sources.clone(),
         response.reasoning_effort.clone(),
         config,
     )
@@ -1675,7 +1670,7 @@ async fn thread_session_state_from_thread_response(
     active_permission_profile: Option<ActivePermissionProfile>,
     cwd: AbsolutePathBuf,
     runtime_workspace_roots: Vec<AbsolutePathBuf>,
-    instruction_source_paths: Vec<PathUri>,
+    instruction_source_paths: Vec<AbsolutePathBuf>,
     reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
     config: &Config,
 ) -> Result<ThreadSessionState, String> {
@@ -1761,7 +1756,6 @@ mod tests {
     use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_utils_absolute_path::test_support::PathBufExt;
     use codex_utils_absolute_path::test_support::test_path_buf;
-    use codex_utils_path_uri::LegacyAppPathString;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
 
@@ -2325,7 +2319,6 @@ mod tests {
                 model_provider: "openai".to_string(),
                 created_at: 1,
                 updated_at: 2,
-                recency_at: Some(2),
                 status: ThreadStatus::Idle,
                 path: None,
                 cwd: test_path_buf("/tmp/project").abs(),
@@ -2370,9 +2363,7 @@ mod tests {
                 test_path_buf("/tmp/project").abs(),
                 test_path_buf("/tmp/project/extra").abs(),
             ],
-            instruction_sources: vec![LegacyAppPathString::from_abs_path(
-                &test_path_buf("/tmp/project/AGENTS.md").abs(),
-            )],
+            instruction_sources: vec![test_path_buf("/tmp/project/AGENTS.md").abs()],
             approval_policy: codex_app_server_protocol::AskForApproval::Never,
             approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::User,
             sandbox: read_only_profile
@@ -2381,7 +2372,6 @@ mod tests {
                 .into(),
             active_permission_profile: None,
             reasoning_effort: None,
-            multi_agent_mode: Default::default(),
             initial_turns_page: None,
         };
 
@@ -2399,7 +2389,7 @@ mod tests {
         );
         assert_eq!(
             started.session.instruction_source_paths,
-            response.instruction_source_path_uris()
+            response.instruction_sources
         );
         assert_eq!(started.session.permission_profile, read_only_profile);
         assert_eq!(started.turns.len(), 1);

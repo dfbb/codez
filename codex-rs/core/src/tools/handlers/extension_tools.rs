@@ -114,15 +114,10 @@ async fn to_extension_call(invocation: &ToolInvocation) -> ExtensionToolCall {
         ConversationHistory::new(invocation.session.clone_history().await.into_raw_items());
     let mut environments = Vec::with_capacity(invocation.turn.environments.turn_environments.len());
     for environment in &invocation.turn.environments.turn_environments {
-        // TODO(anp): Migrate extension ToolEnvironment and granted-permission lookup to PathUri
-        // so extensions can receive foreign environment cwd values.
-        let Ok(native_cwd) = environment.cwd().to_abs_path() else {
-            continue;
-        };
         let additional_permissions = apply_granted_turn_permissions(
             invocation.session.as_ref(),
             &environment.environment_id,
-            native_cwd.as_path(),
+            environment.cwd().as_path(),
             SandboxPermissions::UseDefault,
             /*additional_permissions*/ None,
         )
@@ -130,10 +125,10 @@ async fn to_extension_call(invocation: &ToolInvocation) -> ExtensionToolCall {
         .additional_permissions;
         let file_system_sandbox_context = invocation
             .turn
-            .file_system_sandbox_context(additional_permissions, environment.cwd());
+            .file_system_sandbox_context(additional_permissions, environment.cwd_uri());
         environments.push(ToolEnvironment {
             environment_id: environment.environment_id.clone(),
-            cwd: native_cwd,
+            cwd: environment.cwd().clone(),
             file_system: environment.environment.get_filesystem(),
             file_system_sandbox_context,
         });
@@ -143,7 +138,7 @@ async fn to_extension_call(invocation: &ToolInvocation) -> ExtensionToolCall {
         call_id: invocation.call_id.clone(),
         tool_name: invocation.tool_name.clone(),
         model: invocation.turn.model_info.slug.clone(),
-        truncation_policy: invocation.turn.model_info.truncation_policy.into(),
+        truncation_policy: invocation.turn.truncation_policy,
         conversation_history,
         turn_item_emitter: Arc::new(CoreTurnItemEmitter {
             session: Arc::downgrade(&invocation.session),
@@ -315,12 +310,12 @@ mod tests {
         let weak_turn = Arc::downgrade(&turn);
         let turn_id = turn.sub_id.clone();
         let model = turn.model_info.slug.clone();
-        let truncation_policy = turn.model_info.truncation_policy.into();
+        let truncation_policy = turn.truncation_policy;
         let expected_sandbox_cwds = turn
             .environments
             .turn_environments
             .iter()
-            .map(|environment| Some(environment.cwd().clone()))
+            .map(|environment| Some(environment.cwd_uri().clone()))
             .collect::<Vec<_>>();
         let history_item = ResponseItem::Message {
             id: None,

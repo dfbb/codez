@@ -9,12 +9,6 @@
             "null"
           ]
         },
-        "errorType": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "failureStage": {
           "type": "string"
         },

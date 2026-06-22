@@ -143,18 +143,11 @@ impl ViewImageHandler {
                 "view_image is unavailable in this session".to_string(),
             ));
         };
-        // TODO(anp): Resolve tool paths using the selected environment's native path convention
-        // so view_image can support relative paths in foreign environments.
-        let cwd = turn_environment.cwd().to_abs_path().map_err(|err| {
-            FunctionCallError::RespondToModel(format!(
-                "environment cwd `{}` is not native to the Codex host: {err}",
-                turn_environment.cwd()
-            ))
-        })?;
+        let cwd = turn_environment.cwd().clone();
         let abs_path = cwd.join(path);
         let sandbox = turn.file_system_sandbox_context(
             /*additional_permissions*/ None,
-            turn_environment.cwd(),
+            turn_environment.cwd_uri(),
         );
         let fs = turn_environment.environment.get_filesystem();
         let path_uri = PathUri::from_abs_path(&abs_path);
@@ -195,7 +188,7 @@ impl ViewImageHandler {
             DEFAULT_IMAGE_DETAIL
         };
 
-        let image_url = if turn.config.features.enabled(Feature::ResizeAllImages) {
+        let image_url = if turn.features.enabled(Feature::ResizeAllImages) {
             // The history insertion path owns image decoding and resizing when this is enabled.
             data_url_from_bytes("application/octet-stream", &file_bytes)
         } else {
@@ -279,7 +272,6 @@ mod tests {
     use crate::turn_diff_tracker::TurnDiffTracker;
     use codex_protocol::models::PermissionProfile;
     use codex_utils_absolute_path::AbsolutePathBuf;
-    use codex_utils_path_uri::PathUri;
     use core_test_support::TempDirExt;
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -296,7 +288,7 @@ mod tests {
         turn.environments.turn_environments[0] = TurnEnvironment::new(
             current.environment_id,
             current.environment,
-            PathUri::from_abs_path(&cwd),
+            cwd,
             current.shell,
         );
     }

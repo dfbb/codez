@@ -161,7 +161,6 @@ mod tests {
             call_id: call_id.to_string(),
             approval_id: approval_id.map(str::to_string),
             turn_id: "turn".to_string(),
-            environment_id: None,
             command: vec!["true".to_string()],
             cwd: AbsolutePathBuf::current_dir().expect("current dir"),
             reason: None,
@@ -177,7 +176,7 @@ mod tests {
         ThreadItem::CommandExecution {
             id: call_id.to_string(),
             command: "true".to_string(),
-            cwd: AbsolutePathBuf::current_dir().expect("current dir").into(),
+            cwd: AbsolutePathBuf::current_dir().expect("current dir"),
             process_id: None,
             source: CommandExecutionSource::Agent,
             status: CommandExecutionStatus::InProgress,

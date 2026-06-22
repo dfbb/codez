@@ -27,7 +27,7 @@
         "read": {
           "description": "This will be removed in favor of `entries`.",
           "items": {
-            "$ref": "#/definitions/LegacyAppPathString"
+            "$ref": "#/definitions/ApiPathString"
           },
           "type": [
             "array",
@@ -37,7 +37,7 @@
         "write": {
           "description": "This will be removed in favor of `entries`.",
           "items": {
-            "$ref": "#/definitions/LegacyAppPathString"
+            "$ref": "#/definitions/ApiPathString"
           },
           "type": [
             "array",
@@ -83,6 +83,9 @@
         }
       },
       "type": "object"
+    },
+    "ApiPathString": {
+      "type": "string"
     },
     "ApplyPatchApprovalParams": {
       "properties": {
@@ -371,21 +374,13 @@
         "cwd": {
           "anyOf": [
             {
-              "$ref": "#/definitions/LegacyAppPathString"
+              "$ref": "#/definitions/AbsolutePathBuf"
             },
             {
               "type": "null"
             }
           ],
           "description": "The command's working directory."
-        },
-        "environmentId": {
-          "default": null,
-          "description": "Environment in which the command will run.",
-          "type": [
-            "string",
-            "null"
-          ]
         },
         "itemId": {
           "type": "string"
@@ -648,7 +643,7 @@
         {
           "properties": {
             "path": {
-              "$ref": "#/definitions/LegacyAppPathString"
+              "$ref": "#/definitions/ApiPathString"
             },
             "type": {
               "enum": [
@@ -830,9 +825,6 @@
           "type": "object"
         }
       ]
-    },
-    "LegacyAppPathString": {
-      "type": "string"
     },
     "McpElicitationArrayType": {
       "enum": [
@@ -1382,27 +1374,6 @@
             "requestedSchema": {
               "$ref": "#/definitions/McpElicitationSchema"
             }
-          },
-          "required": [
-            "message",
-            "mode",
-            "requestedSchema"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "_meta": true,
-            "message": {
-              "type": "string"
-            },
-            "mode": {
-              "enum": [
-                "openai/form"
-              ],
-              "type": "string"
-            },
-            "requestedSchema": true
           },
           "required": [
             "message",

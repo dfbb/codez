@@ -25,20 +25,17 @@ pub(crate) enum RuntimeCommand {
     ToolResponse { id: String, result: JsonValue },
     ToolError { id: String, error_text: String },
     TimeoutFired { id: u64 },
-    ObservePendingFrontier,
     Terminate,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum PendingRuntimeMode {
-    #[cfg(test)]
     Continue,
     PauseUntilResumed,
 }
 
 #[derive(Debug)]
 pub(crate) enum RuntimeControlCommand {
-    Continue,
     Resume,
     Terminate,
 }
@@ -248,7 +245,6 @@ fn run_runtime(
                     return;
                 }
             }
-            RuntimeCommand::ObservePendingFrontier => {}
         }
 
         scope.perform_microtask_checkpoint();
@@ -287,10 +283,8 @@ fn next_runtime_command(
 
         let _ = event_tx.send(RuntimeEvent::Pending);
         match pending_mode {
-            #[cfg(test)]
             PendingRuntimeMode::Continue => return command_rx.recv().ok(),
             PendingRuntimeMode::PauseUntilResumed => match control_rx.recv().ok()? {
-                RuntimeControlCommand::Continue => return command_rx.recv().ok(),
                 RuntimeControlCommand::Resume => continue,
                 RuntimeControlCommand::Terminate => return Some(RuntimeCommand::Terminate),
             },

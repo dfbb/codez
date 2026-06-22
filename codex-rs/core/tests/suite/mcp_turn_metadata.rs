@@ -60,7 +60,7 @@ default_tools_approval_mode = "{approval_mode}"
         .with_user_config(&user_config_path, user_config);
 }
 
-fn set_default_app_approval_mode_and_reviewer(
+fn set_calendar_approval_mode_and_default_reviewer(
     config: &mut Config,
     approval_mode: AppToolApproval,
     default_approvals_reviewer: ApprovalsReviewer,
@@ -75,6 +75,8 @@ fn set_default_app_approval_mode_and_reviewer(
         r#"
 [apps._default]
 approvals_reviewer = "{default_approvals_reviewer}"
+
+[apps.calendar]
 default_tools_approval_mode = "{approval_mode}"
 "#
     ))
@@ -165,7 +167,7 @@ async fn approved_mcp_tool_call_metadata_records_prior_user_input_request() -> R
                 .features
                 .enable(Feature::ToolCallMcpElicitation)
                 .expect("test config should allow feature update");
-            set_default_app_approval_mode_and_reviewer(
+            set_calendar_approval_mode_and_default_reviewer(
                 config,
                 AppToolApproval::Prompt,
                 ApprovalsReviewer::User,
@@ -229,8 +231,7 @@ async fn approved_mcp_tool_call_metadata_records_prior_user_input_request() -> R
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn apps_default_prompt_with_auto_review_routes_actual_mcp_approval_to_guardian() -> Result<()>
-{
+async fn apps_default_auto_review_routes_actual_mcp_approval_to_guardian() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -284,7 +285,7 @@ async fn apps_default_prompt_with_auto_review_routes_actual_mcp_approval_to_guar
                 .features
                 .enable(Feature::ToolCallMcpElicitation)
                 .expect("test config should allow feature update");
-            set_default_app_approval_mode_and_reviewer(
+            set_calendar_approval_mode_and_default_reviewer(
                 config,
                 AppToolApproval::Prompt,
                 ApprovalsReviewer::AutoReview,

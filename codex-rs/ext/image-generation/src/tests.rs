@@ -87,7 +87,6 @@ async fn recent_image_fallback_selects_newest_images_in_chronological_order() {
             metadata: None,
         },
         ResponseItem::FunctionCallOutput {
-            id: None,
             call_id: "mcp-call".to_string(),
             output: image_output("mcp"),
             metadata: None,
@@ -101,21 +100,19 @@ async fn recent_image_fallback_selects_newest_images_in_chronological_order() {
             metadata: None,
         },
         ResponseItem::CustomToolCallOutput {
-            id: None,
             call_id: "code-mode-call".to_string(),
             name: Some("exec".to_string()),
             output: image_output("code-mode"),
             metadata: None,
         },
         ResponseItem::ImageGenerationCall {
-            id: Some("generated-call".to_string()),
+            id: "generated-call".to_string(),
             status: "completed".to_string(),
             revised_prompt: None,
             result: "generated".to_string(),
             metadata: None,
         },
         ResponseItem::FunctionCallOutput {
-            id: None,
             call_id: "orphan-call".to_string(),
             output: image_output("orphan"),
             metadata: None,

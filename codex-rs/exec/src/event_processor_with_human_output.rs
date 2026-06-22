@@ -68,9 +68,10 @@ impl EventProcessorWithHumanOutput {
         match item {
             ThreadItem::CommandExecution { command, cwd, .. } => {
                 eprintln!(
-                    "{}\n{} in {cwd}",
+                    "{}\n{} in {}",
                     "exec".style(self.italic).style(self.magenta),
                     command.style(self.bold),
+                    cwd.display()
                 );
             }
             ThreadItem::McpToolCall { server, tool, .. } => {

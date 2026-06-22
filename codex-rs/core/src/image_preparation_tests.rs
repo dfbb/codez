@@ -106,7 +106,6 @@ fn preparation_replaces_only_failed_tool_images_and_preserves_metadata() {
     let (valid_image_url, _) = png_data_url(/*width*/ 64, /*height*/ 32);
     let expected_valid_image_url = valid_image_url.clone();
     let mut items = vec![ResponseItem::CustomToolCallOutput {
-        id: None,
         call_id: "call-1".to_string(),
         name: None,
         output: FunctionCallOutputPayload {
@@ -141,7 +140,6 @@ fn preparation_replaces_only_failed_tool_images_and_preserves_metadata() {
     assert_eq!(
         items,
         vec![ResponseItem::CustomToolCallOutput {
-            id: None,
             call_id: "call-1".to_string(),
             name: None,
             output: FunctionCallOutputPayload {

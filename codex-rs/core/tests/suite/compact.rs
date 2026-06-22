@@ -25,7 +25,6 @@ use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use codex_utils_path_uri::PathUri;
 use core_test_support::PathBufExt;
 use core_test_support::context_snapshot;
 use core_test_support::context_snapshot::ContextSnapshotOptions;
@@ -1996,7 +1995,6 @@ async fn auto_compact_runs_after_resume_when_token_usage_is_over_limit() {
             metadata: None,
         },
         codex_protocol::models::ResponseItem::Compaction {
-            id: None,
             encrypted_content: "ENCRYPTED_COMPACTION_SUMMARY".to_string(),
             metadata: None,
         },
@@ -3996,7 +3994,6 @@ async fn auto_compact_counts_encrypted_reasoning_before_last_user() {
             metadata: None,
         },
         codex_protocol::models::ResponseItem::Compaction {
-            id: None,
             encrypted_content: "ENCRYPTED_COMPACTION_SUMMARY".to_string(),
             metadata: None,
         },
@@ -4124,7 +4121,6 @@ async fn auto_compact_runs_when_reasoning_header_clears_between_turns() {
             metadata: None,
         },
         codex_protocol::models::ResponseItem::Compaction {
-            id: None,
             encrypted_content: "ENCRYPTED_COMPACTION_SUMMARY".to_string(),
             metadata: None,
         },
@@ -4594,7 +4590,7 @@ async fn manual_compaction_keeps_the_creation_time_global_instructions() -> Resu
     // Assert the pre-compaction source list points at the creation-time file.
     assert_eq!(
         test.codex.instruction_sources().await,
-        vec![PathUri::from_abs_path(&source)],
+        vec![source.clone()],
         "thread reports the creation-time global source before compaction"
     );
 
@@ -4624,7 +4620,7 @@ async fn manual_compaction_keeps_the_creation_time_global_instructions() -> Resu
     assert_single_instruction_fragment(&requests[2], &expected_fragment);
     assert_eq!(
         test.codex.instruction_sources().await,
-        vec![PathUri::from_abs_path(&source)],
+        vec![source],
         "thread retains the creation-time global source after compaction"
     );
 
@@ -4674,7 +4670,7 @@ async fn mid_turn_compaction_keeps_the_creation_time_global_instructions() -> Re
     // Assert the pre-compaction source list points at the creation-time file.
     assert_eq!(
         test.codex.instruction_sources().await,
-        vec![PathUri::from_abs_path(&source)],
+        vec![source.clone()],
         "thread reports the creation-time global source before mid-turn compaction"
     );
 
@@ -4696,7 +4692,7 @@ async fn mid_turn_compaction_keeps_the_creation_time_global_instructions() -> Re
     assert_single_instruction_fragment(&requests[2], &expected_fragment);
     assert_eq!(
         test.codex.instruction_sources().await,
-        vec![PathUri::from_abs_path(&source)],
+        vec![source],
         "thread retains the creation-time global source after mid-turn compaction"
     );
 
@@ -4781,7 +4777,7 @@ async fn remote_v2_compaction_keeps_creation_time_instructions_after_same_path_m
     );
     assert_eq!(
         test.codex.instruction_sources().await,
-        vec![PathUri::from_abs_path(&source)],
+        vec![source.clone()],
         "running thread retains the selected same-path source"
     );
     assert_eq!(
@@ -4830,7 +4826,7 @@ async fn remote_v2_compaction_keeps_creation_time_instructions_after_same_path_m
     );
     assert_eq!(
         resumed.codex.instruction_sources().await,
-        vec![PathUri::from_abs_path(&source)],
+        vec![source],
         "cold-resumed thread reports the same rewritten source path"
     );
 

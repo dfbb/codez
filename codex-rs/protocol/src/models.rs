@@ -863,20 +863,6 @@ pub enum AgentMessageInputContent {
     EncryptedContent { encrypted_content: String },
 }
 
-/// Returns the locally readable text when an agent message is entirely plaintext.
-pub fn plaintext_agent_message_content(content: &[AgentMessageInputContent]) -> Option<String> {
-    let mut text_parts = Vec::with_capacity(content.len());
-    for part in content {
-        match part {
-            AgentMessageInputContent::InputText { text } => text_parts.push(text.as_str()),
-            AgentMessageInputContent::EncryptedContent { .. } => return None,
-        }
-    }
-
-    let text = text_parts.join("\n");
-    (!text.trim().is_empty()).then_some(text)
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum ImageDetail {
@@ -909,17 +895,14 @@ pub struct ResponseItemMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub turn_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub source_call_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseItem {
     Message {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
+        #[serde(default, skip_serializing)]
+        #[ts(skip)]
         id: Option<String>,
         role: String,
         content: Vec<ContentItem>,
@@ -934,9 +917,6 @@ pub enum ResponseItem {
         metadata: Option<ResponseItemMetadata>,
     },
     AgentMessage {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        id: Option<String>,
         author: String,
         recipient: String,
         content: Vec<AgentMessageInputContent>,
@@ -945,9 +925,10 @@ pub enum ResponseItem {
         metadata: Option<ResponseItemMetadata>,
     },
     Reasoning {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        id: Option<String>,
+        #[serde(default, skip_serializing)]
+        #[ts(skip)]
+        #[schemars(skip)]
+        id: String,
         summary: Vec<ReasoningItemReasoningSummary>,
         #[serde(default, skip_serializing_if = "should_serialize_reasoning_content")]
         #[ts(optional)]
@@ -959,8 +940,8 @@ pub enum ResponseItem {
     },
     LocalShellCall {
         /// Legacy id field retained for compatibility with older payloads.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
+        #[serde(default, skip_serializing)]
+        #[ts(skip)]
         id: Option<String>,
         /// Set when using the Responses API.
         call_id: Option<String>,
@@ -971,8 +952,8 @@ pub enum ResponseItem {
         metadata: Option<ResponseItemMetadata>,
     },
     FunctionCall {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
+        #[serde(default, skip_serializing)]
+        #[ts(skip)]
         id: Option<String>,
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -988,8 +969,8 @@ pub enum ResponseItem {
         metadata: Option<ResponseItemMetadata>,
     },
     ToolSearchCall {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
+        #[serde(default, skip_serializing)]
+        #[ts(skip)]
         id: Option<String>,
         call_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1008,9 +989,6 @@ pub enum ResponseItem {
     //   - an array of structured content items (`content_items`)
     // We keep this behavior centralized in `FunctionCallOutputPayload`.
     FunctionCallOutput {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        id: Option<String>,
         call_id: String,
         #[ts(as = "FunctionCallOutputBody")]
         #[schemars(with = "FunctionCallOutputBody")]
@@ -1020,8 +998,8 @@ pub enum ResponseItem {
         metadata: Option<ResponseItemMetadata>,
     },
     CustomToolCall {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
+        #[serde(default, skip_serializing)]
+        #[ts(skip)]
         id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
@@ -1038,9 +1016,6 @@ pub enum ResponseItem {
     // `function_call_output.output` so freeform tools can return either plain
     // text or structured content items.
     CustomToolCallOutput {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        id: Option<String>,
         call_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
@@ -1053,9 +1028,6 @@ pub enum ResponseItem {
         metadata: Option<ResponseItemMetadata>,
     },
     ToolSearchOutput {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        id: Option<String>,
         call_id: Option<String>,
         status: String,
         execution: String,
@@ -1074,8 +1046,8 @@ pub enum ResponseItem {
     //   "action": {"type":"search","query":"weather: San Francisco, CA"}
     // }
     WebSearchCall {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
+        #[serde(default, skip_serializing)]
+        #[ts(skip)]
         id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
@@ -1097,9 +1069,7 @@ pub enum ResponseItem {
     //   "result":"..."
     // }
     ImageGenerationCall {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        id: Option<String>,
+        id: String,
         status: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
@@ -1111,25 +1081,17 @@ pub enum ResponseItem {
     },
     #[serde(alias = "compaction_summary")]
     Compaction {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        id: Option<String>,
         encrypted_content: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         metadata: Option<ResponseItemMetadata>,
     },
-    // Compaction triggers are request controls, and the Responses API does not
-    // accept an `id` field for them.
     CompactionTrigger {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         metadata: Option<ResponseItemMetadata>,
     },
     ContextCompaction {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         encrypted_content: Option<String>,
@@ -1145,48 +1107,6 @@ impl ResponseItem {
     /// Returns whether this item is an ordinary user-role message.
     pub fn is_user_message(&self) -> bool {
         matches!(self, Self::Message { role, .. } if role == "user")
-    }
-
-    /// Returns the non-empty Responses API item ID, if present.
-    pub fn id(&self) -> Option<&str> {
-        match self {
-            Self::Message { id, .. }
-            | Self::AgentMessage { id, .. }
-            | Self::LocalShellCall { id, .. }
-            | Self::FunctionCall { id, .. }
-            | Self::ToolSearchCall { id, .. }
-            | Self::FunctionCallOutput { id, .. }
-            | Self::CustomToolCall { id, .. }
-            | Self::CustomToolCallOutput { id, .. }
-            | Self::ToolSearchOutput { id, .. }
-            | Self::WebSearchCall { id, .. }
-            | Self::Reasoning { id, .. }
-            | Self::ImageGenerationCall { id, .. }
-            | Self::Compaction { id, .. }
-            | Self::ContextCompaction { id, .. } => id.as_deref().filter(|id| !id.is_empty()),
-            Self::CompactionTrigger { .. } | Self::Other => None,
-        }
-    }
-
-    /// Sets or clears the Responses API item ID for variants that carry one.
-    pub fn set_id(&mut self, new_id: Option<String>) {
-        match self {
-            Self::Message { id, .. }
-            | Self::AgentMessage { id, .. }
-            | Self::LocalShellCall { id, .. }
-            | Self::FunctionCall { id, .. }
-            | Self::ToolSearchCall { id, .. }
-            | Self::FunctionCallOutput { id, .. }
-            | Self::CustomToolCall { id, .. }
-            | Self::CustomToolCallOutput { id, .. }
-            | Self::ToolSearchOutput { id, .. }
-            | Self::WebSearchCall { id, .. }
-            | Self::Reasoning { id, .. }
-            | Self::ImageGenerationCall { id, .. }
-            | Self::Compaction { id, .. }
-            | Self::ContextCompaction { id, .. } => *id = new_id,
-            Self::CompactionTrigger { .. } | Self::Other => {}
-        }
     }
 
     /// Returns the non-empty turn ID stamped onto this item, if present.
@@ -1231,7 +1151,7 @@ impl ResponseItem {
             | Self::WebSearchCall { metadata, .. }
             | Self::ImageGenerationCall { metadata, .. }
             | Self::Compaction { metadata, .. }
-            | Self::CompactionTrigger { metadata, .. }
+            | Self::CompactionTrigger { metadata }
             | Self::ContextCompaction { metadata, .. } => metadata.as_ref(),
             Self::Other => None,
         }
@@ -1252,7 +1172,7 @@ impl ResponseItem {
             | Self::WebSearchCall { metadata, .. }
             | Self::ImageGenerationCall { metadata, .. }
             | Self::Compaction { metadata, .. }
-            | Self::CompactionTrigger { metadata, .. }
+            | Self::CompactionTrigger { metadata }
             | Self::ContextCompaction { metadata, .. } => Some(metadata),
             Self::Other => None,
         }
@@ -1498,7 +1418,6 @@ impl From<ResponseInputItem> for ResponseItem {
                 metadata: None,
             },
             ResponseInputItem::FunctionCallOutput { call_id, output } => Self::FunctionCallOutput {
-                id: None,
                 call_id,
                 output,
                 metadata: None,
@@ -1506,7 +1425,6 @@ impl From<ResponseInputItem> for ResponseItem {
             ResponseInputItem::McpToolCallOutput { call_id, output } => {
                 let output = output.into_function_call_output_payload();
                 Self::FunctionCallOutput {
-                    id: None,
                     call_id,
                     output,
                     metadata: None,
@@ -1517,7 +1435,6 @@ impl From<ResponseInputItem> for ResponseItem {
                 name,
                 output,
             } => Self::CustomToolCallOutput {
-                id: None,
                 call_id,
                 name,
                 output,
@@ -1533,7 +1450,6 @@ impl From<ResponseInputItem> for ResponseItem {
                 status,
                 execution,
                 tools,
-                id: None,
                 metadata: None,
             },
         }
@@ -2055,20 +1971,6 @@ mod tests {
     ];
 
     #[test]
-    fn plaintext_agent_message_content_rejects_mixed_encrypted_content() {
-        let content = vec![
-            AgentMessageInputContent::InputText {
-                text: "Message Type: MESSAGE\nPayload:\n".to_string(),
-            },
-            AgentMessageInputContent::EncryptedContent {
-                encrypted_content: "encrypted-payload".to_string(),
-            },
-        ];
-
-        assert_eq!(plaintext_agent_message_content(&content), None);
-    }
-
-    #[test]
     fn response_input_message_conversion_preserves_phase() {
         let item = ResponseItem::from(ResponseInputItem::Message {
             role: "assistant".to_string(),
@@ -2127,20 +2029,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn response_item_id_getter_and_setter() {
-        let mut item = response_item_with_metadata(/*metadata*/ None);
-        assert_eq!(item.id(), None);
-
-        item.set_id(Some("msg_test".to_string()));
-
-        assert_eq!(item.id(), Some("msg_test"));
-
-        item.set_id(/*new_id*/ None);
-
-        assert_eq!(item.id(), None);
-    }
-
     fn response_item_with_metadata(metadata: Option<ResponseItemMetadata>) -> ResponseItem {
         ResponseItem::Message {
             id: None,
@@ -2156,7 +2044,6 @@ mod tests {
     fn response_item_metadata(turn_id: &str) -> ResponseItemMetadata {
         ResponseItemMetadata {
             turn_id: Some(turn_id.to_string()),
-            ..Default::default()
         }
     }
 
@@ -2257,7 +2144,7 @@ mod tests {
         assert_eq!(
             item,
             ResponseItem::ImageGenerationCall {
-                id: Some("ig_123".to_string()),
+                id: "ig_123".to_string(),
                 status: "completed".to_string(),
                 revised_prompt: Some("A small blue square".to_string()),
                 result: "Zm9v".to_string(),
@@ -2279,7 +2166,7 @@ mod tests {
         assert_eq!(
             item,
             ResponseItem::ImageGenerationCall {
-                id: Some("ig_123".to_string()),
+                id: "ig_123".to_string(),
                 status: "completed".to_string(),
                 revised_prompt: None,
                 result: "Zm9v".to_string(),
@@ -2981,7 +2868,6 @@ mod tests {
         assert_eq!(
             item,
             ResponseItem::Compaction {
-                id: None,
                 encrypted_content: "abc".into(),
                 metadata: None,
             }
@@ -2998,7 +2884,6 @@ mod tests {
         assert_eq!(
             item,
             ResponseItem::ContextCompaction {
-                id: None,
                 encrypted_content: Some("abc".into()),
                 metadata: None,
             }
@@ -3083,6 +2968,7 @@ mod tests {
                     queries: Some(vec!["weather seattle".into(), "seattle weather now".into()]),
                 }),
                 Some("completed".into()),
+                true,
             ),
             (
                 r#"{
@@ -3098,6 +2984,7 @@ mod tests {
                     url: Some("https://example.com".into()),
                 }),
                 Some("open".into()),
+                true,
             ),
             (
                 r#"{
@@ -3115,6 +3002,7 @@ mod tests {
                     pattern: Some("installation".into()),
                 }),
                 Some("in_progress".into()),
+                true,
             ),
             (
                 r#"{
@@ -3125,10 +3013,12 @@ mod tests {
                 Some("ws_partial".into()),
                 None,
                 Some("in_progress".into()),
+                false,
             ),
         ];
 
-        for (json_literal, expected_id, expected_action, expected_status) in cases {
+        for (json_literal, expected_id, expected_action, expected_status, expect_roundtrip) in cases
+        {
             let parsed: ResponseItem = serde_json::from_str(json_literal)?;
             let expected = ResponseItem::WebSearchCall {
                 id: expected_id.clone(),
@@ -3139,7 +3029,10 @@ mod tests {
             assert_eq!(parsed, expected);
 
             let serialized = serde_json::to_value(&parsed)?;
-            let expected_serialized: serde_json::Value = serde_json::from_str(json_literal)?;
+            let mut expected_serialized: serde_json::Value = serde_json::from_str(json_literal)?;
+            if !expect_roundtrip && let Some(obj) = expected_serialized.as_object_mut() {
+                obj.remove("id");
+            }
             assert_eq!(serialized, expected_serialized);
         }
 
@@ -3263,7 +3156,6 @@ mod tests {
         assert_eq!(
             ResponseItem::from(input.clone()),
             ResponseItem::ToolSearchOutput {
-                id: None,
                 call_id: Some("search-1".to_string()),
                 status: "completed".to_string(),
                 execution: "client".to_string(),
@@ -3351,7 +3243,6 @@ mod tests {
         assert_eq!(
             parsed_output,
             ResponseItem::ToolSearchOutput {
-                id: None,
                 call_id: None,
                 status: "completed".to_string(),
                 execution: "server".to_string(),

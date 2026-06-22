@@ -299,7 +299,6 @@ impl CoreTurnHost {
         self.exec
             .session
             .inject_if_running(vec![ResponseItem::CustomToolCallOutput {
-                id: None,
                 call_id,
                 name: Some(PUBLIC_TOOL_NAME.to_string()),
                 output: FunctionCallOutputPayload::from_text(text),

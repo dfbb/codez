@@ -16,7 +16,7 @@ use codex_protocol::protocol::NetworkAccess as CoreNetworkAccess;
 use codex_protocol::request_permissions::PermissionGrantScope as CorePermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile as CoreRequestPermissionProfile;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use codex_utils_path_uri::LegacyAppPathString;
+use codex_utils_path_uri::ApiPathString;
 use codex_utils_path_uri::PathConvention;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -57,9 +57,9 @@ impl From<CoreNetworkApprovalContext> for NetworkApprovalContext {
 #[ts(export_to = "v2/")]
 pub struct AdditionalFileSystemPermissions {
     /// This will be removed in favor of `entries`.
-    pub read: Option<Vec<LegacyAppPathString>>,
+    pub read: Option<Vec<ApiPathString>>,
     /// This will be removed in favor of `entries`.
-    pub write: Option<Vec<LegacyAppPathString>>,
+    pub write: Option<Vec<ApiPathString>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub glob_scan_max_depth: Option<NonZeroUsize>,
@@ -78,7 +78,7 @@ impl From<CoreFileSystemPermissions<AbsolutePathBuf>> for AdditionalFileSystemPe
             if let Some(paths) = read.as_ref() {
                 entries.extend(paths.iter().map(|path| FileSystemSandboxEntry {
                     path: FileSystemPath::Path {
-                        path: LegacyAppPathString::from_abs_path(path),
+                        path: ApiPathString::from_abs_path(path),
                     },
                     access: FileSystemAccessMode::Read,
                 }));
@@ -86,24 +86,14 @@ impl From<CoreFileSystemPermissions<AbsolutePathBuf>> for AdditionalFileSystemPe
             if let Some(paths) = write.as_ref() {
                 entries.extend(paths.iter().map(|path| FileSystemSandboxEntry {
                     path: FileSystemPath::Path {
-                        path: LegacyAppPathString::from_abs_path(path),
+                        path: ApiPathString::from_abs_path(path),
                     },
                     access: FileSystemAccessMode::Write,
                 }));
             }
             Self {
-                read: read.map(|paths| {
-                    paths
-                        .iter()
-                        .map(LegacyAppPathString::from_abs_path)
-                        .collect()
-                }),
-                write: write.map(|paths| {
-                    paths
-                        .iter()
-                        .map(LegacyAppPathString::from_abs_path)
-                        .collect()
-                }),
+                read: read.map(|paths| paths.iter().map(ApiPathString::from_abs_path).collect()),
+                write: write.map(|paths| paths.iter().map(ApiPathString::from_abs_path).collect()),
                 glob_scan_max_depth: None,
                 entries: Some(entries),
             }
@@ -286,7 +276,7 @@ impl From<FileSystemSpecialPath> for CoreFileSystemSpecialPath {
 #[ts(export_to = "v2/")]
 // TODO(anp): Rename this type to distinguish it from the generic protocol FileSystemPath.
 pub enum FileSystemPath {
-    Path { path: LegacyAppPathString },
+    Path { path: ApiPathString },
     GlobPattern { pattern: String },
     Special { value: FileSystemSpecialPath },
 }
@@ -296,7 +286,7 @@ impl From<CoreFileSystemPath<AbsolutePathBuf>> for FileSystemPath {
     fn from(value: CoreFileSystemPath<AbsolutePathBuf>) -> Self {
         match value {
             CoreFileSystemPath::Path { path } => Self::Path {
-                path: LegacyAppPathString::from_abs_path(&path),
+                path: ApiPathString::from_abs_path(&path),
             },
             CoreFileSystemPath::GlobPattern { pattern } => Self::GlobPattern { pattern },
             CoreFileSystemPath::Special { value } => Self::Special {

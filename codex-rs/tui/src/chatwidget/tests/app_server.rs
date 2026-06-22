@@ -30,7 +30,6 @@ fn thread_settings_for_test(
                     developer_instructions: None,
                 },
             },
-            multi_agent_mode: Default::default(),
             personality: Some(Personality::Pragmatic),
         },
     }
@@ -522,7 +521,7 @@ async fn live_app_server_command_execution_strips_shell_wrapper() {
             item: AppServerThreadItem::CommandExecution {
                 id: "cmd-1".to_string(),
                 command: command.clone(),
-                cwd: test_path_buf("/tmp").abs().into(),
+                cwd: test_path_buf("/tmp").abs(),
                 process_id: None,
                 source: AppServerCommandExecutionSource::UserShell,
                 status: AppServerCommandExecutionStatus::InProgress,
@@ -544,7 +543,7 @@ async fn live_app_server_command_execution_strips_shell_wrapper() {
             item: AppServerThreadItem::CommandExecution {
                 id: "cmd-1".to_string(),
                 command,
-                cwd: test_path_buf("/tmp").abs().into(),
+                cwd: test_path_buf("/tmp").abs(),
                 process_id: None,
                 source: AppServerCommandExecutionSource::UserShell,
                 status: AppServerCommandExecutionStatus::Completed,

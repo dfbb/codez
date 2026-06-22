@@ -26,7 +26,6 @@ use crate::tools::ToolRouter;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolPayload;
-use crate::tools::effective_tool_mode;
 use crate::tools::parallel::ToolCallRuntime;
 use crate::tools::router::ToolCall;
 use crate::tools::router::ToolCallSource;
@@ -117,8 +116,7 @@ impl CodeModeService {
         router: Arc<ToolRouter>,
         tracker: SharedTurnDiffTracker,
     ) -> Option<CodeModeDispatchWorker> {
-        let tool_mode = effective_tool_mode(turn);
-        if !matches!(tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly)
+        if !matches!(turn.tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly)
             || self.session.is_none()
         {
             return None;
@@ -323,10 +321,8 @@ fn build_freeform_tool_payload(
 #[cfg(test)]
 mod tests {
     use super::build_nested_tool_payload;
-    use super::truncate_code_mode_result;
     use crate::tools::context::ToolPayload;
     use codex_code_mode::CodeModeToolKind;
-    use codex_protocol::models::FunctionCallOutputContentItem;
     use codex_tools::ToolName;
     use serde_json::json;
 
@@ -362,24 +358,5 @@ mod tests {
             }
             other => panic!("expected freeform payload, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn truncated_text_output_starts_with_warning() {
-        let items = vec![FunctionCallOutputContentItem::InputText {
-            text: "0123456789012345678901234567890123456789".to_string(),
-        }];
-
-        assert_eq!(
-            truncate_code_mode_result(items, Some(5)),
-            vec![FunctionCallOutputContentItem::InputText {
-                text: concat!(
-                    "Warning: truncated output (original token count: 10)\n",
-                    "Total output lines: 1\n\n",
-                    "0123456789…5 tokens truncated…0123456789"
-                )
-                .to_string(),
-            }]
-        );
     }
 }

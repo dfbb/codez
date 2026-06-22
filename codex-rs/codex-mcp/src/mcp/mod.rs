@@ -305,7 +305,6 @@ pub async fn read_mcp_resource(
         host_owned_codex_apps_enabled,
         config.prefix_mcp_tool_names,
         config.client_elicitation_capability.clone(),
-        /*supports_openai_form_elicitation*/ false,
         tool_plugin_provenance(config),
         auth,
         /*elicitation_reviewer*/ None,
@@ -380,7 +379,6 @@ pub async fn collect_mcp_server_status_snapshot_with_detail(
         host_owned_codex_apps_enabled,
         config.prefix_mcp_tool_names,
         config.client_elicitation_capability.clone(),
-        /*supports_openai_form_elicitation*/ false,
         tool_plugin_provenance,
         auth,
         /*elicitation_reviewer*/ None,
@@ -619,16 +617,14 @@ async fn collect_mcp_server_status_snapshot_from_manager(
         mcp_connection_manager.list_all_tools(),
         async {
             if detail.include_resources() {
-                mcp_connection_manager.list_all_resources(|_| true).await
+                mcp_connection_manager.list_all_resources().await
             } else {
                 HashMap::new()
             }
         },
         async {
             if detail.include_resources() {
-                mcp_connection_manager
-                    .list_all_resource_templates(|_| true)
-                    .await
+                mcp_connection_manager.list_all_resource_templates().await
             } else {
                 HashMap::new()
             }

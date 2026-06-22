@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 
@@ -25,8 +24,6 @@ use tokio::task::JoinHandle;
 use crate::connection::JsonRpcConnection;
 use crate::connection::JsonRpcConnectionEvent;
 use crate::connection::JsonRpcTransport;
-
-pub(crate) const SESSION_ALREADY_ATTACHED_ERROR_CODE: i64 = -32010;
 
 #[derive(Debug)]
 pub(crate) enum RpcCallError {
@@ -228,7 +225,6 @@ pub(crate) struct RpcClient {
     // immediately when the socket closes, even if no JSON-RPC error response
     // can be delivered for their request id.
     disconnected_rx: watch::Receiver<bool>,
-    closed: Arc<AtomicBool>,
     next_request_id: AtomicI64,
     transport_tasks: Vec<JoinHandle<()>>,
     transport: JsonRpcTransport,
@@ -245,11 +241,9 @@ impl RpcClient {
             transport,
         } = connection;
         let pending = Arc::new(Mutex::new(HashMap::<RequestId, PendingRequest>::new()));
-        let closed = Arc::new(AtomicBool::new(false));
         let (event_tx, event_rx) = mpsc::channel(128);
 
         let pending_for_reader = Arc::clone(&pending);
-        let closed_for_reader = Arc::clone(&closed);
         let transport_for_reader = transport.clone();
         let reader_task = tokio::spawn(async move {
             let disconnect_reason = loop {
@@ -275,13 +269,12 @@ impl RpcClient {
                 }
             };
 
-            closed_for_reader.store(true, Ordering::Release);
-            drain_pending(&pending_for_reader).await;
             let _ = event_tx
                 .send(RpcClientEvent::Disconnected {
                     reason: disconnect_reason,
                 })
                 .await;
+            drain_pending(&pending_for_reader).await;
             transport_for_reader.terminate();
         });
 
@@ -290,7 +283,6 @@ impl RpcClient {
                 write_tx,
                 pending,
                 disconnected_rx,
-                closed,
                 next_request_id: AtomicI64::new(1),
                 transport_tasks,
                 transport,
@@ -304,31 +296,24 @@ impl RpcClient {
         &self,
         method: &str,
         params: &P,
-    ) -> Result<(), RpcCallError> {
-        let params = serde_json::to_value(params).map_err(RpcCallError::Json)?;
-        if self.closed.load(Ordering::Acquire) || *self.disconnected_rx.borrow() {
-            return Err(RpcCallError::Closed);
-        }
+    ) -> Result<(), serde_json::Error> {
+        let params = serde_json::to_value(params)?;
         self.write_tx
             .send(JSONRPCMessage::Notification(JSONRPCNotification {
                 method: method.to_string(),
                 params: Some(params),
             }))
             .await
-            .map_err(|_| RpcCallError::Closed)
+            .map_err(|_| {
+                serde_json::Error::io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "JSON-RPC transport closed",
+                ))
+            })
     }
 
     pub(crate) fn is_disconnected(&self) -> bool {
-        self.closed.load(Ordering::Acquire) || *self.disconnected_rx.borrow()
-    }
-
-    pub(crate) async fn close_transport(&self) {
-        self.closed.store(true, Ordering::Release);
-        self.transport.terminate();
-        for task in &self.transport_tasks {
-            task.abort();
-        }
-        drain_pending(&self.pending).await;
+        *self.disconnected_rx.borrow()
     }
 
     pub(crate) async fn call<P, T>(&self, method: &str, params: &P) -> Result<T, RpcCallError>
@@ -343,7 +328,7 @@ impl RpcClient {
             // Registering the pending request and checking disconnect must be
             // atomic with the reader's drain_pending path. Otherwise a call
             // can sneak in after the drain and wait forever.
-            if self.closed.load(Ordering::Acquire) || *self.disconnected_rx.borrow() {
+            if *self.disconnected_rx.borrow() {
                 return Err(RpcCallError::Closed);
             }
             pending.insert(request_id.clone(), response_tx);
@@ -427,14 +412,6 @@ pub(crate) fn encode_server_message(
 pub(crate) fn invalid_request(message: String) -> JSONRPCErrorError {
     JSONRPCErrorError {
         code: -32600,
-        data: None,
-        message,
-    }
-}
-
-pub(crate) fn session_already_attached(message: String) -> JSONRPCErrorError {
-    JSONRPCErrorError {
-        code: SESSION_ALREADY_ATTACHED_ERROR_CODE,
         data: None,
         message,
     }

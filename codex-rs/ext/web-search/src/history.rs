@@ -1,9 +1,9 @@
 use codex_api::SearchInput;
 use codex_core::parse_turn_item;
 use codex_protocol::items::TurnItem;
+use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::models::plaintext_agent_message_content;
 use codex_tools::retain_tail_from_last_n_user_messages;
 use codex_tools::truncate_assistant_output_text_to_token_budget;
 
@@ -29,9 +29,7 @@ pub(crate) fn recent_input(items: &[ResponseItem]) -> Option<SearchInput> {
 fn push_visible_message(messages: &mut Vec<ResponseItem>, item: &ResponseItem) {
     match item {
         ResponseItem::Message { role, .. } if role == ASSISTANT_ROLE => {
-            let mut message = item.clone();
-            message.set_id(/*new_id*/ None);
-            messages.push(message);
+            messages.push(item.clone());
         }
         ResponseItem::AgentMessage {
             author,
@@ -39,7 +37,15 @@ fn push_visible_message(messages: &mut Vec<ResponseItem>, item: &ResponseItem) {
             metadata,
             ..
         } => {
-            if let Some(text) = plaintext_agent_message_content(content) {
+            let text = content
+                .iter()
+                .filter_map(|content| match content {
+                    AgentMessageInputContent::InputText { text } => Some(text.as_str()),
+                    AgentMessageInputContent::EncryptedContent { .. } => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !text.trim().is_empty() {
                 messages.push(ResponseItem::Message {
                     id: None,
                     role: ASSISTANT_ROLE.to_string(),
@@ -52,7 +58,7 @@ fn push_visible_message(messages: &mut Vec<ResponseItem>, item: &ResponseItem) {
             }
         }
         ResponseItem::Message {
-            id: _,
+            id,
             role,
             content,
             phase,
@@ -67,7 +73,7 @@ fn push_visible_message(messages: &mut Vec<ResponseItem>, item: &ResponseItem) {
                 .collect::<Vec<_>>();
             if !content.is_empty() {
                 messages.push(ResponseItem::Message {
-                    id: None,
+                    id: id.clone(),
                     role: role.clone(),
                     content,
                     phase: phase.clone(),
@@ -110,15 +116,11 @@ mod tests {
 
     #[test]
     fn keeps_current_user_and_previous_visible_turn() {
-        let mut previous_user = message(USER_ROLE, "previous user");
-        previous_user.set_id(Some("msg_previous_user".to_string()));
-        let mut previous_assistant = message(ASSISTANT_ROLE, "previous assistant");
-        previous_assistant.set_id(Some("msg_previous_assistant".to_string()));
         let items = vec![
             message("system", "system"),
             message(USER_ROLE, "old user"),
             message(ASSISTANT_ROLE, "old assistant"),
-            previous_user,
+            message(USER_ROLE, "previous user"),
             ResponseItem::FunctionCall {
                 id: None,
                 name: "tool".to_string(),
@@ -127,7 +129,7 @@ mod tests {
                 call_id: "call-1".to_string(),
                 metadata: None,
             },
-            previous_assistant,
+            message(ASSISTANT_ROLE, "previous assistant"),
             message("developer", "developer"),
             message(USER_ROLE, "current user"),
             message(ASSISTANT_ROLE, "current commentary"),

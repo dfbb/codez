@@ -36,14 +36,12 @@ use crate::tools::handlers::ToolSearchHandlerCache;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolRouterParams;
-use crate::tools::router::ToolSuggestCandidates;
-use crate::tools::router::ToolSuggestPresentation;
 
 #[derive(Default)]
 struct ToolPlanInputs {
     mcp_tools: Option<Vec<ToolInfo>>,
     deferred_mcp_tools: Option<Vec<ToolInfo>>,
-    tool_suggest_candidates: Option<ToolSuggestCandidates>,
+    discoverable_tools: Option<Vec<DiscoverableTool>>,
     extension_tool_executors: Vec<Arc<dyn ToolExecutor<ExtensionToolCall>>>,
     dynamic_tools: Vec<DynamicToolSpec>,
 }
@@ -181,9 +179,9 @@ async fn probe_with(
     let router = ToolRouter::from_turn_context(
         &turn,
         ToolRouterParams {
-            tool_suggest_candidates: inputs.tool_suggest_candidates,
             mcp_tools: inputs.mcp_tools,
             deferred_mcp_tools: inputs.deferred_mcp_tools,
+            discoverable_tools: inputs.discoverable_tools,
             extension_tool_executors: inputs.extension_tool_executors,
             dynamic_tools: inputs.dynamic_tools.as_slice(),
         },
@@ -197,6 +195,16 @@ async fn probe(configure_turn: impl FnOnce(&mut TurnContext)) -> ToolPlanProbe {
 }
 
 fn set_feature(turn: &mut TurnContext, feature: Feature, enabled: bool) {
+    if enabled {
+        turn.features
+            .enable(feature)
+            .expect("test feature should be enableable");
+    } else {
+        turn.features
+            .disable(feature)
+            .expect("test feature should be disableable");
+    }
+
     let mut config = (*turn.config).clone();
     if enabled {
         config
@@ -211,6 +219,15 @@ fn set_feature(turn: &mut TurnContext, feature: Feature, enabled: bool) {
     }
     turn.multi_agent_version = config.multi_agent_version_from_features();
     turn.config = Arc::new(config);
+    turn.tool_mode = turn.model_info.tool_mode.unwrap_or_else(|| {
+        if turn.config.features.enabled(Feature::CodeModeOnly) {
+            ToolMode::CodeModeOnly
+        } else if turn.config.features.enabled(Feature::CodeMode) {
+            ToolMode::CodeMode
+        } else {
+            ToolMode::Direct
+        }
+    });
 }
 
 fn set_features(turn: &mut TurnContext, features: &[Feature]) {
@@ -393,19 +410,17 @@ fn dynamic_tool(namespace: Option<&str>, name: &str, defer_loading: bool) -> Dyn
     }
 }
 
-fn plugin_candidates(presentation: ToolSuggestPresentation) -> ToolSuggestCandidates {
-    ToolSuggestCandidates {
-        tools: vec![DiscoverableTool::Plugin(Box::new(DiscoverablePluginInfo {
-            id: "github@openai-curated-remote".to_string(),
-            remote_plugin_id: None,
-            name: "GitHub".to_string(),
-            description: Some("Work with GitHub repositories".to_string()),
-            has_skills: true,
-            mcp_server_names: Vec::new(),
-            app_connector_ids: Vec::new(),
-        }))],
-        presentation,
+fn discoverable_plugin(id: &str, name: &str) -> DiscoverableTool {
+    DiscoverablePluginInfo {
+        id: id.to_string(),
+        remote_plugin_id: None,
+        name: name.to_string(),
+        description: Some(format!("{name} plugin")),
+        has_skills: false,
+        mcp_server_names: Vec::new(),
+        app_connector_ids: Vec::new(),
     }
+    .into()
 }
 
 fn has_parameter(spec: &ToolSpec, parameter_name: &str) -> bool {
@@ -778,7 +793,7 @@ async fn tool_search_cache_rebuilds_when_deferred_sources_change() {
         ToolRouterParams {
             mcp_tools: None,
             deferred_mcp_tools: Some(vec![mcp_tool("first", "mcp__first", "lookup")]),
-            tool_suggest_candidates: None,
+            discoverable_tools: None,
             extension_tool_executors: Vec::new(),
             dynamic_tools: &[],
         },
@@ -793,7 +808,7 @@ async fn tool_search_cache_rebuilds_when_deferred_sources_change() {
         ToolRouterParams {
             mcp_tools: None,
             deferred_mcp_tools: Some(vec![mcp_tool("second", "mcp__second", "lookup")]),
-            tool_suggest_candidates: None,
+            discoverable_tools: None,
             extension_tool_executors: Vec::new(),
             dynamic_tools: &[],
         },
@@ -838,7 +853,8 @@ async fn invalid_mcp_tools_are_not_registered() {
 }
 
 #[tokio::test]
-async fn request_plugin_install_requires_all_discovery_features() {
+async fn request_plugin_install_requires_all_discovery_features_and_discoverable_tools() {
+    let discoverable_tools = Some(vec![discoverable_plugin("github", "GitHub")]);
     for disabled_feature in [Feature::ToolSuggest, Feature::Apps, Feature::Plugins] {
         let plan = probe_with(
             |turn| {
@@ -849,7 +865,7 @@ async fn request_plugin_install_requires_all_discovery_features() {
                 set_feature(turn, disabled_feature, /*enabled*/ false);
             },
             ToolPlanInputs {
-                tool_suggest_candidates: Some(plugin_candidates(ToolSuggestPresentation::ListTool)),
+                discoverable_tools: discoverable_tools.clone(),
                 ..ToolPlanInputs::default()
             },
         )
@@ -860,31 +876,17 @@ async fn request_plugin_install_requires_all_discovery_features() {
         ]);
     }
 
-    for tool_suggest_candidates in [
-        None,
-        Some(ToolSuggestCandidates {
-            tools: Vec::new(),
-            presentation: ToolSuggestPresentation::RecommendationContext,
-        }),
-    ] {
-        let plan = probe_with(
-            |turn| {
-                set_features(
-                    turn,
-                    &[Feature::ToolSuggest, Feature::Apps, Feature::Plugins],
-                );
-            },
-            ToolPlanInputs {
-                tool_suggest_candidates,
-                ..ToolPlanInputs::default()
-            },
-        )
-        .await;
-        plan.assert_visible_lacks(&[
-            "list_available_plugins_to_install",
-            "request_plugin_install",
-        ]);
-    }
+    let no_candidates = probe(|turn| {
+        set_features(
+            turn,
+            &[Feature::ToolSuggest, Feature::Apps, Feature::Plugins],
+        );
+    })
+    .await;
+    no_candidates.assert_visible_lacks(&[
+        "list_available_plugins_to_install",
+        "request_plugin_install",
+    ]);
 
     let enabled = probe_with(
         |turn| {
@@ -894,7 +896,7 @@ async fn request_plugin_install_requires_all_discovery_features() {
             );
         },
         ToolPlanInputs {
-            tool_suggest_candidates: Some(plugin_candidates(ToolSuggestPresentation::ListTool)),
+            discoverable_tools,
             ..ToolPlanInputs::default()
         },
     )
@@ -906,7 +908,7 @@ async fn request_plugin_install_requires_all_discovery_features() {
 }
 
 #[tokio::test]
-async fn request_plugin_install_stays_visible_without_tool_search() {
+async fn install_suggestion_tools_stay_visible_without_tool_search() {
     let plan = probe_with(
         |turn| {
             turn.model_info.supports_search_tool = false;
@@ -916,7 +918,7 @@ async fn request_plugin_install_stays_visible_without_tool_search() {
             );
         },
         ToolPlanInputs {
-            tool_suggest_candidates: Some(plugin_candidates(ToolSuggestPresentation::ListTool)),
+            discoverable_tools: Some(vec![discoverable_plugin("github", "GitHub")]),
             ..ToolPlanInputs::default()
         },
     )
@@ -930,7 +932,7 @@ async fn request_plugin_install_stays_visible_without_tool_search() {
 }
 
 #[tokio::test]
-async fn request_plugin_install_description_refers_to_recommended_plugins_hint() {
+async fn request_plugin_install_description_defers_inventory_to_list_tool() {
     let plan = probe_with(
         |turn| {
             set_features(
@@ -939,32 +941,34 @@ async fn request_plugin_install_description_refers_to_recommended_plugins_hint()
             );
         },
         ToolPlanInputs {
-            tool_suggest_candidates: Some(plugin_candidates(
-                ToolSuggestPresentation::RecommendationContext,
-            )),
+            discoverable_tools: Some(vec![discoverable_plugin("github", "GitHub")]),
             ..ToolPlanInputs::default()
         },
     )
     .await;
 
-    let request_spec = plan.visible_spec("request_plugin_install");
+    let ToolSpec::Function(ResponsesApiTool {
+        description: list_description,
+        ..
+    }) = plan.visible_spec("list_available_plugins_to_install")
+    else {
+        panic!("expected list_available_plugins_to_install function spec");
+    };
+    assert!(list_description.contains(
+        "Returns known plugins and connectors that can be passed to `request_plugin_install`."
+    ));
+
     let ToolSpec::Function(ResponsesApiTool {
         description: request_description,
         ..
-    }) = request_spec
+    }) = plan.visible_spec("request_plugin_install")
     else {
         panic!("expected request_plugin_install function spec");
     };
-    assert!(request_description.contains("the `<recommended_plugins>` list"));
-    assert!(!request_description.contains("list_available_plugins_to_install"));
+    assert!(request_description.contains(
+        "Use this tool only after `list_available_plugins_to_install` returns a plugin or connector that exactly matches the user's explicit request."
+    ));
     assert!(!request_description.contains("github"));
-    assert!(has_parameter(request_spec, "plugin_id"));
-    assert!(has_parameter(request_spec, "suggest_reason"));
-    assert!(!has_parameter(request_spec, "tool_id"));
-    assert!(!has_parameter(request_spec, "tool_type"));
-    assert!(!has_parameter(request_spec, "action_type"));
-    plan.assert_visible_lacks(&["list_available_plugins_to_install"]);
-    plan.assert_registered_lacks(&["list_available_plugins_to_install"]);
 }
 
 #[tokio::test]
@@ -1009,48 +1013,6 @@ async fn code_mode_only_exposes_code_executor_and_hides_nested_tools() {
         code_mode_only.namespace_function_names("codex_app"),
         Vec::<String>::new().as_slice()
     );
-}
-
-#[tokio::test]
-async fn code_mode_only_exposes_configured_dynamic_namespace_directly() {
-    let plan = probe_with(
-        |turn| {
-            set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
-            turn.model_info.supports_search_tool = true;
-            update_config(turn, |config| {
-                config.code_mode.direct_only_tool_namespaces = vec!["direct_only".to_string()];
-            });
-        },
-        ToolPlanInputs {
-            dynamic_tools: vec![dynamic_tool(
-                Some("direct_only"),
-                "lookup",
-                /*defer_loading*/ true,
-            )],
-            ..ToolPlanInputs::default()
-        },
-    )
-    .await;
-
-    plan.assert_visible_contains(&[
-        codex_code_mode::PUBLIC_TOOL_NAME,
-        codex_code_mode::WAIT_TOOL_NAME,
-        "direct_only",
-    ]);
-    plan.assert_visible_lacks(&["tool_search"]);
-    assert_eq!(
-        plan.exposure(&ToolName::namespaced("direct_only", "lookup").to_string()),
-        ToolExposure::DirectModelOnly
-    );
-    let ToolSpec::Namespace(namespace) = plan.visible_spec("direct_only") else {
-        panic!("expected direct-only namespace spec");
-    };
-    let ResponsesApiNamespaceTool::Function(tool) = &namespace.tools[0];
-    assert_eq!(tool.defer_loading, None);
-    let ToolSpec::Freeform(exec) = plan.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME) else {
-        panic!("expected code mode exec tool");
-    };
-    assert!(!exec.description.contains("direct_only_lookup(args:"));
 }
 
 #[tokio::test]
@@ -1219,6 +1181,7 @@ async fn tool_mode_selector_overrides_feature_flags() {
     let direct = probe(|turn| {
         set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
         turn.model_info.tool_mode = Some(ToolMode::Direct);
+        turn.tool_mode = ToolMode::Direct;
     })
     .await;
     direct.assert_visible_lacks(&[
@@ -1441,7 +1404,6 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
         live_web_search.visible_spec("web_search"),
         &ToolSpec::WebSearch {
             external_web_access: Some(true),
-            index_gated_web_access: None,
             filters: None,
             user_location: None,
             search_context_size: None,

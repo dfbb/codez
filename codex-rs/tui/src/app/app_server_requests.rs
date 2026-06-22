@@ -153,12 +153,6 @@ impl PendingAppServerRequests {
                     message: "Attestation generation is not available in TUI.".to_string(),
                 })
             }
-            ServerRequest::CurrentTimeRead { request_id, .. } => {
-                Some(UnsupportedAppServerRequest {
-                    request_id: request_id.clone(),
-                    message: "External current time is not available in TUI.".to_string(),
-                })
-            }
             ServerRequest::ApplyPatchApproval { request_id, .. } => {
                 Some(UnsupportedAppServerRequest {
                     request_id: request_id.clone(),
@@ -358,7 +352,6 @@ impl PendingAppServerRequests {
             ServerRequest::DynamicToolCall { .. }
             | ServerRequest::ChatgptAuthTokensRefresh { .. }
             | ServerRequest::AttestationGenerate { .. }
-            | ServerRequest::CurrentTimeRead { .. }
             | ServerRequest::ApplyPatchApproval { .. }
             | ServerRequest::ExecCommandApproval { .. } => true,
         }
@@ -459,7 +452,6 @@ mod tests {
                 item_id: "call-1".to_string(),
                 started_at_ms: 0,
                 approval_id: Some("approval-1".to_string()),
-                environment_id: None,
                 reason: None,
                 network_approval_context: None,
                 command: Some("ls".to_string()),
@@ -799,7 +791,6 @@ mod tests {
                     item_id: "call-1".to_string(),
                     started_at_ms: 0,
                     approval_id: Some("approval-1".to_string()),
-                    environment_id: None,
                     reason: None,
                     network_approval_context: None,
                     command: Some("ls".to_string()),

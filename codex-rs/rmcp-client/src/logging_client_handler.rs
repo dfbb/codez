@@ -17,7 +17,6 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
-use crate::rmcp_client::Elicitation;
 use crate::rmcp_client::SendElicitation;
 
 #[derive(Clone)]
@@ -41,7 +40,7 @@ impl ClientHandler for LoggingClientHandler {
         request: CreateElicitationRequestParams,
         context: RequestContext<RoleClient>,
     ) -> Result<CreateElicitationResult, rmcp::ErrorData> {
-        (self.send_elicitation)(context.id, Elicitation::Mcp(request))
+        (self.send_elicitation)(context.id, request)
             .await
             .map(Into::into)
             .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))

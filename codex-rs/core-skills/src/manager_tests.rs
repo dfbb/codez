@@ -55,11 +55,7 @@ fn write_plugin_skill(
     skill_path
 }
 
-fn plugin_skill_root_for_skill_path(
-    skill_path: &Path,
-    plugin_id: &str,
-    plugin_namespace: &str,
-) -> PluginSkillRoot {
+fn plugin_skill_root_for_skill_path(skill_path: &Path, plugin_id: &str) -> PluginSkillRoot {
     let skills_root = skill_path
         .parent()
         .and_then(Path::parent)
@@ -70,7 +66,6 @@ fn plugin_skill_root_for_skill_path(
     PluginSkillRoot {
         path: skills_root.abs(),
         plugin_id: plugin_id.to_string(),
-        plugin_namespace: plugin_namespace.to_string(),
         plugin_root: plugin_root.abs(),
     }
 }
@@ -164,7 +159,7 @@ enabled = {enabled}
 }
 
 async fn skills_for_config_with_stack(
-    skills_service: &SkillsService,
+    skills_manager: &SkillsManager,
     cwd: &TempDir,
     config_layer_stack: &ConfigLayerStack,
     effective_skill_roots: &[PluginSkillRoot],
@@ -175,11 +170,9 @@ async fn skills_for_config_with_stack(
         config_layer_stack.clone(),
         bundled_skills_enabled_from_stack(config_layer_stack),
     );
-    skills_service
-        .snapshot_for_config(&skills_input, Some(Arc::clone(&LOCAL_FS)))
+    skills_manager
+        .skills_for_config(&skills_input, Some(Arc::clone(&LOCAL_FS)))
         .await
-        .outcome()
-        .clone()
 }
 
 #[test]
@@ -190,7 +183,7 @@ fn new_with_disabled_bundled_skills_removes_stale_cached_system_skills() {
     fs::write(stale_system_skill_dir.join("SKILL.md"), "# stale\n")
         .expect("write stale system skill");
 
-    let _skills_service = SkillsService::new(
+    let _skills_manager = SkillsManager::new(
         codex_home.path().abs(),
         /*bundled_skills_enabled*/ false,
     );
@@ -206,14 +199,14 @@ async fn skills_for_config_reuses_cache_for_same_effective_config() {
     let codex_home = tempfile::tempdir().expect("tempdir");
     let cwd = tempfile::tempdir().expect("tempdir");
     let config_layer_stack = config_stack(&codex_home, "");
-    let skills_service = SkillsService::new(
+    let skills_manager = SkillsManager::new(
         codex_home.path().abs(),
         /*bundled_skills_enabled*/ true,
     );
 
     write_user_skill(&codex_home, "a", "skill-a", "from a");
     let outcome1 =
-        skills_for_config_with_stack(&skills_service, &cwd, &config_layer_stack, &[]).await;
+        skills_for_config_with_stack(&skills_manager, &cwd, &config_layer_stack, &[]).await;
     assert!(
         outcome1.skills.iter().any(|s| s.name == "skill-a"),
         "expected skill-a to be discovered"
@@ -223,7 +216,7 @@ async fn skills_for_config_reuses_cache_for_same_effective_config() {
     // entry because the effective skill config is unchanged.
     write_user_skill(&codex_home, "b", "skill-b", "from b");
     let outcome2 =
-        skills_for_config_with_stack(&skills_service, &cwd, &config_layer_stack, &[]).await;
+        skills_for_config_with_stack(&skills_manager, &cwd, &config_layer_stack, &[]).await;
     assert_eq!(outcome2.errors, outcome1.errors);
     assert_eq!(outcome2.skills, outcome1.skills);
 }
@@ -234,7 +227,7 @@ async fn set_extra_roots_replaces_runtime_roots_and_clears_cache() {
     let cwd = tempfile::tempdir().expect("tempdir");
     let extra_root = tempfile::tempdir().expect("tempdir");
     let config_layer_stack = config_stack(&codex_home, "");
-    let skills_service = SkillsService::new(
+    let skills_manager = SkillsManager::new(
         codex_home.path().abs(),
         /*bundled_skills_enabled*/ true,
     );
@@ -245,14 +238,13 @@ async fn set_extra_roots_replaces_runtime_roots_and_clears_cache() {
         config_layer_stack.clone(),
         bundled_skills_enabled_from_stack(&config_layer_stack),
     );
-    let empty_snapshot = skills_service
-        .snapshot_for_cwd(
+    let empty_outcome = skills_manager
+        .skills_for_cwd(
             &skills_input,
             /*force_reload*/ false,
             Some(Arc::clone(&LOCAL_FS)),
         )
         .await;
-    let empty_outcome = empty_snapshot.outcome();
     assert!(
         empty_outcome
             .skills
@@ -268,16 +260,15 @@ async fn set_extra_roots_replaces_runtime_roots_and_clears_cache() {
         "---\nname: runtime-skill\ndescription: runtime skill\n---\n\n# Body\n",
     )
     .expect("write skill");
-    skills_service.set_extra_roots(vec![extra_skills_root.abs()]);
+    skills_manager.set_extra_roots(vec![extra_skills_root.abs()]);
 
-    let runtime_snapshot = skills_service
-        .snapshot_for_cwd(
+    let runtime_outcome = skills_manager
+        .skills_for_cwd(
             &skills_input,
             /*force_reload*/ false,
             Some(Arc::clone(&LOCAL_FS)),
         )
         .await;
-    let runtime_outcome = runtime_snapshot.outcome();
     assert!(
         runtime_outcome
             .skills
@@ -285,15 +276,14 @@ async fn set_extra_roots_replaces_runtime_roots_and_clears_cache() {
             .any(|skill| skill.name == "runtime-skill")
     );
 
-    skills_service.set_extra_roots(vec![extra_root.path().join("missing-skills").abs()]);
-    let replaced_snapshot = skills_service
-        .snapshot_for_cwd(
+    skills_manager.set_extra_roots(vec![extra_root.path().join("missing-skills").abs()]);
+    let replaced_outcome = skills_manager
+        .skills_for_cwd(
             &skills_input,
             /*force_reload*/ false,
             Some(Arc::clone(&LOCAL_FS)),
         )
         .await;
-    let replaced_outcome = replaced_snapshot.outcome();
     assert_eq!(replaced_outcome.errors, Vec::new());
     assert!(
         replaced_outcome
@@ -309,13 +299,13 @@ async fn set_extra_roots_applies_to_config_loads_and_empty_clears() {
     let cwd = tempfile::tempdir().expect("tempdir");
     let extra_root = tempfile::tempdir().expect("tempdir");
     let config_layer_stack = config_stack(&codex_home, "");
-    let skills_service = SkillsService::new(
+    let skills_manager = SkillsManager::new(
         codex_home.path().abs(),
         /*bundled_skills_enabled*/ true,
     );
 
     let empty_outcome =
-        skills_for_config_with_stack(&skills_service, &cwd, &config_layer_stack, &[]).await;
+        skills_for_config_with_stack(&skills_manager, &cwd, &config_layer_stack, &[]).await;
     assert!(
         empty_outcome
             .skills
@@ -331,10 +321,10 @@ async fn set_extra_roots_applies_to_config_loads_and_empty_clears() {
         "---\nname: runtime-skill\ndescription: runtime skill\n---\n\n# Body\n",
     )
     .expect("write skill");
-    skills_service.set_extra_roots(vec![extra_skills_root.abs()]);
+    skills_manager.set_extra_roots(vec![extra_skills_root.abs()]);
 
     let runtime_outcome =
-        skills_for_config_with_stack(&skills_service, &cwd, &config_layer_stack, &[]).await;
+        skills_for_config_with_stack(&skills_manager, &cwd, &config_layer_stack, &[]).await;
     assert!(
         runtime_outcome
             .skills
@@ -342,9 +332,9 @@ async fn set_extra_roots_applies_to_config_loads_and_empty_clears() {
             .any(|skill| skill.name == "runtime-skill")
     );
 
-    skills_service.set_extra_roots(Vec::new());
+    skills_manager.set_extra_roots(Vec::new());
     let cleared_outcome =
-        skills_for_config_with_stack(&skills_service, &cwd, &config_layer_stack, &[]).await;
+        skills_for_config_with_stack(&skills_manager, &cwd, &config_layer_stack, &[]).await;
     assert!(
         cleared_outcome
             .skills
@@ -369,15 +359,14 @@ async fn skills_for_config_disables_plugin_skills_by_name() {
         &codex_home,
         &name_toggle_config("sample:sample-search", /*enabled*/ false),
     );
-    let plugin_skill_root =
-        plugin_skill_root_for_skill_path(&skill_path, "test-plugin@test", "sample");
-    let skills_service = SkillsService::new(
+    let plugin_skill_root = plugin_skill_root_for_skill_path(&skill_path, "test-plugin@test");
+    let skills_manager = SkillsManager::new(
         codex_home.path().abs(),
         /*bundled_skills_enabled*/ true,
     );
 
     let outcome = skills_for_config_with_stack(
-        &skills_service,
+        &skills_manager,
         &cwd,
         &config_layer_stack,
         &[plugin_skill_root],
@@ -438,19 +427,18 @@ async fn skills_for_cwd_loads_repo_and_user_roots_with_local_fs() {
         config_layer_stack.clone(),
         bundled_skills_enabled_from_stack(&config_layer_stack),
     );
-    let skills_service = SkillsService::new(
+    let skills_manager = SkillsManager::new(
         codex_home.path().abs(),
         /*bundled_skills_enabled*/ true,
     );
 
-    let snapshot = skills_service
-        .snapshot_for_cwd(
+    let outcome = skills_manager
+        .skills_for_cwd(
             &skills_input,
             /*force_reload*/ true,
             Some(Arc::clone(&LOCAL_FS)),
         )
         .await;
-    let outcome = snapshot.outcome();
 
     assert!(
         outcome.errors.is_empty(),
@@ -502,15 +490,14 @@ async fn skills_for_cwd_without_fs_skips_repo_roots() {
         config_layer_stack.clone(),
         bundled_skills_enabled_from_stack(&config_layer_stack),
     );
-    let skills_service = SkillsService::new(
+    let skills_manager = SkillsManager::new(
         codex_home.path().abs(),
         /*bundled_skills_enabled*/ true,
     );
 
-    let snapshot = skills_service
-        .snapshot_for_cwd(&skills_input, /*force_reload*/ true, /*fs*/ None)
+    let outcome = skills_manager
+        .skills_for_cwd(&skills_input, /*force_reload*/ true, /*fs*/ None)
         .await;
-    let outcome = snapshot.outcome();
 
     assert!(
         outcome.errors.is_empty(),
@@ -538,7 +525,7 @@ async fn skills_for_config_excludes_bundled_skills_when_disabled_in_config() {
     )
     .expect("write bundled skill");
     let config_layer_stack = config_stack(&codex_home, "[skills.bundled]\nenabled = false\n");
-    let skills_service = SkillsService::new(
+    let skills_manager = SkillsManager::new(
         codex_home.path().abs(),
         /*bundled_skills_enabled*/ false,
     );
@@ -553,7 +540,7 @@ async fn skills_for_config_excludes_bundled_skills_when_disabled_in_config() {
     .expect("rewrite bundled skill");
 
     let outcome =
-        skills_for_config_with_stack(&skills_service, &cwd, &config_layer_stack, &[]).await;
+        skills_for_config_with_stack(&skills_manager, &cwd, &config_layer_stack, &[]).await;
     assert!(
         outcome
             .skills
@@ -573,25 +560,24 @@ async fn skills_for_cwd_uses_cached_result_until_force_reload() {
     let codex_home = tempfile::tempdir().expect("tempdir");
     let cwd = tempfile::tempdir().expect("tempdir");
     let config_layer_stack = config_stack(&codex_home, "");
-    let skills_service = SkillsService::new(
+    let skills_manager = SkillsManager::new(
         codex_home.path().abs(),
         /*bundled_skills_enabled*/ true,
     );
-    let _ = skills_for_config_with_stack(&skills_service, &cwd, &config_layer_stack, &[]).await;
+    let _ = skills_for_config_with_stack(&skills_manager, &cwd, &config_layer_stack, &[]).await;
     let base_input = SkillsLoadInput::new(
         cwd.path().abs(),
         Vec::new(),
         config_layer_stack.clone(),
         bundled_skills_enabled_from_stack(&config_layer_stack),
     );
-    let snapshot_a = skills_service
-        .snapshot_for_cwd(
+    let outcome_a = skills_manager
+        .skills_for_cwd(
             &base_input,
             /*force_reload*/ false,
             Some(Arc::clone(&LOCAL_FS)),
         )
         .await;
-    let outcome_a = snapshot_a.outcome();
     assert!(
         outcome_a
             .skills
@@ -601,14 +587,13 @@ async fn skills_for_cwd_uses_cached_result_until_force_reload() {
 
     write_user_skill(&codex_home, "late", "late-skill", "added after cache");
 
-    let snapshot_b = skills_service
-        .snapshot_for_cwd(
+    let outcome_b = skills_manager
+        .skills_for_cwd(
             &base_input,
             /*force_reload*/ false,
             Some(Arc::clone(&LOCAL_FS)),
         )
         .await;
-    let outcome_b = snapshot_b.outcome();
     assert!(
         outcome_b
             .skills
@@ -616,14 +601,13 @@ async fn skills_for_cwd_uses_cached_result_until_force_reload() {
             .all(|skill| skill.name != "late-skill")
     );
 
-    let snapshot_reloaded = skills_service
-        .snapshot_for_cwd(
+    let outcome_reloaded = skills_manager
+        .skills_for_cwd(
             &base_input,
             /*force_reload*/ true,
             Some(Arc::clone(&LOCAL_FS)),
         )
         .await;
-    let outcome_reloaded = snapshot_reloaded.outcome();
     assert!(
         outcome_reloaded
             .skills
@@ -791,7 +775,7 @@ async fn skills_for_config_ignores_cwd_cache_when_session_flags_reenable_skill()
     let parent_stack = config_stack(&codex_home, &disabled_skill_config);
     let child_stack =
         config_stack_with_session_flags(&codex_home, &disabled_skill_config, &enabled_skill_config);
-    let skills_service = SkillsService::new(
+    let skills_manager = SkillsManager::new(
         codex_home.path().abs(),
         /*bundled_skills_enabled*/ true,
     );
@@ -802,14 +786,13 @@ async fn skills_for_config_ignores_cwd_cache_when_session_flags_reenable_skill()
         bundled_skills_enabled_from_stack(&parent_stack),
     );
 
-    let parent_snapshot = skills_service
-        .snapshot_for_cwd(
+    let parent_outcome = skills_manager
+        .skills_for_cwd(
             &parent_input,
             /*force_reload*/ true,
             Some(Arc::clone(&LOCAL_FS)),
         )
         .await;
-    let parent_outcome = parent_snapshot.outcome();
     let parent_skill = parent_outcome
         .skills
         .iter()
@@ -818,7 +801,7 @@ async fn skills_for_config_ignores_cwd_cache_when_session_flags_reenable_skill()
     assert_eq!(parent_outcome.is_skill_enabled(parent_skill), false);
 
     let child_outcome =
-        skills_for_config_with_stack(&skills_service, &cwd, &child_stack, &[]).await;
+        skills_for_config_with_stack(&skills_manager, &cwd, &child_stack, &[]).await;
     let child_skill = child_outcome
         .skills
         .iter()

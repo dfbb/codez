@@ -102,7 +102,7 @@ pub trait ThreadStore: Any + Send + Sync {
         })
     }
 
-    /// Lists persisted items within a stored thread, optionally filtered to a turn.
+    /// Lists persisted items within a stored turn.
     fn list_items(&self, _params: ListItemsParams) -> ThreadStoreFuture<'_, ItemPage> {
         Box::pin(async {
             Err(ThreadStoreError::Unsupported {

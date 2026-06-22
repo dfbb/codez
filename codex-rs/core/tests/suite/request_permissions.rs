@@ -41,7 +41,6 @@ use serde_json::Value;
 use serde_json::json;
 use std::fs;
 use std::path::Path;
-use test_case::test_case;
 
 fn absolute_path(path: &Path) -> AbsolutePathBuf {
     AbsolutePathBuf::try_from(path).expect("absolute path")
@@ -163,6 +162,23 @@ fn exec_command_event_with_missing_additional_permissions(
     });
     let args_str = serde_json::to_string(&args)?;
     Ok(ev_function_call(call_id, "exec_command", &args_str))
+}
+
+fn shell_event_with_raw_request_permissions(
+    call_id: &str,
+    command: &str,
+    workdir: Option<&str>,
+    additional_permissions: Value,
+) -> Result<Value> {
+    let args = json!({
+        "command": command,
+        "workdir": workdir,
+        "timeout_ms": 1_000_u64,
+        "sandbox_permissions": SandboxPermissions::WithAdditionalPermissions,
+        "additional_permissions": additional_permissions,
+    });
+    let args_str = serde_json::to_string(&args)?;
+    Ok(ev_function_call(call_id, "shell_command", &args_str))
 }
 
 async fn submit_turn(
@@ -491,18 +507,8 @@ async fn request_permissions_tool_is_auto_denied_when_granular_request_permissio
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug)]
-enum AdditionalPermissionsCommandTool {
-    ShellCommand,
-    ExecCommand,
-}
-
-#[test_case(AdditionalPermissionsCommandTool::ShellCommand ; "shell_command")]
-#[test_case(AdditionalPermissionsCommandTool::ExecCommand ; "exec_command")]
 #[tokio::test(flavor = "current_thread")]
-async fn relative_additional_permissions_resolve_against_tool_workdir(
-    command_tool: AdditionalPermissionsCommandTool,
-) -> Result<()> {
+async fn relative_additional_permissions_resolve_against_tool_workdir() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
 
@@ -536,12 +542,6 @@ async fn relative_additional_permissions_resolve_against_tool_workdir(
 
     let call_id = "request_permissions_relative_workdir";
     let command = "touch relative-write.txt";
-    let workdir = "nested";
-    let additional_permissions = json!({
-        "file_system": {
-            "write": ["."],
-        },
-    });
     let expected_permissions = PermissionProfile {
         file_system: Some(FileSystemPermissions::from_read_write_roots(
             /*read*/ None,
@@ -549,27 +549,16 @@ async fn relative_additional_permissions_resolve_against_tool_workdir(
         )),
         ..Default::default()
     };
-    let (tool_name, arguments) = match command_tool {
-        AdditionalPermissionsCommandTool::ShellCommand => (
-            "shell_command",
-            json!({
-                "command": command,
-                "workdir": workdir,
-                "sandbox_permissions": SandboxPermissions::WithAdditionalPermissions,
-                "additional_permissions": additional_permissions,
-            }),
-        ),
-        AdditionalPermissionsCommandTool::ExecCommand => (
-            "exec_command",
-            json!({
-                "cmd": command,
-                "workdir": workdir,
-                "sandbox_permissions": SandboxPermissions::WithAdditionalPermissions,
-                "additional_permissions": additional_permissions,
-            }),
-        ),
-    };
-    let event = ev_function_call(call_id, tool_name, &serde_json::to_string(&arguments)?);
+    let event = shell_event_with_raw_request_permissions(
+        call_id,
+        command,
+        Some("nested"),
+        json!({
+            "file_system": {
+                "write": ["."],
+            },
+        }),
+    )?;
 
     let _ = mount_sse_once(
         &server,

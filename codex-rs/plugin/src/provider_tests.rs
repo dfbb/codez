@@ -4,7 +4,6 @@ use super::ResolvedPluginError;
 use crate::manifest::PluginManifest;
 use crate::manifest::PluginManifestHooks;
 use crate::manifest::PluginManifestInterface;
-use crate::manifest::PluginManifestMcpServers;
 use crate::manifest::PluginManifestPaths;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
@@ -37,8 +36,8 @@ fn environment_descriptor_binds_every_manifest_resource() {
         description: None,
         keywords: Vec::new(),
         paths: PluginManifestPaths {
-            skills: vec![skills.clone()],
-            mcp_servers: Some(PluginManifestMcpServers::Path(mcp_servers.clone())),
+            skills: Some(skills.clone()),
+            mcp_servers: Some(mcp_servers.clone()),
             apps: Some(apps.clone()),
             hooks: Some(PluginManifestHooks::Paths(vec![hooks.clone()])),
         },
@@ -71,11 +70,8 @@ fn environment_descriptor_binds_every_manifest_resource() {
             description: None,
             keywords: Vec::new(),
             paths: PluginManifestPaths {
-                skills: vec![resource("executor-1", skills)],
-                mcp_servers: Some(PluginManifestMcpServers::Path(resource(
-                    "executor-1",
-                    mcp_servers,
-                ))),
+                skills: Some(resource("executor-1", skills)),
+                mcp_servers: Some(resource("executor-1", mcp_servers)),
                 apps: Some(resource("executor-1", apps)),
                 hooks: Some(PluginManifestHooks::Paths(vec![resource(
                     "executor-1",
@@ -103,8 +99,8 @@ fn environment_descriptor_rejects_resources_outside_package_root() {
         description: None,
         keywords: Vec::new(),
         paths: PluginManifestPaths {
-            skills: Vec::new(),
-            mcp_servers: Some(PluginManifestMcpServers::Path(outside.clone())),
+            skills: None,
+            mcp_servers: Some(outside.clone()),
             apps: None,
             hooks: None,
         },

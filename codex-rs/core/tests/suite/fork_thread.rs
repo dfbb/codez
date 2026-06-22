@@ -201,7 +201,6 @@ async fn fork_thread_from_history_does_not_require_source_rollout_path() {
             }),
             /*thread_source*/ None,
             /*parent_trace*/ None,
-            /*supports_openai_form_elicitation*/ false,
         )
         .await
         .expect("fork from stored history");

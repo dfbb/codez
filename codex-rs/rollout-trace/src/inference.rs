@@ -496,7 +496,7 @@ mod tests {
     #[test]
     fn traced_response_item_preserves_reasoning_content_omitted_by_normal_serializer() {
         let item = ResponseItem::Reasoning {
-            id: Some("rs-1".to_string()),
+            id: "rs-1".to_string(),
             summary: vec![ReasoningItemReasoningSummary::SummaryText {
                 text: "summary".to_string(),
             }],
@@ -515,7 +515,6 @@ mod tests {
             traced,
             json!({
                 "type": "reasoning",
-                "id": "rs-1",
                 "summary": [{"type": "summary_text", "text": "summary"}],
                 "content": [{"type": "text", "text": "raw reasoning"}],
                 "encrypted_content": "encoded",

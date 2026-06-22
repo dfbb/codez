@@ -21,7 +21,6 @@ use codex_protocol::protocol::PatchApplyStatus;
 use codex_protocol::protocol::TurnDiffEvent;
 use codex_shell_command::parse_command::parse_command;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use codex_utils_path_uri::PathUri;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -96,7 +95,7 @@ fn tracker_update_for_known_delta<'a>(
 pub(crate) async fn emit_exec_command_begin(
     ctx: ToolEventCtx<'_>,
     command: &[String],
-    cwd: &PathUri,
+    cwd: &AbsolutePathBuf,
     parsed_cmd: &[ParsedCommand],
     source: ExecCommandSource,
     interaction_input: Option<String>,
@@ -123,7 +122,7 @@ pub(crate) async fn emit_exec_command_begin(
 pub(crate) enum ToolEmitter {
     Shell {
         command: Vec<String>,
-        cwd: PathUri,
+        cwd: AbsolutePathBuf,
         source: ExecCommandSource,
         parsed_cmd: Vec<ParsedCommand>,
     },
@@ -134,7 +133,7 @@ pub(crate) enum ToolEmitter {
     },
     UnifiedExec {
         command: Vec<String>,
-        cwd: PathUri,
+        cwd: AbsolutePathBuf,
         source: ExecCommandSource,
         parsed_cmd: Vec<ParsedCommand>,
         process_id: Option<String>,
@@ -146,7 +145,7 @@ impl ToolEmitter {
         let parsed_cmd = parse_command(&command);
         Self::Shell {
             command,
-            cwd: PathUri::from_abs_path(&cwd),
+            cwd,
             source,
             parsed_cmd,
         }
@@ -166,7 +165,7 @@ impl ToolEmitter {
 
     pub fn unified_exec(
         command: &[String],
-        cwd: PathUri,
+        cwd: AbsolutePathBuf,
         source: ExecCommandSource,
         process_id: Option<String>,
     ) -> Self {
@@ -347,7 +346,7 @@ impl ToolEmitter {
         output: &ExecToolCallOutput,
         ctx: ToolEventCtx<'_>,
     ) -> String {
-        super::format_exec_output_for_model(output, ctx.turn.model_info.truncation_policy.into())
+        super::format_exec_output_for_model(output, ctx.turn.truncation_policy)
     }
 
     pub async fn finish(
@@ -433,7 +432,7 @@ impl ToolEmitter {
 
 struct ExecCommandInput<'a> {
     command: &'a [String],
-    cwd: &'a PathUri,
+    cwd: &'a AbsolutePathBuf,
     parsed_cmd: &'a [ParsedCommand],
     source: ExecCommandSource,
     interaction_input: Option<&'a str>,
@@ -443,7 +442,7 @@ struct ExecCommandInput<'a> {
 impl<'a> ExecCommandInput<'a> {
     fn new(
         command: &'a [String],
-        cwd: &'a PathUri,
+        cwd: &'a AbsolutePathBuf,
         parsed_cmd: &'a [ParsedCommand],
         source: ExecCommandSource,
         interaction_input: Option<&'a str>,
@@ -496,10 +495,7 @@ async fn emit_exec_stage(
                 aggregated_output: output.aggregated_output.text.clone(),
                 exit_code: output.exit_code,
                 duration: output.duration,
-                formatted_output: format_exec_output_str(
-                    &output,
-                    ctx.turn.model_info.truncation_policy.into(),
-                ),
+                formatted_output: format_exec_output_str(&output, ctx.turn.truncation_policy),
                 status: if output.exit_code == 0 {
                     ExecCommandStatus::Completed
                 } else {
@@ -632,7 +628,7 @@ mod tests {
     use codex_protocol::exec_output::ExecToolCallOutput;
     use codex_protocol::items::TurnItem;
     use codex_protocol::protocol::PatchApplyStatus;
-    use codex_utils_path_uri::PathUri;
+    use codex_utils_absolute_path::AbsolutePathBuf;
     use std::sync::Arc;
     use tempfile::tempdir;
     use tokio::sync::Mutex;
@@ -645,7 +641,7 @@ mod tests {
             make_session_and_context_with_dynamic_tools_and_rx(Vec::new()).await;
         let tracker = Arc::new(Mutex::new(TurnDiffTracker::new()));
         let dir = tempdir().expect("tempdir");
-        let cwd = PathUri::from_path(dir.path()).expect("absolute cwd");
+        let cwd = AbsolutePathBuf::from_absolute_path(dir.path()).expect("absolute cwd");
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let delta = codex_apply_patch::apply_patch(
@@ -729,7 +725,7 @@ mod tests {
             make_session_and_context_with_dynamic_tools_and_rx(Vec::new()).await;
         let tracker = Arc::new(Mutex::new(TurnDiffTracker::new()));
         let dir = tempdir().expect("tempdir");
-        let cwd = PathUri::from_path(dir.path()).expect("absolute cwd");
+        let cwd = AbsolutePathBuf::from_absolute_path(dir.path()).expect("absolute cwd");
 
         for patch in [
             "*** Begin Patch\n*** Add File: a.txt\n+one\n*** End Patch",
@@ -782,7 +778,7 @@ mod tests {
             make_session_and_context_with_dynamic_tools_and_rx(Vec::new()).await;
         let tracker = Arc::new(Mutex::new(TurnDiffTracker::new()));
         let dir = tempdir().expect("tempdir");
-        let cwd = PathUri::from_path(dir.path()).expect("absolute cwd");
+        let cwd = AbsolutePathBuf::from_absolute_path(dir.path()).expect("absolute cwd");
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let delta = codex_apply_patch::apply_patch(

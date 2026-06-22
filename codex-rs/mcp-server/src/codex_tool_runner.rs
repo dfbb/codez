@@ -220,7 +220,6 @@ async fn run_codex_tool_session_inner(
                         let approval_id = ev.effective_approval_id();
                         let ExecApprovalRequestEvent {
                             turn_id: _,
-                            environment_id: _,
                             started_at_ms: _,
                             command,
                             cwd,

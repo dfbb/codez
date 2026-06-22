@@ -2,6 +2,7 @@ use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::util::resolve_path;
 use codex_apply_patch::ApplyPatchAction;
 use codex_apply_patch::ApplyPatchFileChange;
 use codex_protocol::config_types::WindowsSandboxLevel;
@@ -10,7 +11,7 @@ use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_sandboxing::SandboxType;
 use codex_sandboxing::get_platform_sandbox;
-use codex_utils_path_uri::PathUri;
+use codex_utils_absolute_path::AbsolutePathBuf;
 
 const PATCH_REJECTED_OUTSIDE_PROJECT_REASON: &str =
     "writing outside of the project; rejected by user approval settings";
@@ -34,7 +35,7 @@ pub fn assess_patch_safety(
     policy: AskForApproval,
     permission_profile: &PermissionProfile,
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
-    cwd: &PathUri,
+    cwd: &AbsolutePathBuf,
     windows_sandbox_level: WindowsSandboxLevel,
 ) -> SafetyCheck {
     if action.is_empty() {
@@ -117,17 +118,14 @@ pub fn assess_patch_safety(
 fn patch_rejection_reason(
     permission_profile: &PermissionProfile,
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
-    cwd: &PathUri,
+    cwd: &AbsolutePathBuf,
 ) -> &'static str {
-    let has_no_writable_roots = cwd.to_abs_path().is_ok_and(|cwd| {
-        file_system_sandbox_policy
-            .get_writable_roots_with_cwd(cwd.as_path())
-            .is_empty()
-    });
     match permission_profile {
         PermissionProfile::Managed { .. }
             if !file_system_sandbox_policy.has_full_disk_write_access()
-                && has_no_writable_roots =>
+                && file_system_sandbox_policy
+                    .get_writable_roots_with_cwd(cwd.as_path())
+                    .is_empty() =>
         {
             PATCH_REJECTED_READ_ONLY_REASON
         }
@@ -140,17 +138,8 @@ fn patch_rejection_reason(
 fn is_write_patch_constrained_to_writable_paths(
     action: &ApplyPatchAction,
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
-    cwd: &PathUri,
+    cwd: &AbsolutePathBuf,
 ) -> bool {
-    // A full-disk policy permits every patch target, so no per-path writable-root check can
-    // further constrain the result.
-    if file_system_sandbox_policy.has_full_disk_write_access() {
-        return true;
-    }
-    // TODO(anp): Make filesystem sandbox policies operate on PathUri.
-    let Ok(native_cwd) = cwd.to_abs_path() else {
-        return false;
-    };
     // Normalize a path by removing `.` and resolving `..` without touching the
     // filesystem (works even if the file does not exist).
     fn normalize(path: &Path) -> Option<PathBuf> {
@@ -170,18 +159,14 @@ fn is_write_patch_constrained_to_writable_paths(
     // Determine whether `path` is inside **any** writable root. Both `path`
     // and roots are converted to absolute, normalized forms before the
     // prefix check.
-    let is_path_writable = |path: &PathUri| {
-        // TODO(anp): Make sandbox policy path checks accept PathUri without host projection.
-        let Ok(path) = path.to_abs_path() else {
-            return false;
-        };
-        let abs = path.into_path_buf();
+    let is_path_writable = |p: &Path| {
+        let abs = resolve_path(cwd, &p.to_path_buf());
         let abs = match normalize(&abs) {
             Some(v) => v,
             None => return false,
         };
 
-        file_system_sandbox_policy.can_write_path_with_cwd(&abs, &native_cwd)
+        file_system_sandbox_policy.can_write_path_with_cwd(&abs, cwd)
     };
 
     for (path, change) in action.changes() {

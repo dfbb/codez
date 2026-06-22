@@ -36,8 +36,6 @@ pub use facts::CompactionReason;
 pub use facts::CompactionStatus;
 pub use facts::CompactionStrategy;
 pub use facts::CompactionTrigger;
-pub use facts::ExternalAgentConfigImportCompletedInput;
-pub use facts::ExternalAgentConfigImportFailureInput;
 pub use facts::GoalEventKind;
 pub use facts::HookRunFact;
 pub use facts::InputError;

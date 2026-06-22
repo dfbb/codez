@@ -191,17 +191,6 @@
         }
       ]
     },
-    "LegacyAppPathString": {
-      "type": "string"
-    },
-    "MultiAgentMode": {
-      "description": "Controls whether the model should only spawn sub-agents after an explicit user request or may delegate proactively when doing so would help.",
-      "enum": [
-        "explicitRequestOnly",
-        "proactive"
-      ],
-      "type": "string"
-    },
     "Personality": {
       "enum": [
         "none",
@@ -253,7 +242,7 @@
     "TurnEnvironmentParams": {
       "properties": {
         "cwd": {
-          "$ref": "#/definitions/LegacyAppPathString"
+          "$ref": "#/definitions/AbsolutePathBuf"
         },
         "environmentId": {
           "type": "string"

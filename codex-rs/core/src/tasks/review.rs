@@ -29,7 +29,6 @@ use codex_protocol::user_input::UserInput;
 
 use super::SessionTask;
 use super::SessionTaskContext;
-use super::SessionTaskResult;
 
 #[derive(Clone, Copy)]
 pub(crate) struct ReviewTask;
@@ -55,7 +54,7 @@ impl SessionTask for ReviewTask {
         ctx: Arc<TurnContext>,
         input: Vec<TurnInput>,
         cancellation_token: CancellationToken,
-    ) -> SessionTaskResult {
+    ) -> Option<String> {
         session.session.services.session_telemetry.counter(
             "codex.task.review",
             /*inc*/ 1,
@@ -85,7 +84,7 @@ impl SessionTask for ReviewTask {
         if !cancellation_token.is_cancelled() {
             exit_review_mode(session.clone_session(), output.clone(), ctx.clone()).await;
         }
-        Ok(None)
+        None
     }
 
     async fn abort(&self, session: Arc<SessionTaskContext>, ctx: Arc<TurnContext>) {

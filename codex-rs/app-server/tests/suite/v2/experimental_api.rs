@@ -39,7 +39,6 @@ async fn mock_experimental_method_requires_experimental_api_capability() -> Resu
                 experimental_api: false,
                 request_attestation: false,
                 opt_out_notification_methods: None,
-                mcp_server_openai_form_elicitation: false,
             }),
         )
         .await?;
@@ -71,7 +70,6 @@ async fn realtime_conversation_start_requires_experimental_api_capability() -> R
                 experimental_api: false,
                 request_attestation: false,
                 opt_out_notification_methods: None,
-                mcp_server_openai_form_elicitation: false,
             }),
         )
         .await?;
@@ -81,10 +79,9 @@ async fn realtime_conversation_start_requires_experimental_api_capability() -> R
 
     let request_id = mcp
         .send_thread_realtime_start_request(ThreadRealtimeStartParams {
-            client_managed_handoffs: None,
+            architecture: None,
             codex_responses_as_items: None,
             codex_response_item_prefix: None,
-            codex_response_handoff_prefix: None,
             thread_id: "thr_123".to_string(),
             model: None,
             output_modality: RealtimeOutputModality::Audio,
@@ -117,7 +114,6 @@ async fn thread_memory_mode_set_requires_experimental_api_capability() -> Result
                 experimental_api: false,
                 request_attestation: false,
                 opt_out_notification_methods: None,
-                mcp_server_openai_form_elicitation: false,
             }),
         )
         .await?;
@@ -152,7 +148,6 @@ async fn thread_settings_update_requires_experimental_api_capability() -> Result
                 experimental_api: false,
                 request_attestation: false,
                 opt_out_notification_methods: None,
-                mcp_server_openai_form_elicitation: false,
             }),
         )
         .await?;
@@ -187,7 +182,6 @@ async fn realtime_webrtc_start_requires_experimental_api_capability() -> Result<
                 experimental_api: false,
                 request_attestation: false,
                 opt_out_notification_methods: None,
-                mcp_server_openai_form_elicitation: false,
             }),
         )
         .await?;
@@ -197,10 +191,9 @@ async fn realtime_webrtc_start_requires_experimental_api_capability() -> Result<
 
     let request_id = mcp
         .send_thread_realtime_start_request(ThreadRealtimeStartParams {
-            client_managed_handoffs: None,
+            architecture: None,
             codex_responses_as_items: None,
             codex_response_item_prefix: None,
-            codex_response_handoff_prefix: None,
             thread_id: "thr_123".to_string(),
             model: None,
             output_modality: RealtimeOutputModality::Audio,
@@ -237,7 +230,6 @@ async fn thread_start_mock_field_requires_experimental_api_capability() -> Resul
                 experimental_api: false,
                 request_attestation: false,
                 opt_out_notification_methods: None,
-                mcp_server_openai_form_elicitation: false,
             }),
         )
         .await?;
@@ -276,7 +268,6 @@ async fn thread_start_without_dynamic_tools_allows_without_experimental_api_capa
                 experimental_api: false,
                 request_attestation: false,
                 opt_out_notification_methods: None,
-                mcp_server_openai_form_elicitation: false,
             }),
         )
         .await?;
@@ -314,7 +305,6 @@ async fn thread_start_granular_approval_policy_requires_experimental_api_capabil
                 experimental_api: false,
                 request_attestation: false,
                 opt_out_notification_methods: None,
-                mcp_server_openai_form_elicitation: false,
             }),
         )
         .await?;

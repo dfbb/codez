@@ -577,10 +577,7 @@ mod tests {
         assert_eq!(
             provider.account_state(),
             Ok(ProviderAccountState {
-                account: Some(ProviderAccount::AmazonBedrock {
-                    credential_source:
-                        codex_protocol::account::AmazonBedrockCredentialSource::AwsManaged,
-                }),
+                account: Some(ProviderAccount::AmazonBedrock),
                 requires_openai_auth: false,
             })
         );

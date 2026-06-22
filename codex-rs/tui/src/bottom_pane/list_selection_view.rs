@@ -200,9 +200,6 @@ pub(crate) struct SelectionViewParams {
     /// Receives the *actual* item index, not the filtered/visible index.
     pub on_selection_changed: OnSelectionChangedCallback,
 
-    /// Whether cancellation keys can dismiss the picker.
-    pub allow_cancel: bool,
-
     /// Called when the picker is dismissed via Esc/Ctrl+C without selecting.
     pub on_cancel: OnCancelCallback,
 }
@@ -232,7 +229,6 @@ impl Default for SelectionViewParams {
             stacked_side_content: None,
             preserve_side_content_bg: false,
             on_selection_changed: None,
-            allow_cancel: true,
             on_cancel: None,
         }
     }
@@ -273,8 +269,6 @@ pub(crate) struct ListSelectionView {
 
     /// Called when the highlighted item changes (navigation, filter, number-key).
     on_selection_changed: OnSelectionChangedCallback,
-
-    allow_cancel: bool,
 
     /// Called when the picker is dismissed via Esc/Ctrl+C without selecting.
     on_cancel: OnCancelCallback,
@@ -348,7 +342,6 @@ impl ListSelectionView {
             stacked_side_content: params.stacked_side_content,
             preserve_side_content_bg: params.preserve_side_content_bg,
             on_selection_changed: params.on_selection_changed,
-            allow_cancel: params.allow_cancel,
             on_cancel: params.on_cancel,
             keymap,
         };
@@ -975,7 +968,7 @@ impl BottomPaneView for ListSelectionView {
             } if self.is_searchable
                 && self.search_query.is_empty()
                 && self.selected_item_has_toggle_placeholder() => {}
-            _ if self.allow_cancel && self.keymap.cancel.is_pressed(key_event) => {
+            _ if self.keymap.cancel.is_pressed(key_event) => {
                 self.on_ctrl_c();
             }
             _ if self.keymap.accept.is_pressed(key_event) => self.accept(),
@@ -1069,9 +1062,6 @@ impl BottomPaneView for ListSelectionView {
     }
 
     fn on_ctrl_c(&mut self) -> CancellationEvent {
-        if !self.allow_cancel {
-            return CancellationEvent::NotHandled;
-        }
         if let Some(cb) = &self.on_cancel {
             cb(&self.app_event_tx);
         }

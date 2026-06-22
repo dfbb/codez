@@ -25,7 +25,6 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AskForApproval;
-use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HookCompletedEvent;
 use codex_protocol::protocol::HookEventName;
@@ -491,7 +490,7 @@ pub(crate) async fn run_legacy_after_agent_hook(
     };
     let event = EventMsg::Error(codex_protocol::protocol::ErrorEvent {
         message,
-        codex_error_info: Some(CodexErrorInfo::Other),
+        codex_error_info: None,
     });
     sess.send_event(turn_context, event).await;
     true

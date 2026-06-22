@@ -87,7 +87,6 @@ pub async fn run_http_proxy(
     state: Arc<NetworkProxyState>,
     addr: SocketAddr,
     policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
-    environment_id: Option<String>,
 ) -> Result<()> {
     let listener = TcpListener::build()
         .bind(addr)
@@ -100,25 +99,23 @@ pub async fn run_http_proxy(
         .map_err(anyhow::Error::from)
         .with_context(|| format!("bind HTTP proxy: {addr}"))?;
 
-    run_http_proxy_with_listener(state, listener, policy_decider, environment_id).await
+    run_http_proxy_with_listener(state, listener, policy_decider).await
 }
 
 pub async fn run_http_proxy_with_std_listener(
     state: Arc<NetworkProxyState>,
     listener: StdTcpListener,
     policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
-    environment_id: Option<String>,
 ) -> Result<()> {
     let listener =
         TcpListener::try_from(listener).context("convert std listener to HTTP proxy listener")?;
-    run_http_proxy_with_listener(state, listener, policy_decider, environment_id).await
+    run_http_proxy_with_listener(state, listener, policy_decider).await
 }
 
 async fn run_http_proxy_with_listener(
     state: Arc<NetworkProxyState>,
     listener: TcpListener,
     policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
-    environment_id: Option<String>,
 ) -> Result<()> {
     ensure_rustls_crypto_provider();
 
@@ -136,10 +133,7 @@ async fn run_http_proxy_with_listener(
                 MethodMatcher::CONNECT,
                 service_fn({
                     let policy_decider = policy_decider.clone();
-                    let environment_id = environment_id.clone();
-                    move |req| {
-                        http_connect_accept(policy_decider.clone(), environment_id.clone(), req)
-                    }
+                    move |req| http_connect_accept(policy_decider.clone(), req)
                 }),
                 service_fn(http_connect_proxy),
             ),
@@ -147,8 +141,7 @@ async fn run_http_proxy_with_listener(
         )
             .into_layer(service_fn({
                 let policy_decider = policy_decider.clone();
-                let environment_id = environment_id.clone();
-                move |req| http_plain_proxy(policy_decider.clone(), environment_id.clone(), req)
+                move |req| http_plain_proxy(policy_decider.clone(), req)
             })),
     );
 
@@ -162,7 +155,6 @@ async fn run_http_proxy_with_listener(
 
 async fn http_connect_accept(
     policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
-    environment_id: Option<String>,
     mut req: Request,
 ) -> Result<(Response, Request), Response> {
     let app_state = req
@@ -208,7 +200,6 @@ async fn http_connect_accept(
         protocol: NetworkProtocol::HttpsConnect,
         host: host.clone(),
         port: authority.port,
-        environment_id,
         client_addr: client.clone(),
         method: Some("CONNECT".to_string()),
         command: None,
@@ -487,7 +478,6 @@ async fn forward_connect_tunnel(
 
 async fn http_plain_proxy(
     policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
-    environment_id: Option<String>,
     mut req: Request,
 ) -> Result<Response, Infallible> {
     let app_state = match req.extensions().get::<Arc<NetworkProxyState>>().cloned() {
@@ -693,7 +683,6 @@ async fn http_plain_proxy(
         protocol: NetworkProtocol::Http,
         host: host.clone(),
         port,
-        environment_id,
         client_addr: client.clone(),
         method: Some(req.method().as_str().to_string()),
         command: None,
@@ -1061,7 +1050,6 @@ mod tests {
     use std::net::Ipv4Addr;
     use std::net::TcpListener as StdTcpListener;
     use std::sync::Arc;
-    use std::sync::Mutex;
     use tokio::io::AsyncReadExt;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener as TokioTcpListener;
@@ -1086,11 +1074,9 @@ mod tests {
             .unwrap();
         req.extensions_mut().insert(state);
 
-        let response = http_connect_accept(
-            /*policy_decider*/ None, /*environment_id*/ None, req,
-        )
-        .await
-        .unwrap_err();
+        let response = http_connect_accept(/*policy_decider*/ None, req)
+            .await
+            .unwrap_err();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert_eq!(
             response.headers().get("x-proxy-error").unwrap(),
@@ -1118,51 +1104,10 @@ mod tests {
             .unwrap();
         req.extensions_mut().insert(state);
 
-        let (response, _request) = http_connect_accept(
-            /*policy_decider*/ None, /*environment_id*/ None, req,
-        )
-        .await
-        .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn http_connect_accept_passes_environment_id_to_decider() {
-        let state = Arc::new(network_proxy_state_for_policy(
-            NetworkProxySettings::default(),
-        ));
-        let seen_environment_id = Arc::new(Mutex::new(None));
-        let decider: Arc<dyn NetworkPolicyDecider> = Arc::new({
-            let seen_environment_id = seen_environment_id.clone();
-            move |request: NetworkPolicyRequest| {
-                *seen_environment_id
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = request.environment_id;
-                async { NetworkDecision::Allow }
-            }
-        });
-
-        let mut req = Request::builder()
-            .method(Method::CONNECT)
-            .uri("https://example.com:443")
-            .header("host", "example.com:443")
-            .body(Body::empty())
+        let (response, _request) = http_connect_accept(/*policy_decider*/ None, req)
+            .await
             .unwrap();
-        req.extensions_mut().insert(state);
-
-        let (response, _request) =
-            http_connect_accept(Some(decider), Some("remote".to_string()), req)
-                .await
-                .unwrap();
-
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            seen_environment_id
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_deref(),
-            Some("remote")
-        );
     }
 
     #[tokio::test]
@@ -1191,11 +1136,9 @@ mod tests {
             .unwrap();
         req.extensions_mut().insert(state);
 
-        let response = http_connect_accept(
-            /*policy_decider*/ None, /*environment_id*/ None, req,
-        )
-        .await
-        .unwrap_err();
+        let response = http_connect_accept(/*policy_decider*/ None, req)
+            .await
+            .unwrap_err();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert_eq!(
             response.headers().get("x-proxy-error").unwrap(),
@@ -1232,7 +1175,7 @@ mod tests {
             .local_addr()
             .expect("proxy listener should expose local addr");
         let proxy_task = tokio::spawn(run_http_proxy_with_std_listener(
-            state, listener, /*policy_decider*/ None, /*environment_id*/ None,
+            state, listener, /*policy_decider*/ None,
         ));
 
         let mut stream = tokio::net::TcpStream::connect(proxy_addr)
@@ -1283,11 +1226,9 @@ mod tests {
             .expect("request should build");
         req.extensions_mut().insert(state);
 
-        let response = http_plain_proxy(
-            /*policy_decider*/ None, /*environment_id*/ None, req,
-        )
-        .await
-        .unwrap();
+        let response = http_plain_proxy(/*policy_decider*/ None, req)
+            .await
+            .unwrap();
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert_eq!(
@@ -1310,11 +1251,9 @@ mod tests {
             .expect("request should build");
         req.extensions_mut().insert(state);
 
-        let response = http_plain_proxy(
-            /*policy_decider*/ None, /*environment_id*/ None, req,
-        )
-        .await
-        .unwrap();
+        let response = http_plain_proxy(/*policy_decider*/ None, req)
+            .await
+            .unwrap();
 
         if cfg!(target_os = "macos") {
             assert_eq!(response.status(), StatusCode::FORBIDDEN);
@@ -1344,11 +1283,9 @@ mod tests {
             .expect("request should build");
         req.extensions_mut().insert(state);
 
-        let response = http_plain_proxy(
-            /*policy_decider*/ None, /*environment_id*/ None, req,
-        )
-        .await
-        .unwrap();
+        let response = http_plain_proxy(/*policy_decider*/ None, req)
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     }
 
@@ -1370,11 +1307,9 @@ mod tests {
             .unwrap();
         req.extensions_mut().insert(state);
 
-        let response = http_connect_accept(
-            /*policy_decider*/ None, /*environment_id*/ None, req,
-        )
-        .await
-        .unwrap_err();
+        let response = http_connect_accept(/*policy_decider*/ None, req)
+            .await
+            .unwrap_err();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert_eq!(
             response.headers().get("x-proxy-error").unwrap(),
@@ -1395,10 +1330,7 @@ mod tests {
             .unwrap();
         req.extensions_mut().insert(state);
 
-        let response = http_plain_proxy(
-            /*policy_decider*/ None, /*environment_id*/ None, req,
-        )
-        .await;
+        let response = http_plain_proxy(/*policy_decider*/ None, req).await;
         assert_eq!(response.unwrap().status(), StatusCode::BAD_REQUEST);
     }
 

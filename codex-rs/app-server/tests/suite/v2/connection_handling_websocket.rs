@@ -706,7 +706,7 @@ pub(super) async fn send_request(
     send_jsonrpc(stream, message).await
 }
 
-pub(super) async fn send_jsonrpc(stream: &mut WsClient, message: JSONRPCMessage) -> Result<()> {
+async fn send_jsonrpc(stream: &mut WsClient, message: JSONRPCMessage) -> Result<()> {
     let payload = serde_json::to_string(&message)?;
     stream
         .send(WebSocketMessage::Text(payload.into()))

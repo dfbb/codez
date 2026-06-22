@@ -74,7 +74,6 @@ pub(crate) enum ApprovalRequest {
         thread_id: ThreadId,
         thread_label: Option<String>,
         id: String,
-        environment_id: Option<String>,
         command: Vec<String>,
         reason: Option<String>,
         available_decisions: Vec<CommandExecutionApprovalDecision>,
@@ -676,7 +675,6 @@ fn build_header(request: &ApprovalRequest) -> Box<dyn Renderable> {
     match request {
         ApprovalRequest::Exec {
             thread_label,
-            environment_id,
             reason,
             command,
             network_approval_context,
@@ -688,13 +686,6 @@ fn build_header(request: &ApprovalRequest) -> Box<dyn Renderable> {
                 header.push(Line::from(vec![
                     "Thread: ".into(),
                     thread_label.clone().bold(),
-                ]));
-                header.push(Line::from(""));
-            }
-            if let Some(environment_id) = environment_id {
-                header.push(Line::from(vec![
-                    "Environment: ".into(),
-                    environment_id.clone().bold(),
                 ]));
                 header.push(Line::from(""));
             }
@@ -1229,7 +1220,6 @@ mod tests {
             thread_id: ThreadId::new(),
             thread_label: None,
             id: "test".to_string(),
-            environment_id: None,
             command: vec!["echo".to_string(), "hi".to_string()],
             reason: Some("reason".to_string()),
             available_decisions: vec![
@@ -1370,7 +1360,6 @@ mod tests {
                 thread_id: ThreadId::new(),
                 thread_label: None,
                 id: "test".to_string(),
-                environment_id: None,
                 command: vec!["echo".to_string(), "hi".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1414,7 +1403,6 @@ mod tests {
                 thread_id: ThreadId::new(),
                 thread_label: None,
                 id: "test".to_string(),
-                environment_id: None,
                 command: vec!["curl".to_string(), "https://example.com".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1489,7 +1477,6 @@ mod tests {
                 thread_id,
                 thread_label: Some("Robie [explorer]".to_string()),
                 id: "test".to_string(),
-                environment_id: None,
                 command: vec!["echo".to_string(), "hi".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1524,7 +1511,6 @@ mod tests {
                 thread_id,
                 thread_label: Some("Robie [explorer]".to_string()),
                 id: "test".to_string(),
-                environment_id: None,
                 command: vec!["echo".to_string(), "hi".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1563,7 +1549,6 @@ mod tests {
                 thread_id: ThreadId::new(),
                 thread_label: Some("Robie [explorer]".to_string()),
                 id: "test".to_string(),
-                environment_id: None,
                 command: vec!["echo".to_string(), "hi".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1592,7 +1577,6 @@ mod tests {
                 thread_id: ThreadId::new(),
                 thread_label: None,
                 id: "test".to_string(),
-                environment_id: None,
                 command: vec!["echo".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1645,7 +1629,6 @@ mod tests {
                 thread_id: ThreadId::new(),
                 thread_label: None,
                 id: "test".to_string(),
-                environment_id: None,
                 command: vec!["curl".to_string(), "https://example.com".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1685,7 +1668,6 @@ mod tests {
             thread_id: ThreadId::new(),
             thread_label: None,
             id: "test".into(),
-            environment_id: None,
             command,
             reason: None,
             available_decisions: vec![
@@ -1984,7 +1966,6 @@ mod tests {
             thread_id: ThreadId::new(),
             thread_label: None,
             id: "test".into(),
-            environment_id: None,
             command: vec!["cat".into(), "/tmp/readme.txt".into()],
             reason: None,
             available_decisions: vec![
@@ -2041,7 +2022,6 @@ mod tests {
             thread_id: ThreadId::new(),
             thread_label: None,
             id: "test".into(),
-            environment_id: None,
             command: vec!["cat".into(), "/tmp/readme.txt".into()],
             reason: Some("need filesystem access".into()),
             available_decisions: vec![
@@ -2122,7 +2102,6 @@ mod tests {
             thread_id: ThreadId::new(),
             thread_label: None,
             id: "test".into(),
-            environment_id: None,
             command: vec!["curl".into(), "https://example.com".into()],
             reason: Some("network request blocked".into()),
             available_decisions: vec![
@@ -2259,7 +2238,6 @@ mod tests {
                 thread_id: ThreadId::new(),
                 thread_label: None,
                 id: "test".into(),
-                environment_id: None,
                 command: vec![
                     "network-access".to_string(),
                     "https://example.com:8443".to_string(),

@@ -1,5 +1,5 @@
 ---
-source: tui/src/chatwidget/tests/exec_flow.rs
+source: tui/src/chatwidget/tests.rs
 expression: blob
 ---
-■ '/resume' is disabled while a task is in progress.
+■ '/model' is disabled while a task is in progress.

@@ -74,11 +74,6 @@ pub(super) async fn resume_thread(
     store.insert_live_recorder(params.thread_id, recorder).await
 }
 
-#[tracing::instrument(
-    level = "trace",
-    skip_all,
-    fields(item_count = params.items.len())
-)]
 pub(super) async fn append_items(
     store: &LocalThreadStore,
     params: AppendThreadItemsParams,

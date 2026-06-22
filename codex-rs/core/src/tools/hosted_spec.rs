@@ -18,12 +18,11 @@ pub fn create_image_generation_tool(output_format: &str) -> ToolSpec {
 }
 
 pub fn create_web_search_tool(options: WebSearchToolOptions<'_>) -> Option<ToolSpec> {
-    let (external_web_access, index_gated_web_access) = match options.web_search_mode {
-        Some(WebSearchMode::Cached) => (false, None),
-        Some(WebSearchMode::Indexed) => (true, Some(true)),
-        Some(WebSearchMode::Live) => (true, None),
-        Some(WebSearchMode::Disabled) | None => return None,
-    };
+    let external_web_access = match options.web_search_mode {
+        Some(WebSearchMode::Cached) => Some(false),
+        Some(WebSearchMode::Live) => Some(true),
+        Some(WebSearchMode::Disabled) | None => None,
+    }?;
 
     let search_content_types = match options.web_search_tool_type {
         WebSearchToolType::Text => None,
@@ -37,7 +36,6 @@ pub fn create_web_search_tool(options: WebSearchToolOptions<'_>) -> Option<ToolS
 
     Some(ToolSpec::WebSearch {
         external_web_access: Some(external_web_access),
-        index_gated_web_access,
         filters: options
             .web_search_config
             .and_then(|config| config.filters.clone().map(Into::into)),

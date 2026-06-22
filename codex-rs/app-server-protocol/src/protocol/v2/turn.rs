@@ -4,7 +4,6 @@ use super::SandboxPolicy;
 use super::Turn;
 use codex_experimental_api_macros::ExperimentalApi;
 use codex_protocol::config_types::CollaborationMode;
-use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::models::ImageDetail;
@@ -15,7 +14,6 @@ use codex_protocol::user_input::ByteRange as CoreByteRange;
 use codex_protocol::user_input::TextElement as CoreTextElement;
 use codex_protocol::user_input::UserInput as CoreUserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use codex_utils_path_uri::LegacyAppPathString;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
@@ -40,7 +38,7 @@ pub enum TurnStatus {
 #[ts(export_to = "v2/")]
 pub struct TurnEnvironmentParams {
     pub environment_id: String,
-    pub cwd: LegacyAppPathString,
+    pub cwd: AbsolutePathBuf,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
@@ -150,12 +148,6 @@ pub struct TurnStartParams {
     #[experimental("turn/start.collaborationMode")]
     #[ts(optional = nullable)]
     pub collaboration_mode: Option<CollaborationMode>,
-
-    /// Controls whether multi-agent v2 delegation requires an explicit user request.
-    /// Omitted keeps the loaded session's current mode.
-    #[experimental("turn/start.multiAgentMode")]
-    #[ts(optional = nullable)]
-    pub multi_agent_mode: Option<MultiAgentMode>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

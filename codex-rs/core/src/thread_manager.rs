@@ -1,10 +1,9 @@
-use crate::SkillsService;
+use crate::SkillsManager;
 use crate::agent::AgentControl;
 use crate::attestation::AttestationProvider;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
 use crate::config::ThreadStoreConfig;
-use crate::current_time::TimeProvider;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::environment_selection::default_thread_environment_selections;
 use crate::mcp::McpManager;
@@ -36,7 +35,6 @@ use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationModeMask;
-use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::openai_models::ModelPreset;
@@ -185,11 +183,9 @@ pub struct StartThreadOptions {
     pub thread_source: Option<ThreadSource>,
     pub dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
     pub metrics_service_name: Option<String>,
-    pub multi_agent_mode: Option<MultiAgentMode>,
     pub parent_trace: Option<W3cTraceContext>,
     pub environments: Vec<TurnEnvironmentSelection>,
     pub thread_extension_init: ExtensionDataInit,
-    pub supports_openai_form_elicitation: bool,
 }
 
 pub(crate) struct ResumeThreadWithHistoryOptions {
@@ -211,14 +207,13 @@ pub(crate) struct ThreadManagerState {
     auth_manager: Arc<AuthManager>,
     models_manager: SharedModelsManager,
     environment_manager: Arc<EnvironmentManager>,
-    skills_service: Arc<SkillsService>,
+    skills_manager: Arc<SkillsManager>,
     plugins_manager: Arc<PluginsManager>,
     mcp_manager: Arc<McpManager>,
     extensions: Arc<ExtensionRegistry<Config>>,
     user_instructions_provider: Arc<dyn UserInstructionsProvider>,
     thread_store: Arc<dyn ThreadStore>,
     attestation_provider: Option<Arc<dyn AttestationProvider>>,
-    external_time_provider: Option<Arc<dyn TimeProvider>>,
     session_source: SessionSource,
     installation_id: String,
     analytics_events_client: Option<AnalyticsEventsClient>,
@@ -273,7 +268,6 @@ impl ThreadManager {
         state_db: Option<StateDbHandle>,
         installation_id: String,
         attestation_provider: Option<Arc<dyn AttestationProvider>>,
-        external_time_provider: Option<Arc<dyn TimeProvider>>,
     ) -> Self {
         let codex_home = config.codex_home.clone();
         let restriction_product = session_source.restriction_product();
@@ -287,7 +281,7 @@ impl ThreadManager {
             Arc::clone(&plugins_manager),
             Arc::clone(&extensions),
         ));
-        let skills_service = Arc::new(SkillsService::new_with_restriction_product(
+        let skills_manager = Arc::new(SkillsManager::new_with_restriction_product(
             codex_home,
             config.bundled_skills_enabled(),
             restriction_product,
@@ -298,14 +292,13 @@ impl ThreadManager {
                 thread_created_tx,
                 models_manager: build_models_manager(config, auth_manager.clone()),
                 environment_manager,
-                skills_service,
+                skills_manager,
                 plugins_manager,
                 mcp_manager,
                 extensions,
                 user_instructions_provider,
                 thread_store,
                 attestation_provider,
-                external_time_provider,
                 auth_manager,
                 session_source,
                 installation_id,
@@ -380,7 +373,7 @@ impl ThreadManager {
             auth_manager.get_api_auth_mode(),
         ));
         let mcp_manager = Arc::new(McpManager::new(Arc::clone(&plugins_manager)));
-        let skills_service = Arc::new(SkillsService::new_with_restriction_product(
+        let skills_manager = Arc::new(SkillsManager::new_with_restriction_product(
             skills_codex_home,
             /*bundled_skills_enabled*/ true,
             restriction_product,
@@ -402,7 +395,7 @@ impl ThreadManager {
                 models_manager: create_model_provider(provider, Some(auth_manager.clone()))
                     .models_manager(codex_home, /*config_model_catalog*/ None),
                 environment_manager,
-                skills_service,
+                skills_manager,
                 plugins_manager,
                 mcp_manager,
                 extensions: empty_extension_registry(),
@@ -411,7 +404,6 @@ impl ThreadManager {
                 ),
                 thread_store,
                 attestation_provider: None,
-                external_time_provider: None,
                 auth_manager,
                 session_source: SessionSource::Exec,
                 installation_id,
@@ -432,8 +424,8 @@ impl ThreadManager {
         self.state.auth_manager.clone()
     }
 
-    pub fn skills_service(&self) -> Arc<SkillsService> {
-        self.state.skills_service.clone()
+    pub fn skills_manager(&self) -> Arc<SkillsManager> {
+        self.state.skills_manager.clone()
     }
 
     pub fn plugins_manager(&self) -> Arc<PluginsManager> {
@@ -609,11 +601,9 @@ impl ThreadManager {
             thread_source: None,
             dynamic_tools,
             metrics_service_name: None,
-            multi_agent_mode: None,
             parent_trace: None,
             environments,
             thread_extension_init: ExtensionDataInit::default(),
-            supports_openai_form_elicitation: false,
         }))
         .await
     }
@@ -631,7 +621,6 @@ impl ThreadManager {
         options: StartThreadOptions,
         forked_from_thread_id: Option<ThreadId>,
     ) -> CodexResult<NewThread> {
-        let agent_control = self.agent_control_for_config(&options.config);
         let (resumed_session_source, resumed_thread_source) = options
             .initial_history
             .get_resumed_session_sources()
@@ -642,20 +631,18 @@ impl ThreadManager {
             options.config,
             options.initial_history,
             Arc::clone(&self.state.auth_manager),
-            agent_control,
+            self.agent_control(),
             session_source,
             /*parent_thread_id*/ None,
             forked_from_thread_id,
             thread_source,
             options.dynamic_tools,
             options.metrics_service_name,
-            options.multi_agent_mode,
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             options.parent_trace,
             options.environments,
             options.thread_extension_init,
-            options.supports_openai_form_elicitation,
             /*user_shell_override*/ None,
         ))
         .await
@@ -704,7 +691,6 @@ impl ThreadManager {
         rollout_path: PathBuf,
         auth_manager: Arc<AuthManager>,
         parent_trace: Option<W3cTraceContext>,
-        supports_openai_form_elicitation: bool,
     ) -> CodexResult<NewThread> {
         let initial_history = self.initial_history_from_rollout_path(rollout_path).await?;
         Box::pin(self.resume_thread_with_history(
@@ -712,7 +698,6 @@ impl ThreadManager {
             initial_history,
             auth_manager,
             parent_trace,
-            supports_openai_form_elicitation,
         ))
         .await
     }
@@ -724,9 +709,7 @@ impl ThreadManager {
         initial_history: InitialHistory,
         auth_manager: Arc<AuthManager>,
         parent_trace: Option<W3cTraceContext>,
-        supports_openai_form_elicitation: bool,
     ) -> CodexResult<NewThread> {
-        let agent_control = self.agent_control_for_config(&config);
         let environments = default_thread_environment_selections(
             self.state.environment_manager.as_ref(),
             &config.cwd,
@@ -734,25 +717,22 @@ impl ThreadManager {
         let (session_source, thread_source) = initial_history
             .get_resumed_session_sources()
             .unwrap_or_else(|| (self.state.session_source.clone(), None));
-        let initial_multi_agent_mode = initial_history.get_latest_effective_multi_agent_mode();
         Box::pin(self.state.spawn_thread_with_source(
             config,
             initial_history,
             auth_manager,
-            agent_control,
+            self.agent_control(),
             session_source,
             /*parent_thread_id*/ None,
             /*forked_from_thread_id*/ None,
             thread_source,
             Vec::new(),
             /*metrics_service_name*/ None,
-            initial_multi_agent_mode,
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             parent_trace,
             environments,
             /*thread_extension_init*/ ExtensionDataInit::default(),
-            supports_openai_form_elicitation,
             /*user_shell_override*/ None,
         ))
         .await
@@ -762,9 +742,7 @@ impl ThreadManager {
         &self,
         config: Config,
         user_shell_override: crate::shell::Shell,
-        supports_openai_form_elicitation: bool,
     ) -> CodexResult<NewThread> {
-        let agent_control = self.agent_control_for_config(&config);
         let environments = default_thread_environment_selections(
             self.state.environment_manager.as_ref(),
             &config.cwd,
@@ -773,17 +751,15 @@ impl ThreadManager {
             config,
             InitialHistory::New,
             Arc::clone(&self.state.auth_manager),
-            agent_control,
+            self.agent_control(),
             /*parent_thread_id*/ None,
             /*forked_from_thread_id*/ None,
             /*thread_source*/ None,
             Vec::new(),
             /*metrics_service_name*/ None,
-            /*initial_multi_agent_mode*/ None,
             /*parent_trace*/ None,
             environments,
             /*thread_extension_init*/ ExtensionDataInit::default(),
-            supports_openai_form_elicitation,
             /*user_shell_override*/ Some(user_shell_override),
         ))
         .await
@@ -795,9 +771,7 @@ impl ThreadManager {
         rollout_path: PathBuf,
         auth_manager: Arc<AuthManager>,
         user_shell_override: crate::shell::Shell,
-        supports_openai_form_elicitation: bool,
     ) -> CodexResult<NewThread> {
-        let agent_control = self.agent_control_for_config(&config);
         let initial_history = self.initial_history_from_rollout_path(rollout_path).await?;
         let environments = default_thread_environment_selections(
             self.state.environment_manager.as_ref(),
@@ -806,25 +780,22 @@ impl ThreadManager {
         let (session_source, thread_source) = initial_history
             .get_resumed_session_sources()
             .unwrap_or_else(|| (self.state.session_source.clone(), None));
-        let initial_multi_agent_mode = initial_history.get_latest_effective_multi_agent_mode();
         Box::pin(self.state.spawn_thread_with_source(
             config,
             initial_history,
             auth_manager,
-            agent_control,
+            self.agent_control(),
             session_source,
             /*parent_thread_id*/ None,
             /*forked_from_thread_id*/ None,
             thread_source,
             Vec::new(),
             /*metrics_service_name*/ None,
-            initial_multi_agent_mode,
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             /*parent_trace*/ None,
             environments,
             /*thread_extension_init*/ ExtensionDataInit::default(),
-            supports_openai_form_elicitation,
             /*user_shell_override*/ Some(user_shell_override),
         ))
         .await
@@ -905,15 +876,8 @@ impl ThreadManager {
     {
         let snapshot = snapshot.into();
         let history = self.initial_history_from_rollout_path(path).await?;
-        self.fork_thread_from_history(
-            snapshot,
-            config,
-            history,
-            thread_source,
-            parent_trace,
-            /*supports_openai_form_elicitation*/ false,
-        )
-        .await
+        self.fork_thread_from_history(snapshot, config, history, thread_source, parent_trace)
+            .await
     }
 
     async fn initial_history_from_rollout_path(
@@ -942,7 +906,6 @@ impl ThreadManager {
         history: InitialHistory,
         thread_source: Option<ThreadSource>,
         parent_trace: Option<W3cTraceContext>,
-        supports_openai_form_elicitation: bool,
     ) -> CodexResult<NewThread>
     where
         S: Into<ForkSnapshot>,
@@ -953,7 +916,6 @@ impl ThreadManager {
             history,
             thread_source,
             parent_trace,
-            supports_openai_form_elicitation,
         )
         .await
     }
@@ -965,21 +927,13 @@ impl ThreadManager {
         history: InitialHistory,
         thread_source: Option<ThreadSource>,
         parent_trace: Option<W3cTraceContext>,
-        supports_openai_form_elicitation: bool,
     ) -> CodexResult<NewThread> {
         // `forked_from_id()` describes this history's existing lineage. When
         // forking a resumed thread, the child copies the resumed thread itself.
-        let source_thread_id = match &history {
+        let forked_from_thread_id = match &history {
             InitialHistory::Resumed(resumed) => Some(resumed.conversation_id),
             InitialHistory::Forked(_) => history.forked_from_id(),
             InitialHistory::New | InitialHistory::Cleared => None,
-        };
-        let initial_multi_agent_mode = match source_thread_id {
-            Some(thread_id) => match self.get_thread(thread_id).await {
-                Ok(thread) => thread.config_snapshot().await.multi_agent_mode,
-                Err(_) => history.get_latest_effective_multi_agent_mode(),
-            },
-            None => history.get_latest_effective_multi_agent_mode(),
         };
         let multi_agent_version = self
             .state
@@ -987,7 +941,7 @@ impl ThreadManager {
                 &history,
                 /*session_source*/ None,
                 /*parent_thread_id*/ None,
-                source_thread_id,
+                forked_from_thread_id,
                 &config,
             )
             .await;
@@ -998,33 +952,26 @@ impl ThreadManager {
             self.state.environment_manager.as_ref(),
             &config.cwd,
         );
-        let agent_control = self.agent_control_for_config(&config);
         Box::pin(self.state.spawn_thread(
             config,
             history,
             Arc::clone(&self.state.auth_manager),
-            agent_control,
+            self.agent_control(),
             /*parent_thread_id*/ None,
-            source_thread_id,
+            forked_from_thread_id,
             thread_source,
             Vec::new(),
             /*metrics_service_name*/ None,
-            initial_multi_agent_mode,
             parent_trace,
             environments,
             /*thread_extension_init*/ ExtensionDataInit::default(),
-            supports_openai_form_elicitation,
             /*user_shell_override*/ None,
         ))
         .await
     }
 
     pub(crate) fn agent_control(&self) -> AgentControl {
-        AgentControl::new(Arc::downgrade(&self.state), /*rollout_budget*/ None)
-    }
-
-    fn agent_control_for_config(&self, config: &Config) -> AgentControl {
-        AgentControl::new(Arc::downgrade(&self.state), config.rollout_budget)
+        AgentControl::new(Arc::downgrade(&self.state))
     }
 
     #[cfg(test)]
@@ -1234,7 +1181,6 @@ impl ThreadManagerState {
             /*forked_from_thread_id*/ None,
             /*thread_source*/ None,
             /*metrics_service_name*/ None,
-            /*initial_multi_agent_mode*/ None,
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             /*environments*/ None,
@@ -1252,7 +1198,6 @@ impl ThreadManagerState {
         forked_from_thread_id: Option<ThreadId>,
         thread_source: Option<ThreadSource>,
         metrics_service_name: Option<String>,
-        initial_multi_agent_mode: Option<MultiAgentMode>,
         inherited_environments: Option<TurnEnvironmentSnapshot>,
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
         environments: Option<Vec<TurnEnvironmentSelection>>,
@@ -1271,13 +1216,11 @@ impl ThreadManagerState {
             thread_source,
             Vec::new(),
             metrics_service_name,
-            initial_multi_agent_mode,
             inherited_environments,
             inherited_exec_policy,
             /*parent_trace*/ None,
             environments,
             /*thread_extension_init*/ ExtensionDataInit::default(),
-            /*supports_openai_form_elicitation*/ false,
             /*user_shell_override*/ None,
         ))
         .await
@@ -1299,7 +1242,6 @@ impl ThreadManagerState {
         let environments =
             default_thread_environment_selections(self.environment_manager.as_ref(), &config.cwd);
         let thread_source = initial_history.get_resumed_thread_source();
-        let initial_multi_agent_mode = initial_history.get_latest_effective_multi_agent_mode();
         Box::pin(self.spawn_thread_with_source(
             config,
             initial_history,
@@ -1311,13 +1253,11 @@ impl ThreadManagerState {
             thread_source,
             Vec::new(),
             /*metrics_service_name*/ None,
-            initial_multi_agent_mode,
             inherited_environments,
             inherited_exec_policy,
             /*parent_trace*/ None,
             environments,
             /*thread_extension_init*/ ExtensionDataInit::default(),
-            /*supports_openai_form_elicitation*/ false,
             /*user_shell_override*/ None,
         ))
         .await
@@ -1333,7 +1273,6 @@ impl ThreadManagerState {
         thread_source: Option<ThreadSource>,
         parent_thread_id: Option<ThreadId>,
         forked_from_thread_id: Option<ThreadId>,
-        initial_multi_agent_mode: Option<MultiAgentMode>,
         inherited_environments: Option<TurnEnvironmentSnapshot>,
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
         environments: Option<Vec<TurnEnvironmentSelection>>,
@@ -1352,13 +1291,11 @@ impl ThreadManagerState {
             thread_source,
             Vec::new(),
             /*metrics_service_name*/ None,
-            initial_multi_agent_mode,
             inherited_environments,
             inherited_exec_policy,
             /*parent_trace*/ None,
             environments,
             /*thread_extension_init*/ ExtensionDataInit::default(),
-            /*supports_openai_form_elicitation*/ false,
             /*user_shell_override*/ None,
         ))
         .await
@@ -1377,11 +1314,9 @@ impl ThreadManagerState {
         thread_source: Option<ThreadSource>,
         dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
         metrics_service_name: Option<String>,
-        initial_multi_agent_mode: Option<MultiAgentMode>,
         parent_trace: Option<W3cTraceContext>,
         environments: Vec<TurnEnvironmentSelection>,
         thread_extension_init: ExtensionDataInit,
-        supports_openai_form_elicitation: bool,
         user_shell_override: Option<crate::shell::Shell>,
     ) -> CodexResult<NewThread> {
         Box::pin(self.spawn_thread_with_source(
@@ -1395,13 +1330,11 @@ impl ThreadManagerState {
             thread_source,
             dynamic_tools,
             metrics_service_name,
-            initial_multi_agent_mode,
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             parent_trace,
             environments,
             thread_extension_init,
-            supports_openai_form_elicitation,
             user_shell_override,
         ))
         .await
@@ -1420,13 +1353,11 @@ impl ThreadManagerState {
         thread_source: Option<ThreadSource>,
         dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
         metrics_service_name: Option<String>,
-        initial_multi_agent_mode: Option<MultiAgentMode>,
         inherited_environments: Option<TurnEnvironmentSnapshot>,
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
         parent_trace: Option<W3cTraceContext>,
         environments: Vec<TurnEnvironmentSelection>,
         thread_extension_init: ExtensionDataInit,
-        supports_openai_form_elicitation: bool,
         user_shell_override: Option<crate::shell::Shell>,
     ) -> CodexResult<NewThread> {
         let is_resumed_thread = matches!(&initial_history, InitialHistory::Resumed(_));
@@ -1475,7 +1406,7 @@ impl ThreadManagerState {
             auth_manager,
             models_manager: Arc::clone(&self.models_manager),
             environment_manager: Arc::clone(&self.environment_manager),
-            skills_service: Arc::clone(&self.skills_service),
+            skills_manager: Arc::clone(&self.skills_manager),
             plugins_manager: Arc::clone(&self.plugins_manager),
             mcp_manager: Arc::clone(&self.mcp_manager),
             extensions: Arc::clone(&self.extensions),
@@ -1494,13 +1425,10 @@ impl ThreadManagerState {
             parent_trace,
             environment_selections: environments,
             thread_extension_init,
-            supports_openai_form_elicitation,
             analytics_events_client: self.analytics_events_client.clone(),
             thread_store: Arc::clone(&self.thread_store),
             attestation_provider: self.attestation_provider.clone(),
-            external_time_provider: self.external_time_provider.clone(),
             inherited_multi_agent_version: multi_agent_version,
-            initial_multi_agent_mode,
         }))
         .await?;
         let new_thread = self

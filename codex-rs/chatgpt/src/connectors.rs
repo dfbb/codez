@@ -8,6 +8,7 @@ use codex_app_server_protocol::AppInfo;
 use codex_connectors::ConnectorDirectoryCacheContext;
 use codex_connectors::ConnectorDirectoryCacheKey;
 use codex_connectors::DirectoryListResponse;
+use codex_connectors::filter::filter_disallowed_connectors;
 use codex_connectors::merge::merge_connectors;
 use codex_connectors::merge::merge_plugin_connectors;
 use codex_core::config::Config;
@@ -20,6 +21,7 @@ pub use codex_core::connectors::list_cached_accessible_connectors_from_mcp_tools
 pub use codex_core::connectors::with_app_enabled_state;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
+use codex_login::default_client::originator;
 use codex_plugin::AppConnectorId;
 
 const DIRECTORY_CONNECTORS_TIMEOUT: Duration = Duration::from_secs(60);
@@ -80,10 +82,7 @@ pub async fn list_cached_all_connectors(
     let auth = connector_auth(config).await.ok()?;
     let cache_context = connector_directory_cache_context(config, &auth);
     let connectors = codex_connectors::cached_directory_connectors(&cache_context)?;
-    Some(merge_directory_and_plugin_connectors(
-        connectors,
-        plugin_apps,
-    ))
+    Some(merge_and_filter_plugin_connectors(connectors, plugin_apps))
 }
 
 pub async fn list_all_connectors_with_options(
@@ -110,10 +109,7 @@ pub async fn list_all_connectors_with_options(
         },
     )
     .await?;
-    Ok(merge_directory_and_plugin_connectors(
-        connectors,
-        plugin_apps,
-    ))
+    Ok(merge_and_filter_plugin_connectors(connectors, plugin_apps))
 }
 
 fn connector_directory_cache_context(
@@ -131,16 +127,17 @@ fn connector_directory_cache_context(
     )
 }
 
-fn merge_directory_and_plugin_connectors(
+fn merge_and_filter_plugin_connectors(
     connectors: Vec<AppInfo>,
     plugin_apps: &[AppConnectorId],
 ) -> Vec<AppInfo> {
-    merge_plugin_connectors(
+    let connectors = merge_plugin_connectors(
         connectors,
         plugin_apps
             .iter()
             .map(|connector_id| connector_id.0.clone()),
-    )
+    );
+    filter_disallowed_connectors(connectors, originator().value.as_str())
 }
 
 pub fn connectors_for_plugin_apps(
@@ -153,10 +150,11 @@ pub fn connectors_for_plugin_apps(
             .iter()
             .map(|connector_id| connector_id.0.clone()),
     );
-    let mut connectors_by_id = connectors
-        .into_iter()
-        .map(|connector| (connector.id.clone(), connector))
-        .collect::<HashMap<_, _>>();
+    let mut connectors_by_id =
+        filter_disallowed_connectors(connectors, originator().value.as_str())
+            .into_iter()
+            .map(|connector| (connector.id.clone(), connector))
+            .collect::<HashMap<_, _>>();
 
     plugin_apps
         .iter()
@@ -181,7 +179,8 @@ pub fn merge_connectors_with_accessible(
     } else {
         accessible_connectors
     };
-    merge_connectors(connectors, accessible_connectors)
+    let merged = merge_connectors(connectors, accessible_connectors);
+    filter_disallowed_connectors(merged, originator().value.as_str())
 }
 
 #[cfg(test)]
@@ -270,13 +269,13 @@ mod tests {
     }
 
     #[test]
-    fn connectors_for_plugin_apps_preserves_formerly_disallowed_plugin_apps() {
-        let connector_id = "asdk_app_6938a94a61d881918ef32cb999ff937c";
-        let connectors =
-            connectors_for_plugin_apps(Vec::new(), &[AppConnectorId(connector_id.to_string())]);
-        assert_eq!(
-            connectors,
-            vec![merged_app(connector_id, /*is_accessible*/ false)]
+    fn connectors_for_plugin_apps_filters_disallowed_plugin_apps() {
+        let connectors = connectors_for_plugin_apps(
+            Vec::new(),
+            &[AppConnectorId(
+                "asdk_app_6938a94a61d881918ef32cb999ff937c".to_string(),
+            )],
         );
+        assert_eq!(connectors, Vec::<AppInfo>::new());
     }
 }
