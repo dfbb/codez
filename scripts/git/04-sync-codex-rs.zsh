@@ -2,13 +2,20 @@
 set -euo pipefail
 
 # Usage:
-#   scripts/git/04-sync-codex-rs.zsh [CODEZ_BRANCH] [CODEX_BRANCH]
+#   scripts/git/04-sync-codex-rs.zsh [CODEZ_BRANCH] [CODEX_REF]
+#
+# CODEX_REF 默认留空 -> 自动检测上游最新稳定 release tag(rust-vX.Y.Z,
+# 排除 alpha/beta/rc 预发布),只同步到该 release,不跟踪 main 的中间提交。
+# 如需固定到某个具体 tag 或分支,把它作为第二个参数显式传入。
 
 CODEZ_BRANCH="${1:-main}"
-CODEX_BRANCH="${2:-main}"
+CODEX_REF="${2:-}"
 UPSTREAM_REMOTE="upstream-codex"
 PREFIX="codex-rs"
 SPLIT_BRANCH="sync/codex-rs-latest"
+# 上游稳定 release tag 形如 rust-v0.141.0;排除带 -alpha/-beta/-rc 的预发布
+# 以及 rust-vrust-v / rust-vv 之类的脏 tag。
+RELEASE_TAG_REGEX='^rust-v[0-9]+\.[0-9]+\.[0-9]+$'
 
 SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
@@ -47,18 +54,36 @@ git switch "$CODEZ_BRANCH"
 echo "Fetching origin..."
 git fetch origin "$CODEZ_BRANCH" || true
 
-echo "Fetching $UPSTREAM_REMOTE..."
-git fetch "$UPSTREAM_REMOTE" "$CODEX_BRANCH"
+echo "Fetching $UPSTREAM_REMOTE tags..."
+git fetch --tags "$UPSTREAM_REMOTE"
 
-echo "Splitting latest $UPSTREAM_REMOTE/$CODEX_BRANCH:$PREFIX..."
+# 未显式指定 ref 时,自动选出上游最新稳定 release tag。
+if [[ -z "$CODEX_REF" ]]; then
+  echo "Detecting latest upstream stable release tag..."
+  CODEX_REF="$(git ls-remote --tags "$UPSTREAM_REMOTE" 2>/dev/null \
+    | sed 's#.*refs/tags/##; s#\^{}$##' \
+    | grep -E "$RELEASE_TAG_REGEX" \
+    | sort -V \
+    | tail -n 1)"
+  if [[ -z "$CODEX_REF" ]]; then
+    echo "Error: no stable release tag matching $RELEASE_TAG_REGEX found on $UPSTREAM_REMOTE."
+    exit 1
+  fi
+  echo "Latest stable release: $CODEX_REF"
+fi
+
+echo "Fetching $UPSTREAM_REMOTE ref $CODEX_REF..."
+git fetch "$UPSTREAM_REMOTE" "$CODEX_REF"
+
+echo "Splitting upstream $CODEX_REF:$PREFIX..."
 git branch -D "$SPLIT_BRANCH" >/dev/null 2>&1 || true
-git subtree split --prefix="$PREFIX" "$UPSTREAM_REMOTE/$CODEX_BRANCH" -b "$SPLIT_BRANCH"
+git subtree split --prefix="$PREFIX" "$CODEX_REF" -b "$SPLIT_BRANCH"
 
-echo "Merging latest upstream $PREFIX into codez/$PREFIX with subtree squash..."
+echo "Merging upstream $PREFIX ($CODEX_REF) into codez/$PREFIX with subtree squash..."
 if has_subtree_metadata; then
   git subtree merge --prefix="$PREFIX" "$SPLIT_BRANCH" \
     --squash \
-    -m "Sync openai/codex $PREFIX into codez"
+    -m "Sync openai/codex $PREFIX into codez ($CODEX_REF)"
 else
   echo "No subtree metadata found for $PREFIX; bootstrapping subtree merge metadata."
   split_commit="$(git rev-parse "$SPLIT_BRANCH")"
@@ -67,7 +92,7 @@ else
     -Xsubtree="$PREFIX" \
     "$SPLIT_BRANCH"
   git commit \
-    -m "Sync openai/codex $PREFIX into codez" \
+    -m "Sync openai/codex $PREFIX into codez ($CODEX_REF)" \
     -m "git-subtree-dir: $PREFIX
 git-subtree-split: $split_commit"
 fi
