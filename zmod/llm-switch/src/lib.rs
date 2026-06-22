@@ -1,6 +1,7 @@
 mod config;
 mod http;
 mod pipeline;
+mod purpose;
 mod transform;
 mod connector;
 mod sse;
@@ -133,6 +134,7 @@ pub use config::{
 pub use http::{build_headers, default_path, egress_url, resolve_key, HttpError};
 pub use pipeline::{default_plugins, run_transforms, TransformPlugin};
 pub use connector::{make_connector, ConnError, Connector as ConnectorTrait, EgressCtx, SseTranslator};
+pub use purpose::{purpose_from_source, Purpose};
 
 use std::sync::OnceLock;
 
