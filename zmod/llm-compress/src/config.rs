@@ -32,8 +32,6 @@ pub struct TruncateCfg {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct JsonCfg {
-    pub max_array_items: usize,
-    pub max_depth: usize,
     pub csv_schema: bool,
 }
 
@@ -114,7 +112,7 @@ impl Default for TruncateCfg {
 
 impl Default for JsonCfg {
     fn default() -> Self {
-        Self { max_array_items: 20, max_depth: 6, csv_schema: true }
+        Self { csv_schema: true }
     }
 }
 

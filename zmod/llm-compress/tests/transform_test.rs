@@ -48,7 +48,6 @@ fn provider() -> codex_api::Provider {
 
 fn fco_text(call_id: &str, text: &str) -> ResponseItem {
     ResponseItem::FunctionCallOutput {
-        id: None,
         call_id: call_id.to_string(),
         output: FunctionCallOutputPayload {
             body: FunctionCallOutputBody::Text(text.to_string()),
@@ -96,7 +95,6 @@ fn non_tooloutput_variants_are_ignored() {
 fn contentitems_image_preserved() {
     // ContentItems 含 InputText + InputImage:图片必须原样保留。
     let mut r = req_with(vec![ResponseItem::FunctionCallOutput {
-        id: None,
         call_id: "c3".to_string(),
         output: FunctionCallOutputPayload {
             body: FunctionCallOutputBody::ContentItems(vec![

@@ -26,7 +26,6 @@ fn req(input: Vec<ResponseItem>) -> ResponsesApiRequest {
 }
 fn fco(call_id: &str, text: &str) -> ResponseItem {
     ResponseItem::FunctionCallOutput {
-        id: None,
         call_id: call_id.to_string(),
         output: FunctionCallOutputPayload {
             body: FunctionCallOutputBody::Text(text.to_string()),

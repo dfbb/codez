@@ -24,12 +24,12 @@ transform(request)
 
 | 优先级 | 压缩器 | 认领条件 | 方式 |
 |--------|--------|----------|------|
-| 1 | JsonCompressor | 有效 JSON 对象/数组 | 字段折叠 / 数组截断 |
-| 2 | SearchCompressor | grep/rg 风格结果 | 去重上下文行、保留命中行 |
-| 3 | DiffCompressor | git diff / unified diff | 折叠大段 context |
-| 4 | TabularCompressor | CSV / 固定列表格 | 截断多余行、压缩列 |
-| 5 | LogCompressor | 日志行(含时间戳) | 去重连续重复行、折叠低 score |
-| 6 | TruncateCompressor | 任意文本(兜底) | 尾部截断到 max_bytes |
+| 1 | JsonCompressor | 有效 JSON 对象/数组,且无损压后 ≤ truncate.max_bytes | 连续 RLE 去重 + csv-schema 重构(无损,不挂 CCR) |
+| 2 | SearchCompressor | grep/rg 风格结果 | 按文件分组、保首尾匹配 + 评分选中段(有损,挂 CCR) |
+| 3 | DiffCompressor | git diff / unified diff | 折叠大段 context(有损,挂 CCR) |
+| 4 | TabularCompressor | CSV/TSV/Markdown 表格,且 csv-schema 后更小 | csv-schema 重构(无损,不挂 CCR) |
+| 5 | LogCompressor | 日志行(含时间戳/栈帧/重复) | 级别评分保留(保 error/warn/栈帧,删低价值行;有损,挂 CCR) |
+| 6 | TruncateCompressor | 任意文本(兜底) | 头尾保留 + 中段截断到 max_bytes(有损,挂 CCR) |
 
 ## 预处理层
 
@@ -56,10 +56,29 @@ CCR 可通过 `[llm_compress.ccr].enabled = false` 关闭。
 ```toml
 [llm_compress]
 enabled = true
+min_total_bytes = 4096     # 请求可压缩文本总量低于此值 → 整体跳过
 per_item_min_bytes = 512   # 低于此字节数的 item 跳过
 
 [llm_compress.truncate]
+head_lines = 50            # 截断时保留的头部行数
+tail_lines = 50            # 截断时保留的尾部行数
 max_bytes = 65536
+
+[llm_compress.json]
+csv_schema = true          # 对象数组转 csv-schema 重构(无损)
+
+[llm_compress.diff]
+context_lines = 3          # 每个 hunk 保留的上下文行数
+
+[llm_compress.search]
+max_per_file = 5           # 每文件保留的匹配行上限
+max_files = 15             # 保留的文件数上限,超出折叠
+
+[llm_compress.tabular]
+enabled = true             # 是否启用表格 → csv-schema 重构
+
+[llm_compress.log]
+keep_levels = ["error", "warn"]  # 必留日志级别
 
 [llm_compress.preprocess]
 strip_progress = true       # 删进度条/下载行

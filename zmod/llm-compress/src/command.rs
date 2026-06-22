@@ -16,9 +16,6 @@ impl CommandHint {
     pub fn is_grep(&self) -> bool {
         matches!(self.program.rsplit('/').next(), Some("grep") | Some("rg") | Some("ripgrep"))
     }
-    pub fn is_ls_like(&self) -> bool {
-        matches!(self.program.rsplit('/').next(), Some("ls") | Some("tree") | Some("find"))
-    }
     pub fn is_test_runner(&self) -> bool {
         matches!(
             self.program.rsplit('/').next(),
