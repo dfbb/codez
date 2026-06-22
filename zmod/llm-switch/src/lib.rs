@@ -389,6 +389,14 @@ review  = "nonexist"
     }
 
     #[test]
+    fn purpose_memory_unmapped_falls_back_to_provider_id() {
+        let cfg = cfg_with_purpose();
+        // cfg_with_purpose 未配 memory 用途 -> 回退 provider-id(gpt 存在)
+        let r = route_in(&cfg, "gpt", Some(Purpose::Memory), false).expect("route some");
+        assert_eq!(r.provider_id, "gpt");
+    }
+
+    #[test]
     fn purpose_hit_unknown_provider_id_still_routes_to_purpose() {
         let cfg = cfg_with_purpose();
         // 主 provider 不存在,但 compact 命中 cheap -> 用途路由仍生效
