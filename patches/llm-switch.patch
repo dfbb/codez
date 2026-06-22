@@ -1,5 +1,5 @@
 diff --git a/codex-rs/core/Cargo.toml b/codex-rs/core/Cargo.toml
-index d16e8d9cb..284eb978d 100644
+index d16e8d9cbe..284eb978d0 100644
 --- a/codex-rs/core/Cargo.toml
 +++ b/codex-rs/core/Cargo.toml
 @@ -76,6 +76,7 @@ codex-utils-pty = { workspace = true }
@@ -11,7 +11,7 @@ index d16e8d9cb..284eb978d 100644
  dirs = { workspace = true }
  dunce = { workspace = true }
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 73d7398a3..7757bdf1f 100644
+index 4ea8c0ff1f..97d63c9f89 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -182,6 +182,7 @@ struct ModelClientState {
@@ -22,15 +22,25 @@ index 73d7398a3..7757bdf1f 100644
  }
  
  /// Resolved API client setup for a single request attempt.
-@@ -380,6 +381,7 @@ impl ModelClient {
+@@ -249,6 +250,9 @@ pub struct ModelClientSession {
+     /// keep sending it unchanged between turn requests (e.g., for retries, incremental
+     /// appends, or continuation requests), and must not send it between different turns.
+     turn_state: Arc<OnceLock<String>>,
++    /// zmod/llm-switch purpose routing: overrides the source for this session's requests
++    /// (compact/memory-phase1 use this to set the correct purpose).
++    source_override: Option<codex_protocol::protocol::SessionSource>,
+ }
+ 
+ #[derive(Debug, Clone)]
+@@ -379,6 +383,7 @@ impl ModelClient {
+         include_timing_metrics: bool,
          beta_features_header: Option<String>,
-         item_ids_enabled: bool,
          attestation_provider: Option<Arc<dyn AttestationProvider>>,
 +        model_provider_id: String,
      ) -> Self {
          let model_provider = create_model_provider(provider_info, auth_manager);
          let codex_api_key_env_enabled = model_provider
-@@ -404,6 +406,7 @@ impl ModelClient {
+@@ -402,6 +407,7 @@ impl ModelClient {
                  attestation_provider,
                  disable_websockets: AtomicBool::new(false),
                  cached_websocket_session: StdMutex::new(WebsocketSession::default()),
@@ -38,7 +48,31 @@ index 73d7398a3..7757bdf1f 100644
              }),
              prompt_cache_key_override: None,
          }
-@@ -1321,13 +1324,23 @@ impl ModelClientSession {
+@@ -430,6 +436,7 @@ impl ModelClient {
+             client: self.clone(),
+             websocket_session: self.take_cached_websocket_session(),
+             turn_state: Arc::new(OnceLock::new()),
++            source_override: None,
+         }
+     }
+ 
+@@ -992,6 +999,15 @@ impl ModelClientSession {
+         Arc::clone(&self.turn_state)
+     }
+ 
++    /// zmod/llm-switch: tag this session's requests with a specific source for purpose routing.
++    pub fn with_source_override(
++        mut self,
++        source: codex_protocol::protocol::SessionSource,
++    ) -> Self {
++        self.source_override = Some(source);
++        self
++    }
++
+     fn reset_websocket_session(&mut self) {
+         self.websocket_session.connection = None;
+         self.websocket_session.last_request = None;
+@@ -1311,13 +1327,31 @@ impl ModelClientSession {
              let inference_trace_attempt = inference_trace.start_attempt();
              inference_trace_attempt.add_request_headers(&mut options.extra_headers);
              inference_trace_attempt.record_started(&request);
@@ -49,7 +83,15 @@ index 73d7398a3..7757bdf1f 100644
 -            )
 -            .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
 -            let stream_result = client.stream_request(request, options).await;
-+            let stream_result = match codez_llm_switch::route(&self.client.state.model_provider_id) {
++            let effective_source = self
++                .source_override
++                .as_ref()
++                .unwrap_or(&self.client.state.session_source);
++            let stream_result = match codez_llm_switch::route(
++                &self.client.state.model_provider_id,
++                Some(effective_source),
++                &request,
++            ) {
 +                None => {
 +                    // 原生路径:遥测链完整保留
 +                    let client = ApiResponsesClient::new(
@@ -69,19 +111,36 @@ index 73d7398a3..7757bdf1f 100644
  
              match stream_result {
                  Ok(stream) => {
+@@ -1630,7 +1664,15 @@ impl ModelClientSession {
+         let wire_api = self.client.state.provider.info().wire_api;
+         match wire_api {
+             WireApi::Responses => {
+-                if self.client.responses_websocket_enabled() {
++                let effective_source = self
++                    .source_override
++                    .as_ref()
++                    .unwrap_or(&self.client.state.session_source);
++                let bypass_ws = codez_llm_switch::should_bypass_websocket(
++                    &self.client.state.model_provider_id,
++                    Some(effective_source),
++                );
++                if self.client.responses_websocket_enabled() && !bypass_ws {
+                     let request_trace = current_span_w3c_trace_context();
+                     match self
+                         .stream_responses_websocket(
 diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
-index 1d0c4c48c..e64588f6a 100644
+index 06074a5d20..50c29e5445 100644
 --- a/codex-rs/core/src/client_tests.rs
 +++ b/codex-rs/core/src/client_tests.rs
-@@ -78,6 +78,7 @@ fn test_model_client(session_source: SessionSource) -> ModelClient {
+@@ -77,6 +77,7 @@ fn test_model_client(session_source: SessionSource) -> ModelClient {
+         /*include_timing_metrics*/ false,
          /*beta_features_header*/ None,
-         /*item_ids_enabled*/ false,
          /*attestation_provider*/ None,
 +        /*model_provider_id*/ String::new(),
      )
  }
  
-@@ -571,6 +572,7 @@ fn model_client_with_counting_attestation(
+@@ -569,6 +570,7 @@ fn model_client_with_counting_attestation(
          Some(Arc::new(CountingAttestationProvider {
              calls: attestation_calls.clone(),
          })),
@@ -89,103 +148,142 @@ index 1d0c4c48c..e64588f6a 100644
      );
      (model_client, attestation_calls)
  }
+diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
+index 52b2ef4ef5..dd88fdefdb 100644
+--- a/codex-rs/core/src/compact.rs
++++ b/codex-rs/core/src/compact.rs
+@@ -214,7 +214,13 @@ async fn run_compact_task_inner_impl(
+ 
+     let max_retries = turn_context.provider.info().stream_max_retries();
+     let mut retries = 0;
+-    let mut client_session = sess.services.model_client.new_session();
++    let mut client_session = sess
++        .services
++        .model_client
++        .new_session()
++        .with_source_override(codex_protocol::protocol::SessionSource::SubAgent(
++            codex_protocol::protocol::SubAgentSource::Compact,
++        ));
+     // Reuse one client session so turn-scoped state (sticky routing, websocket incremental
+     // request tracking)
+     // survives retries within this compact turn.
 diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
-index 0c07f5e95..313837acc 100644
+index 46f20eaf53..51b38d3fb0 100644
 --- a/codex-rs/core/src/session/session.rs
 +++ b/codex-rs/core/src/session/session.rs
-@@ -1048,6 +1048,7 @@ impl Session {
+@@ -1026,6 +1026,7 @@ impl Session {
+                     config.features.enabled(Feature::RuntimeMetrics),
                      Self::build_model_client_beta_features_header(config.as_ref()),
-                     /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds),
                      attestation_provider,
 +                    config.model_provider_id.clone(),
                  )
                  .with_prompt_cache_key_override(
                      crate::guardian::prompt_cache_key_override_for_review_session(
 diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
-index bca6be6a7..f58835c5d 100644
+index 5086fd63bd..973f06b7ca 100644
 --- a/codex-rs/core/src/session/tests.rs
 +++ b/codex-rs/core/src/session/tests.rs
-@@ -463,6 +463,7 @@ fn test_model_client_session() -> crate::client::ModelClientSession {
+@@ -437,6 +437,7 @@ fn test_model_client_session() -> crate::client::ModelClientSession {
+         /*include_timing_metrics*/ false,
          /*beta_features_header*/ None,
-         /*item_ids_enabled*/ false,
          /*attestation_provider*/ None,
 +        /*model_provider_id*/ String::new(),
      )
      .new_session()
  }
-@@ -5103,6 +5104,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
+@@ -5034,6 +5035,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
+             config.features.enabled(Feature::RuntimeMetrics),
              Session::build_model_client_beta_features_header(config.as_ref()),
-             /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds),
              /*attestation_provider*/ None,
 +            config.model_provider_id.clone(),
          ),
          code_mode_service: crate::tools::code_mode::CodeModeService::new(),
          tool_search_handler_cache: Default::default(),
-@@ -7162,6 +7164,7 @@ where
+@@ -7078,6 +7080,7 @@ where
+             config.features.enabled(Feature::RuntimeMetrics),
              Session::build_model_client_beta_features_header(config.as_ref()),
-             /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds),
              /*attestation_provider*/ None,
 +            config.model_provider_id.clone(),
          ),
          code_mode_service: crate::tools::code_mode::CodeModeService::new(),
          tool_search_handler_cache: Default::default(),
 diff --git a/codex-rs/core/tests/responses_headers.rs b/codex-rs/core/tests/responses_headers.rs
-index cf9b9a939..5e9e20616 100644
+index b5bc2b0d44..7067b1022f 100644
 --- a/codex-rs/core/tests/responses_headers.rs
 +++ b/codex-rs/core/tests/responses_headers.rs
-@@ -129,6 +129,7 @@ async fn responses_stream_includes_subagent_header_on_review() {
+@@ -128,6 +128,7 @@ async fn responses_stream_includes_subagent_header_on_review() {
+         /*include_timing_metrics*/ false,
          /*beta_features_header*/ None,
-         /*item_ids_enabled*/ false,
          /*attestation_provider*/ None,
 +        /*model_provider_id*/ String::new(),
      );
      let responses_metadata = test_turn_responses_metadata(&client, thread_id, &session_source);
      let mut client_session = client.new_session();
-@@ -261,6 +262,7 @@ async fn responses_stream_includes_subagent_header_on_other() {
+@@ -259,6 +260,7 @@ async fn responses_stream_includes_subagent_header_on_other() {
+         /*include_timing_metrics*/ false,
          /*beta_features_header*/ None,
-         /*item_ids_enabled*/ false,
          /*attestation_provider*/ None,
 +        /*model_provider_id*/ String::new(),
      );
      let responses_metadata = test_turn_responses_metadata(&client, thread_id, &session_source);
      let mut client_session = client.new_session();
-@@ -379,6 +381,7 @@ async fn responses_respects_model_info_overrides_from_config() {
+@@ -376,6 +378,7 @@ async fn responses_respects_model_info_overrides_from_config() {
+         /*include_timing_metrics*/ false,
          /*beta_features_header*/ None,
-         /*item_ids_enabled*/ false,
          /*attestation_provider*/ None,
 +        /*model_provider_id*/ String::new(),
      );
      let responses_metadata = test_turn_responses_metadata(&client, thread_id, &session_source);
      let mut client_session = client.new_session();
 diff --git a/codex-rs/core/tests/suite/client.rs b/codex-rs/core/tests/suite/client.rs
-index fe543a875..e59bc1cdb 100644
+index c5dfd96cf6..d2c9944f7a 100644
 --- a/codex-rs/core/tests/suite/client.rs
 +++ b/codex-rs/core/tests/suite/client.rs
-@@ -1163,6 +1163,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
+@@ -1020,6 +1020,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
+         /*include_timing_metrics*/ false,
          /*beta_features_header*/ None,
-         /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds),
          /*attestation_provider*/ None,
 +        /*model_provider_id*/ String::new(),
      );
      let responses_metadata = test_turn_responses_metadata(&client, thread_id);
      let mut client_session = client.new_session();
-@@ -2774,6 +2775,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
+@@ -2512,6 +2513,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
+         /*include_timing_metrics*/ false,
          /*beta_features_header*/ None,
-         /*item_ids_enabled*/ false,
          /*attestation_provider*/ None,
 +        /*model_provider_id*/ String::new(),
      );
      let responses_metadata = test_turn_responses_metadata(&client, thread_id);
      let mut client_session = client.new_session();
 diff --git a/codex-rs/core/tests/suite/client_websockets.rs b/codex-rs/core/tests/suite/client_websockets.rs
-index 1ccbd302d..fe03516de 100755
+index cee54e24b3..a18111f3e3 100755
 --- a/codex-rs/core/tests/suite/client_websockets.rs
 +++ b/codex-rs/core/tests/suite/client_websockets.rs
-@@ -2193,6 +2193,7 @@ async fn websocket_harness_with_provider_options(
+@@ -2190,6 +2190,7 @@ async fn websocket_harness_with_provider_options(
+         runtime_metrics_enabled,
          /*beta_features_header*/ None,
-         /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds),
          /*attestation_provider*/ None,
 +        /*model_provider_id*/ String::new(),
      );
  
      WebsocketTestHarness {
+diff --git a/codex-rs/memories/write/src/runtime.rs b/codex-rs/memories/write/src/runtime.rs
+index 8dae6ca617..70b6226a70 100644
+--- a/codex-rs/memories/write/src/runtime.rs
++++ b/codex-rs/memories/write/src/runtime.rs
+@@ -236,9 +236,14 @@ impl MemoryStartupContext {
+             config.features.enabled(Feature::RuntimeMetrics),
+             /*beta_features_header*/ None,
+             /*attestation_provider*/ None,
++            /*model_provider_id*/ config.model_provider_id.clone(),
+         );
+ 
+-        let mut client_session = model_client.new_session();
++        let mut client_session = model_client
++            .new_session()
++            .with_source_override(SessionSource::Internal(
++                InternalSessionSource::MemoryConsolidation,
++            ));
+         let window_id = format!("{}:0", self.thread_id);
+         let responses_metadata = detached_memory_responses_metadata(
+             installation_id,

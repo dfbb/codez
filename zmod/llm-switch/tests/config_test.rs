@@ -89,3 +89,58 @@ fn responses_provider_with_auth_key_is_rejected() {
     let err = load_config_from_str(toml, false).unwrap_err();
     assert!(format!("{err}").contains("auth_key"), "应提到 auth_key: {err}");
 }
+
+#[test]
+fn parses_purpose_table() {
+    let toml = r#"
+[llm-switch]
+enabled = true
+
+[llm-switch.providers.deepseek]
+connector = "chat"
+base_url  = "https://api.deepseek.com/v1"
+auth      = "bearer"
+key_env   = "DEEPSEEK_API_KEY"
+
+[llm-switch.purpose]
+compact = "deepseek"
+review  = "deepseek"
+memory  = "deepseek"
+"#;
+    let cfg = load_config_from_str(toml, false).expect("parse ok");
+    assert_eq!(cfg.purpose.get("compact").map(String::as_str), Some("deepseek"));
+    assert_eq!(cfg.purpose.get("review").map(String::as_str), Some("deepseek"));
+    assert_eq!(cfg.purpose.get("memory").map(String::as_str), Some("deepseek"));
+}
+
+#[test]
+fn purpose_table_absent_is_empty_not_error() {
+    let toml = r#"
+[llm-switch]
+enabled = true
+
+[llm-switch.providers.x]
+connector = "chat"
+auth = "bearer"
+"#;
+    let cfg = load_config_from_str(toml, false).expect("parse ok");
+    assert!(cfg.purpose.is_empty());
+}
+
+#[test]
+fn purpose_value_to_unknown_provider_is_kept_not_rejected() {
+    // 坏映射不在解析层拒绝;route() 运行时再 warn+回退(spec §4 第 3a)
+    let toml = r#"
+[llm-switch]
+enabled = true
+
+[llm-switch.providers.x]
+connector = "chat"
+auth = "bearer"
+
+[llm-switch.purpose]
+compact = "does-not-exist"
+"#;
+    let cfg = load_config_from_str(toml, false).expect("parse ok");
+    assert_eq!(cfg.purpose.get("compact").map(String::as_str), Some("does-not-exist"));
+}
