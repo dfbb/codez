@@ -274,6 +274,9 @@ fn route_in(
 }
 
 /// WS 绕过纯函数(spec §4.2):只看 source/purpose,不做 namespace 预检。
+///
+/// `_provider_id` 入参仅为与 `route_in` / 公开入口签名保持一致而保留;
+/// 绕过判定只看 source/purpose,不消费 provider id。
 fn should_bypass_in(cfg: &Config, _provider_id: &str, purpose: Option<Purpose>) -> bool {
     if !cfg.enabled {
         return false;
