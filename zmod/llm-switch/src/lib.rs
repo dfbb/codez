@@ -1,5 +1,6 @@
 mod config;
 mod http;
+mod namespace;
 mod pipeline;
 mod purpose;
 mod transform;
@@ -132,6 +133,7 @@ pub use config::{
     load_config_from_str, AuthKind, Config, ConfigError, Connector, ProviderCfg,
 };
 pub use http::{build_headers, default_path, egress_url, resolve_key, HttpError};
+pub use namespace::request_has_namespace_tools;
 pub use pipeline::{default_plugins, run_transforms, TransformPlugin};
 pub use connector::{make_connector, ConnError, Connector as ConnectorTrait, EgressCtx, SseTranslator};
 pub use purpose::{purpose_from_source, Purpose};
