@@ -206,9 +206,9 @@ fn loaded() -> &'static Config {
         match std::fs::read_to_string(&path) {
             Ok(text) => load_config_from_str(&text, false).unwrap_or_else(|e| {
                 tracing::warn!("llm-switch disabled: bad config-zmod.toml: {e}");
-                Config { enabled: false, providers: Default::default() }
+                Config { enabled: false, providers: Default::default(), purpose: Default::default() }
             }),
-            Err(_) => Config { enabled: false, providers: Default::default() }, // 缺文件 = 关闭
+            Err(_) => Config { enabled: false, providers: Default::default(), purpose: Default::default() }, // 缺文件 = 关闭
         }
     })
 }
