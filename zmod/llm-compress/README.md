@@ -10,7 +10,6 @@
 transform(request)
   ├─ config::load()            — 读 ~/.codex/config-zmod.toml [llm_compress]
   ├─ ccr::RequestCtx           — 构造一次性请求上下文
-  │    ├─ query::extract()     — 抽取当前 query 关键词
   │    └─ command::index()     — 建立 call_id → 命令名 索引
   ├─ build_router()            — Json→Search→Diff→Tabular→Log→Truncate
   └─ per-item compress_in_place()
