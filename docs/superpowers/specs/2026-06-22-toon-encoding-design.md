@@ -40,10 +40,20 @@ content string the model *reads* becomes TOON.
   TOON text. No more RLE dedup (`_llm_dup_prev`), no more `_schema`/`_rows`.
 - **`TabularCompressor`**: parse the CSV/TSV/Markdown table into a
   `Value` (array of objects, as today), then `encode_default(&value)` → TOON.
-- **Key type change**: csv-schema output was valid JSON (`kind==Json`); **TOON
-  is not JSON**, so the product is `kind==Text`, `lossy==false`. This fits the
-  existing invariants cleanly — Text + lossless ⟹ no CCR appended; the
-  `json_valid` write-back gate is skipped for `kind==Text`.
+- **New `ContentKind::Toon`**: csv-schema output was valid JSON (`kind==Json`);
+  **TOON is not JSON**, and it must NOT reuse `kind==Text` either. The
+  orchestrator (`lib.rs`) attaches a CCR pointer whenever
+  `kind==Text && (pre_lossy || comp_lossy)`. So a `Text` TOON product, when
+  preprocessing was lossy (e.g. progress lines stripped before a still-parseable
+  JSON blob), would become `TOON + [llm-compress: …]` text — no longer decodable
+  TOON, and the round-trip self-check (run inside the compressor, before CCR
+  attach) would not catch it.
+- Therefore introduce a distinct `ContentKind::Toon` (always `lossy==false`).
+  In the orchestrator, treat `Toon` like `Json`: **never attach CCR**. It also
+  skips the `json_valid` write-back gate (that gate re-parses as JSON and would
+  reject TOON); TOON's validation is its own internal round-trip self-check
+  (below). This matches the existing "structured product ⟹ no CCR" semantics of
+  the JSON path and avoids threading `pre_lossy` into the compressors.
 
 ### Dropped: RLE consecutive dedup
 
@@ -59,22 +69,30 @@ elements in tool output are rare; TOON's tabular form is the larger win.
 tool-output JSON string
   → serde_json::from_str → Value           (Err → Unchanged, fail-open)
   → encode_default(&value) → toon: String  (Err → Unchanged)
+  → size check FIRST: toon.len() < original.len() ?
+        (not smaller → Unchanged; this guards the saved subtraction below)
   → round-trip self-check:
         decode_default::<Value>(&toon) == original Value ?
         (not-equal or Err → Unchanged, fail-open)
-  → kind=Text, lossy=false, saved = original.len() - toon.len()
-  → router size gate + write-back (write only if smaller)
+  → kind=Toon, lossy=false, saved = original.len() - toon.len()  (> 0 here)
+  → router size gate + write-back
 ```
+
+The "smaller than original" check happens **before** computing `saved` and
+before returning `Compressed`. `saved = original.len() - toon.len()` only runs
+on the branch where `toon.len() < original.len()`, so it cannot underflow. As a
+belt-and-suspenders measure the code uses `saturating_sub` and returns
+`Unchanged` when `saved == 0`.
 
 ## Round-trip safety self-check
 
-Because TOON is the model's **only** view of that tool output, and `kind==Text`
-bypasses the JSON path's "re-parse before write-back" gate, both
-`JsonCompressor` and `TabularCompressor` MUST, after producing TOON and before
-returning, run `decode_default::<Value>(&toon)` and compare it to the original
-`Value`. Any decode error or inequality → return `Unchanged` (fall back to the
-original text). This is the TOON path's own fail-open gate, equivalent to the
-JSON path's `json_valid`.
+Because TOON is the model's **only** view of that tool output, and the
+orchestrator never re-parses a `kind==Toon` product, both `JsonCompressor` and
+`TabularCompressor` MUST, after producing TOON and before returning, run
+`decode_default::<Value>(&toon)` and compare it to the original `Value`. Any
+decode error or inequality → return `Unchanged` (fall back to the original
+text). This is the TOON path's own fail-open gate, equivalent to the JSON
+path's `json_valid` write-back gate.
 
 ## detect / yield-to-Truncate (preserved)
 
@@ -134,6 +152,11 @@ under the workspace toolchain (Rust 1.95.0).
   output (reuse the cache-stability test pattern).
 - **Switch**: `use_toon = false` → `JsonCompressor` / `TabularCompressor`
   `detect` return false.
+- **CCR isolation (orchestrator)**: a `kind==Toon` product with lossy
+  preprocessing (e.g. progress lines stripped) is written back as **bare TOON,
+  no `[llm-compress: …]` CCR pointer appended** — assert the result still
+  `decode_default`s. This is the regression test for the `ContentKind::Toon`
+  treatment in `lib.rs`.
 - **Rewrite** existing `tests/json_test.rs` and `tests/tabular_test.rs` to
   assert TOON products instead of `_schema`/`_rows`.
 - **Delete** `tests/schema_test.rs`.
@@ -143,8 +166,10 @@ under the workspace toolchain (Rust 1.95.0).
 
 ## Impact
 
-`src/compress/json.rs`, `src/compress/tabular.rs`, delete `src/compress/schema.rs`,
-`src/compress/mod.rs` (drop `pub mod schema;`), `src/config.rs` (switch rename +
-drop `TabularCfg`), `Cargo.toml`. The codez patch is unaffected — this is a
-pure zmod-internal change.
+`src/router.rs` (add `ContentKind::Toon` variant),
+`src/lib.rs` (orchestrator: treat `Toon` like `Json` — no CCR, skip
+`json_valid`), `src/compress/json.rs`, `src/compress/tabular.rs`, delete
+`src/compress/schema.rs`, `src/compress/mod.rs` (drop `pub mod schema;`),
+`src/config.rs` (switch rename + drop `TabularCfg`), `Cargo.toml`. The codez
+patch is unaffected — this is a pure zmod-internal change.
 ```
