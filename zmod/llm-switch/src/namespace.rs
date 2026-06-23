@@ -53,7 +53,7 @@ mod tests {
             namespace: Some("mcp__gmail".into()),
             arguments: "{}".into(),
             call_id: "c1".into(),
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         }];
         assert!(request_has_namespace_tools(&req));
     }
@@ -67,7 +67,7 @@ mod tests {
             namespace: None,
             arguments: "{}".into(),
             call_id: "c1".into(),
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         }];
         assert!(!request_has_namespace_tools(&req));
     }

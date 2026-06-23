@@ -188,7 +188,7 @@ impl AnthropicSseState {
                     namespace: None,
                     arguments: acc.partial_json,
                     call_id,
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 }));
             }
         }
@@ -203,7 +203,7 @@ impl AnthropicSseState {
                     text: std::mem::take(&mut self.text),
                 }],
                 phase: None,
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }));
         }
 

@@ -151,7 +151,7 @@ impl ChatSseState {
                 namespace: None,
                 arguments: acc.arguments,
                 call_id,
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }));
         }
 
@@ -166,7 +166,7 @@ impl ChatSseState {
                     text: std::mem::take(&mut self.text),
                 }],
                 phase: None,
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }));
         }
 

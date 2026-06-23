@@ -11,7 +11,7 @@ index d16e8d9cbe..284eb978d0 100644
  dirs = { workspace = true }
  dunce = { workspace = true }
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 4ea8c0ff1f..97d63c9f89 100644
+index c6cb92907f..b7b4384b9d 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -182,6 +182,7 @@ struct ModelClientState {
@@ -32,15 +32,15 @@ index 4ea8c0ff1f..97d63c9f89 100644
  }
  
  #[derive(Debug, Clone)]
-@@ -379,6 +383,7 @@ impl ModelClient {
-         include_timing_metrics: bool,
+@@ -380,6 +384,7 @@ impl ModelClient {
          beta_features_header: Option<String>,
+         item_ids_enabled: bool,
          attestation_provider: Option<Arc<dyn AttestationProvider>>,
 +        model_provider_id: String,
      ) -> Self {
          let model_provider = create_model_provider(provider_info, auth_manager);
          let codex_api_key_env_enabled = model_provider
-@@ -402,6 +407,7 @@ impl ModelClient {
+@@ -404,6 +409,7 @@ impl ModelClient {
                  attestation_provider,
                  disable_websockets: AtomicBool::new(false),
                  cached_websocket_session: StdMutex::new(WebsocketSession::default()),
@@ -48,7 +48,7 @@ index 4ea8c0ff1f..97d63c9f89 100644
              }),
              prompt_cache_key_override: None,
          }
-@@ -430,6 +436,7 @@ impl ModelClient {
+@@ -432,6 +438,7 @@ impl ModelClient {
              client: self.clone(),
              websocket_session: self.take_cached_websocket_session(),
              turn_state: Arc::new(OnceLock::new()),
@@ -56,7 +56,7 @@ index 4ea8c0ff1f..97d63c9f89 100644
          }
      }
  
-@@ -992,6 +999,15 @@ impl ModelClientSession {
+@@ -1001,6 +1008,15 @@ impl ModelClientSession {
          Arc::clone(&self.turn_state)
      }
  
@@ -72,7 +72,7 @@ index 4ea8c0ff1f..97d63c9f89 100644
      fn reset_websocket_session(&mut self) {
          self.websocket_session.connection = None;
          self.websocket_session.last_request = None;
-@@ -1311,13 +1327,31 @@ impl ModelClientSession {
+@@ -1323,13 +1339,31 @@ impl ModelClientSession {
              let inference_trace_attempt = inference_trace.start_attempt();
              inference_trace_attempt.add_request_headers(&mut options.extra_headers);
              inference_trace_attempt.record_started(&request);
@@ -111,7 +111,7 @@ index 4ea8c0ff1f..97d63c9f89 100644
  
              match stream_result {
                  Ok(stream) => {
-@@ -1630,7 +1664,15 @@ impl ModelClientSession {
+@@ -1646,7 +1680,15 @@ impl ModelClientSession {
          let wire_api = self.client.state.provider.info().wire_api;
          match wire_api {
              WireApi::Responses => {
@@ -129,18 +129,18 @@ index 4ea8c0ff1f..97d63c9f89 100644
                      match self
                          .stream_responses_websocket(
 diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
-index 06074a5d20..50c29e5445 100644
+index 0584e290fc..96379ddb6a 100644
 --- a/codex-rs/core/src/client_tests.rs
 +++ b/codex-rs/core/src/client_tests.rs
-@@ -77,6 +77,7 @@ fn test_model_client(session_source: SessionSource) -> ModelClient {
-         /*include_timing_metrics*/ false,
+@@ -78,6 +78,7 @@ fn test_model_client(session_source: SessionSource) -> ModelClient {
          /*beta_features_header*/ None,
+         /*item_ids_enabled*/ false,
          /*attestation_provider*/ None,
 +        /*model_provider_id*/ String::new(),
      )
  }
  
-@@ -569,6 +570,7 @@ fn model_client_with_counting_attestation(
+@@ -571,6 +572,7 @@ fn model_client_with_counting_attestation(
          Some(Arc::new(CountingAttestationProvider {
              calls: attestation_calls.clone(),
          })),
@@ -149,10 +149,10 @@ index 06074a5d20..50c29e5445 100644
      (model_client, attestation_calls)
  }
 diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
-index 52b2ef4ef5..dd88fdefdb 100644
+index 94c26b8ad7..9677003abe 100644
 --- a/codex-rs/core/src/compact.rs
 +++ b/codex-rs/core/src/compact.rs
-@@ -214,7 +214,13 @@ async fn run_compact_task_inner_impl(
+@@ -219,7 +219,13 @@ async fn run_compact_task_inner_impl(
  
      let max_retries = turn_context.provider.info().stream_max_retries();
      let mut retries = 0;
@@ -168,112 +168,112 @@ index 52b2ef4ef5..dd88fdefdb 100644
      // request tracking)
      // survives retries within this compact turn.
 diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
-index 46f20eaf53..51b38d3fb0 100644
+index b4740bea99..9c2f4aef62 100644
 --- a/codex-rs/core/src/session/session.rs
 +++ b/codex-rs/core/src/session/session.rs
-@@ -1026,6 +1026,7 @@ impl Session {
-                     config.features.enabled(Feature::RuntimeMetrics),
+@@ -1065,6 +1065,7 @@ impl Session {
                      Self::build_model_client_beta_features_header(config.as_ref()),
+                     /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds),
                      attestation_provider,
 +                    config.model_provider_id.clone(),
                  )
                  .with_prompt_cache_key_override(
                      crate::guardian::prompt_cache_key_override_for_review_session(
 diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
-index 5086fd63bd..973f06b7ca 100644
+index 903ea0b477..e6f092e846 100644
 --- a/codex-rs/core/src/session/tests.rs
 +++ b/codex-rs/core/src/session/tests.rs
-@@ -437,6 +437,7 @@ fn test_model_client_session() -> crate::client::ModelClientSession {
-         /*include_timing_metrics*/ false,
+@@ -463,6 +463,7 @@ fn test_model_client_session() -> crate::client::ModelClientSession {
          /*beta_features_header*/ None,
+         /*item_ids_enabled*/ false,
          /*attestation_provider*/ None,
 +        /*model_provider_id*/ String::new(),
      )
      .new_session()
  }
-@@ -5034,6 +5035,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
-             config.features.enabled(Feature::RuntimeMetrics),
+@@ -5117,6 +5118,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
              Session::build_model_client_beta_features_header(config.as_ref()),
+             /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds),
              /*attestation_provider*/ None,
 +            config.model_provider_id.clone(),
          ),
          code_mode_service: crate::tools::code_mode::CodeModeService::new(),
          tool_search_handler_cache: Default::default(),
-@@ -7078,6 +7080,7 @@ where
-             config.features.enabled(Feature::RuntimeMetrics),
+@@ -7185,6 +7187,7 @@ where
              Session::build_model_client_beta_features_header(config.as_ref()),
+             /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds),
              /*attestation_provider*/ None,
 +            config.model_provider_id.clone(),
          ),
          code_mode_service: crate::tools::code_mode::CodeModeService::new(),
          tool_search_handler_cache: Default::default(),
 diff --git a/codex-rs/core/tests/responses_headers.rs b/codex-rs/core/tests/responses_headers.rs
-index b5bc2b0d44..7067b1022f 100644
+index 2f323e0dd3..ebee08e5e8 100644
 --- a/codex-rs/core/tests/responses_headers.rs
 +++ b/codex-rs/core/tests/responses_headers.rs
-@@ -128,6 +128,7 @@ async fn responses_stream_includes_subagent_header_on_review() {
-         /*include_timing_metrics*/ false,
+@@ -129,6 +129,7 @@ async fn responses_stream_includes_subagent_header_on_review() {
          /*beta_features_header*/ None,
+         /*item_ids_enabled*/ false,
          /*attestation_provider*/ None,
 +        /*model_provider_id*/ String::new(),
      );
      let responses_metadata = test_turn_responses_metadata(&client, thread_id, &session_source);
      let mut client_session = client.new_session();
-@@ -259,6 +260,7 @@ async fn responses_stream_includes_subagent_header_on_other() {
-         /*include_timing_metrics*/ false,
+@@ -261,6 +262,7 @@ async fn responses_stream_includes_subagent_header_on_other() {
          /*beta_features_header*/ None,
+         /*item_ids_enabled*/ false,
          /*attestation_provider*/ None,
 +        /*model_provider_id*/ String::new(),
      );
      let responses_metadata = test_turn_responses_metadata(&client, thread_id, &session_source);
      let mut client_session = client.new_session();
-@@ -376,6 +378,7 @@ async fn responses_respects_model_info_overrides_from_config() {
-         /*include_timing_metrics*/ false,
+@@ -379,6 +381,7 @@ async fn responses_respects_model_info_overrides_from_config() {
          /*beta_features_header*/ None,
+         /*item_ids_enabled*/ false,
          /*attestation_provider*/ None,
 +        /*model_provider_id*/ String::new(),
      );
      let responses_metadata = test_turn_responses_metadata(&client, thread_id, &session_source);
      let mut client_session = client.new_session();
 diff --git a/codex-rs/core/tests/suite/client.rs b/codex-rs/core/tests/suite/client.rs
-index c5dfd96cf6..d2c9944f7a 100644
+index d0e68c8a95..5b1ae2ce27 100644
 --- a/codex-rs/core/tests/suite/client.rs
 +++ b/codex-rs/core/tests/suite/client.rs
-@@ -1020,6 +1020,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
-         /*include_timing_metrics*/ false,
+@@ -1169,6 +1169,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
          /*beta_features_header*/ None,
+         /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds),
          /*attestation_provider*/ None,
 +        /*model_provider_id*/ String::new(),
      );
      let responses_metadata = test_turn_responses_metadata(&client, thread_id);
      let mut client_session = client.new_session();
-@@ -2512,6 +2513,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
-         /*include_timing_metrics*/ false,
+@@ -2781,6 +2782,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
          /*beta_features_header*/ None,
+         /*item_ids_enabled*/ false,
          /*attestation_provider*/ None,
 +        /*model_provider_id*/ String::new(),
      );
      let responses_metadata = test_turn_responses_metadata(&client, thread_id);
      let mut client_session = client.new_session();
 diff --git a/codex-rs/core/tests/suite/client_websockets.rs b/codex-rs/core/tests/suite/client_websockets.rs
-index cee54e24b3..a18111f3e3 100755
+index 5d1721ee75..da98811c5a 100755
 --- a/codex-rs/core/tests/suite/client_websockets.rs
 +++ b/codex-rs/core/tests/suite/client_websockets.rs
-@@ -2190,6 +2190,7 @@ async fn websocket_harness_with_provider_options(
-         runtime_metrics_enabled,
+@@ -2193,6 +2193,7 @@ async fn websocket_harness_with_provider_options(
          /*beta_features_header*/ None,
+         /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds),
          /*attestation_provider*/ None,
 +        /*model_provider_id*/ String::new(),
      );
  
      WebsocketTestHarness {
 diff --git a/codex-rs/memories/write/src/runtime.rs b/codex-rs/memories/write/src/runtime.rs
-index 8dae6ca617..70b6226a70 100644
+index 0835e15520..ebe6ea2d85 100644
 --- a/codex-rs/memories/write/src/runtime.rs
 +++ b/codex-rs/memories/write/src/runtime.rs
-@@ -236,9 +236,14 @@ impl MemoryStartupContext {
-             config.features.enabled(Feature::RuntimeMetrics),
+@@ -237,9 +237,14 @@ impl MemoryStartupContext {
              /*beta_features_header*/ None,
+             config.features.enabled(Feature::ItemIds),
              /*attestation_provider*/ None,
 +            /*model_provider_id*/ config.model_provider_id.clone(),
          );
