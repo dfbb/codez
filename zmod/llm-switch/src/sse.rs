@@ -1,14 +1,16 @@
-//! 共享 SSE 出口引擎（Task 08）。
+//! Shared SSE egress engine (Task 08).
 //!
-//! `run_egress` 同步完成 HTTP POST + 状态码校验，非 2xx 直接 `Err`（绝不 spawn）；
-//! 2xx 才 spawn 读取任务，逐 `data:` 行喂状态机，把 `ResponseEvent` 塞进 channel，
-//! 返回 `codex_api::ResponseStream`（§4.7）。
+//! `run_egress` completes HTTP POST + status code verification synchronously, returns `Err`
+//! immediately if not 2xx (never spawns); for 2xx, spawns a read task, feeds each `data:` line
+//! to the state machine, pushes `ResponseEvent` into the channel, and returns
+//! `codex_api::ResponseStream` (§4.7).
 //!
-//! UTF-8 策略：原始字节累积进 `Vec<u8>`，仅在找到完整 SSE 帧边界（字节序列
-//! `\n\n`）后才对帧字节做 UTF-8 解码。`\n`（0x0A）在 UTF-8 中绝不会作为多字节
-//! 字符的后续字节，故在字节层面查找 `\n\n` 安全；完整帧保证 UTF-8 对齐，不会
-//! 在汉字等多字节字符中间截断，从根本上消除 `from_utf8_lossy` 产生替换字符的
-//! 问题。
+//! UTF-8 strategy: raw bytes accumulate into `Vec<u8>`, UTF-8 decoding only happens after
+//! finding a complete SSE frame boundary (byte sequence `\n\n`). `\n` (0x0A) never appears as
+//! a trailing byte in a UTF-8 multibyte character, so searching for `\n\n` at the byte level
+//! is safe; complete frames guarantee UTF-8 alignment and won't be truncated in the middle of
+//! multibyte characters like Chinese, fundamentally eliminating the issue of
+//! `from_utf8_lossy` producing replacement characters.
 
 use futures::StreamExt;
 use reqwest::header::HeaderMap;
@@ -26,7 +28,7 @@ pub(crate) async fn run_egress(
     http: reqwest::Client,
     mut translator: Box<dyn SseTranslator>,
 ) -> Result<ResponseStream, ApiError> {
-    // ── 同步阶段（§4.7）：发请求 + 状态码校验 ──────────────────────────────
+    // ── Sync phase (§4.7): send request + status code verification ──────────────────────────
     let resp = http
         .post(&url)
         .headers(headers)
@@ -43,12 +45,12 @@ pub(crate) async fn run_egress(
 
     let status = resp.status();
     if !status.is_success() {
-        // 第三方 401/403 映射成普通 Api 错误，避免触发 OpenAI recovery（§4.7）
+        // Map third-party 401/403 to regular API errors to avoid triggering OpenAI recovery (§4.7)
         let text = resp.text().await.unwrap_or_default();
         return Err(ApiError::Api { status, message: text });
     }
 
-    // ── 异步阶段：仅 2xx 才 spawn ─────────────────────────────────────────
+    // ── Async phase: only spawn for 2xx ─────────────────────────────────────────
     let (tx, rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(64);
     let mut byte_stream = resp.bytes_stream();
 
@@ -68,7 +70,7 @@ pub(crate) async fn run_egress(
             };
             buf.extend_from_slice(&chunk);
 
-            // 按 SSE 事件边界（字节序列 \n\n）切分，仅在完整帧边界解码 UTF-8
+            // Split by SSE event boundary (byte sequence \n\n), decode UTF-8 only at complete frame boundaries
             while let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
                 let frame_bytes = buf[..pos].to_vec();
                 buf.drain(..pos + 2);
@@ -87,7 +89,7 @@ pub(crate) async fn run_egress(
                     let line = line.trim_start();
                     let data = match line.strip_prefix("data:") {
                         Some(d) => d.trim(),
-                        None => continue, // 忽略 event:/id:/注释行
+                        None => continue, // Skip event:/id:/comment lines
                     };
                     if data == "[DONE]" {
                         done = true;
@@ -128,7 +130,7 @@ pub(crate) async fn run_egress(
             }
         }
 
-        // EOF 或 [DONE] → finish（合成 assistant message + Completed，§4.5）
+        // EOF or [DONE] → finish (synthesize assistant message + Completed, §4.5)
         for ev in translator.finish() {
             if tx.send(Ok(ev)).await.is_err() {
                 return;

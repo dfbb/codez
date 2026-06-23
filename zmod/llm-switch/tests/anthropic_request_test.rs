@@ -1,16 +1,16 @@
-/// anthropic 出站请求构造测试（Task 06）
+/// Anthropic outbound request construction tests (Task 06)
 ///
-/// # Fixture 来源声明（§8 必须明确）
-/// 本文件采用**自建 fixture**方案：人工按照 Anthropic Messages API 官方文档格式核对，
-/// 固化成 `tests/fixtures/anthropic_req_*.expected.json`，不依赖第三方 converter 工具。
-/// 理由：本仓库当前无 `../3rd/proxy/llm-rosetta` Python 依赖，且官方格式已有完整文档支撑。
+/// # Fixture source declaration (§8 must be explicit)
+/// This file uses a **self-built fixture** approach: manually verified against the Anthropic Messages API official documentation format,
+/// frozen into `tests/fixtures/anthropic_req_*.expected.json`, no dependency on third-party converter tools.
+/// Rationale: this repository currently has no `../3rd/proxy/llm-rosetta` Python dependency, and the official format has complete documentation support.
 ///
-/// # 复用 Task 04 钉死的类型（Step 0）
+/// # Reusing types pinned in Task 04 (Step 0)
 /// - ContentItem: InputText{text} | InputImage{image_url,detail} | OutputText{text}
 /// - FunctionCallOutputContentItem: InputText{text} | InputImage{image_url,detail} | EncryptedContent{encrypted_content}
 /// - FunctionCallOutputBody: Text(String) | ContentItems(Vec<FunctionCallOutputContentItem>)
 /// - FunctionCallOutputPayload: { body: FunctionCallOutputBody, success: Option<bool> }
-/// - ResponseItem 变体（16个）：Message/AgentMessage/Reasoning/LocalShellCall/FunctionCall/
+/// - ResponseItem variants (16): Message/AgentMessage/Reasoning/LocalShellCall/FunctionCall/
 ///   ToolSearchCall/FunctionCallOutput/CustomToolCall/CustomToolCallOutput/ToolSearchOutput/
 ///   WebSearchCall/ImageGenerationCall/Compaction/CompactionTrigger/ContextCompaction/Other
 use codex_protocol::config_types::Verbosity;
@@ -32,7 +32,7 @@ fn base_req() -> codex_api::ResponsesApiRequest {
     r
 }
 
-// ── 辅助函数 ──────────────────────────────────────────────────────────────────
+// ── Helper functions ──────────────────────────────────────────────────────────────────
 
 fn find_block<'a>(v: &'a serde_json::Value, ty: &str) -> Option<&'a serde_json::Value> {
     v["messages"]
@@ -44,7 +44,7 @@ fn find_block<'a>(v: &'a serde_json::Value, ty: &str) -> Option<&'a serde_json::
 }
 
 // ============================================================
-// §4.3 system 走顶层
+// §4.3 system goes to top level
 // ============================================================
 
 #[test]
@@ -63,7 +63,7 @@ fn system_goes_top_level_and_messages_have_no_system_role() {
     let msgs = v["messages"].as_array().unwrap();
     assert!(
         msgs.iter().all(|m| m["role"] != "system"),
-        "messages 中不应有 role=system"
+        "messages should not have role=system"
     );
     assert_eq!(msgs[0]["role"], "user");
 }
@@ -76,12 +76,12 @@ fn empty_instructions_no_system_field() {
     let v = build(&req, &ctx()).unwrap();
     assert!(
         v.get("system").is_none() || v["system"] == serde_json::Value::Null,
-        "空 instructions 不应产生 system 字段"
+        "empty instructions should not produce system field"
     );
 }
 
 // ============================================================
-// §4.6 max_tokens 必填（兜底）
+// §4.6 max_tokens required (fallback)
 // ============================================================
 
 #[test]
@@ -99,7 +99,7 @@ fn max_tokens_falls_back_to_4096_when_no_config() {
 }
 
 // ============================================================
-// §4.3 消息 role 仅 user/assistant（FunctionCall → assistant content[tool_use]）
+// §4.3 Message role only user/assistant (FunctionCall → assistant content[tool_use])
 // ============================================================
 
 #[test]
@@ -119,12 +119,12 @@ fn function_call_becomes_tool_use_with_parsed_object() {
         .unwrap()
         .iter()
         .find(|m| m["role"] == "assistant")
-        .expect("assistant 消息必须存在");
+        .expect("assistant message must exist");
     let block = &asst["content"][0];
     assert_eq!(block["type"], "tool_use");
     assert_eq!(block["id"], "call_1");
     assert_eq!(block["name"], "get_weather");
-    // arguments 字符串解析成对象（§4.6）
+    // arguments string parsed into object (§4.6)
     assert_eq!(block["input"]["city"], "SF");
 }
 
@@ -141,12 +141,12 @@ fn function_call_invalid_json_arguments_hard_fails() {
     }];
     assert!(
         build(&req, &ctx()).is_err(),
-        "arguments 非法 JSON 应硬失败"
+        "invalid JSON arguments should hard fail"
     );
 }
 
 // ============================================================
-// §4.6 tool_result：is_error 原生字段
+// §4.6 tool_result: is_error native field
 // ============================================================
 
 #[test]
@@ -174,8 +174,8 @@ fn tool_output_maps_is_error() {
     let tr = find_block(&v, "tool_result").expect("tool_result present");
     assert_eq!(tr["tool_use_id"], "c");
     assert_eq!(tr["is_error"], true);
-    // 内容应为错误文本
-    assert!(tr["content"].is_string(), "tool_result content 应为字符串");
+    // content should be error text
+    assert!(tr["content"].is_string(), "tool_result content should be string");
 }
 
 #[test]
@@ -201,11 +201,11 @@ fn tool_output_success_no_is_error_field() {
     ];
     let v = build(&req, &ctx()).unwrap();
     let tr = find_block(&v, "tool_result").expect("tool_result present");
-    // 成功时不应有 is_error 字段（或为 false）
+    // on success, is_error field should not be present (or false)
     let is_error = tr.get("is_error");
     assert!(
         is_error.is_none() || is_error == Some(&serde_json::Value::Bool(false)),
-        "success 时 is_error 不应为 true"
+        "is_error should not be true on success"
     );
 }
 
@@ -237,7 +237,7 @@ fn tool_result_image_content_hard_fails() {
     ];
     assert!(
         build(&req, &ctx()).is_err(),
-        "tool_result 含图片应硬失败（§4.9）"
+        "tool_result with image should hard fail (§4.9)"
     );
 }
 
@@ -268,7 +268,7 @@ fn tool_result_encrypted_content_hard_fails() {
     ];
     assert!(
         build(&req, &ctx()).is_err(),
-        "tool_result 含加密内容应硬失败"
+        "tool_result with encrypted content should hard fail"
     );
 }
 
@@ -293,13 +293,13 @@ fn parallel_true_no_disable_parallel_field() {
         vec![json!({"type":"function","name":"f","parameters":{"type":"object"}})];
     req.parallel_tool_calls = true;
     let v = build(&req, &ctx()).unwrap();
-    // disable_parallel_tool_use 不应为 true（可能没有该字段）
+    // disable_parallel_tool_use should not be true (may not have this field)
     let disable = v
         .get("tool_choice")
         .and_then(|tc| tc.get("disable_parallel_tool_use"));
     assert!(
         disable.is_none() || disable == Some(&serde_json::Value::Bool(false)),
-        "parallel_tool_calls=true 时不应设置 disable_parallel_tool_use=true"
+        "when parallel_tool_calls=true should not set disable_parallel_tool_use=true"
     );
 }
 
@@ -311,7 +311,7 @@ fn tools_map_to_input_schema() {
     assert_eq!(v["tools"][0]["name"], "f");
     assert_eq!(v["tools"][0]["description"], "d");
     assert_eq!(v["tools"][0]["input_schema"]["type"], "object");
-    // 不应有 type 字段（Anthropic tools 格式）
+    // should not have type field (Anthropic tools format)
     assert_eq!(v["tools"][0].get("type"), None);
 }
 
@@ -321,12 +321,12 @@ fn non_function_tool_definition_hard_fails() {
     req.tools = vec![json!({"type":"custom","name":"freeform"})];
     assert!(
         build(&req, &ctx()).is_err(),
-        "非 function 工具类型应硬失败（§4.0b）"
+        "non-function tool types should hard fail (§4.0b)"
     );
 }
 
 // ============================================================
-// §4.10 孤儿修复（无重排——仅注入占位）
+// §4.10 Orphan fixup (no reordering—only inject placeholder)
 // ============================================================
 
 #[test]
@@ -344,7 +344,7 @@ fn orphan_tool_call_gets_placeholder_tool_result() {
     let tr = find_block(&v, "tool_result");
     assert!(
         tr.is_some(),
-        "孤儿 FunctionCall 必须获得占位 tool_result block"
+        "orphan FunctionCall must get placeholder tool_result block"
     );
     assert_eq!(tr.unwrap()["tool_use_id"], "orphan");
 }
@@ -362,16 +362,16 @@ fn orphan_tool_result_is_dropped() {
     }];
     let v = build(&req, &ctx()).unwrap();
     let tr = find_block(&v, "tool_result");
-    assert!(tr.is_none(), "无对应 call 的孤儿 result 应被丢弃");
+    assert!(tr.is_none(), "orphan result without corresponding call should be dropped");
 }
 
 // ============================================================
-// 同 role 消息 content block 合并
+// Same role message content block merging
 // ============================================================
 
 #[test]
 fn consecutive_same_role_blocks_merged() {
-    // 两个 FunctionCall 应合并进同一条 assistant 消息
+    // Two FunctionCalls should merge into one assistant message
     let mut req = base_req();
     req.input = vec![
         ResponseItem::FunctionCall {
@@ -394,13 +394,13 @@ fn consecutive_same_role_blocks_merged() {
     let v = build(&req, &ctx()).unwrap();
     let msgs = v["messages"].as_array().unwrap();
     let asst_msgs: Vec<_> = msgs.iter().filter(|m| m["role"] == "assistant").collect();
-    // 两个 tool_use block 应在同一条 assistant 消息里
-    assert_eq!(asst_msgs.len(), 1, "连续同 role 消息应合并为一条");
+    // Two tool_use blocks should be in the same assistant message
+    assert_eq!(asst_msgs.len(), 1, "consecutive same role messages should merge into one");
     assert_eq!(asst_msgs[0]["content"].as_array().unwrap().len(), 2);
 }
 
 // ============================================================
-// 出站丢弃变体（§4.0 / §4.4）
+// Outbound discard variants (§4.0 / §4.4)
 // ============================================================
 
 #[test]
@@ -448,7 +448,7 @@ fn compaction_trigger_is_discarded_silently() {
 }
 
 // ============================================================
-// 硬失败变体（§4.0）
+// Hard fail variants (§4.0)
 // ============================================================
 
 #[test]
@@ -464,7 +464,7 @@ fn namespaced_function_call_hard_fails() {
     }];
     assert!(
         build(&req, &ctx()).is_err(),
-        "命名空间函数调用应硬失败"
+        "namespaced function call should hard fail"
     );
 }
 
@@ -483,7 +483,7 @@ fn input_image_hard_fails() {
     }];
     assert!(
         build(&req, &ctx()).is_err(),
-        "图片输入应硬失败（§4.9）"
+        "image input should hard fail (§4.9)"
     );
 }
 
@@ -505,7 +505,7 @@ fn local_shell_call_hard_fails() {
         ),
         metadata: None,
     }];
-    assert!(build(&req, &ctx()).is_err(), "LocalShellCall 应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "LocalShellCall should hard fail");
 }
 
 #[test]
@@ -519,7 +519,7 @@ fn tool_search_call_hard_fails() {
         arguments: json!({}),
         metadata: None,
     }];
-    assert!(build(&req, &ctx()).is_err(), "ToolSearchCall 应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "ToolSearchCall should hard fail");
 }
 
 #[test]
@@ -531,7 +531,7 @@ fn web_search_call_hard_fails() {
         action: None,
         metadata: None,
     }];
-    assert!(build(&req, &ctx()).is_err(), "WebSearchCall 应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "WebSearchCall should hard fail");
 }
 
 #[test]
@@ -546,7 +546,7 @@ fn image_generation_call_hard_fails() {
     }];
     assert!(
         build(&req, &ctx()).is_err(),
-        "ImageGenerationCall 应硬失败"
+        "ImageGenerationCall should hard fail"
     );
 }
 
@@ -561,7 +561,7 @@ fn custom_tool_call_hard_fails() {
         input: "{}".into(),
         metadata: None,
     }];
-    assert!(build(&req, &ctx()).is_err(), "CustomToolCall 应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "CustomToolCall should hard fail");
 }
 
 #[test]
@@ -578,7 +578,7 @@ fn custom_tool_call_output_hard_fails() {
     }];
     assert!(
         build(&req, &ctx()).is_err(),
-        "CustomToolCallOutput 应硬失败"
+        "CustomToolCallOutput should hard fail"
     );
 }
 
@@ -592,7 +592,7 @@ fn tool_search_output_hard_fails() {
         tools: vec![],
         metadata: None,
     }];
-    assert!(build(&req, &ctx()).is_err(), "ToolSearchOutput 应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "ToolSearchOutput should hard fail");
 }
 
 #[test]
@@ -604,7 +604,7 @@ fn compaction_hard_fails() {
     }];
     assert!(
         build(&req, &ctx()).is_err(),
-        "Compaction 应硬失败（加密内容）"
+        "Compaction should hard fail (encrypted content)"
     );
 }
 
@@ -617,7 +617,7 @@ fn context_compaction_hard_fails() {
     }];
     assert!(
         build(&req, &ctx()).is_err(),
-        "ContextCompaction 应硬失败（加密内容）"
+        "ContextCompaction should hard fail (encrypted content)"
     );
 }
 
@@ -634,7 +634,7 @@ fn agent_message_encrypted_content_hard_fails() {
     }];
     assert!(
         build(&req, &ctx()).is_err(),
-        "AgentMessage 含 EncryptedContent 应硬失败"
+        "AgentMessage with EncryptedContent should hard fail"
     );
 }
 
@@ -644,11 +644,11 @@ fn other_variant_hard_fails() {
         serde_json::from_str(r#"{"type":"unknown_future_variant"}"#).unwrap();
     let mut req = base_req();
     req.input = vec![unknown_item];
-    assert!(build(&req, &ctx()).is_err(), "Other 未知变体应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "Other unknown variant should hard fail");
 }
 
 // ============================================================
-// §7.1 字段降级
+// §7.1 Field downgrade
 // ============================================================
 
 #[test]
@@ -664,7 +664,7 @@ fn model_field_comes_from_ctx() {
 }
 
 // ============================================================
-// §8 黄金 fixture（自建，人工核对 Anthropic Messages API 格式）
+// §8 Golden fixture (self-built, manually verified Anthropic Messages API format)
 // ============================================================
 
 #[test]
@@ -672,7 +672,7 @@ fn golden_system_user_tool_roundtrip() {
     let expected: serde_json::Value = serde_json::from_str(include_str!(
         "fixtures/anthropic_req_system_user_tool_roundtrip.expected.json"
     ))
-    .expect("fixture JSON 解析失败");
+    .expect("fixture JSON parse failed");
 
     let mut req = codez_llm_switch::testing::sample_request();
     req.model = "claude-opus-4-8".into();
@@ -733,14 +733,14 @@ fn golden_system_user_tool_roundtrip() {
 
     assert_eq!(
         actual, expected,
-        "实际输出与黄金 fixture 不符\n实际:\n{}",
+        "actual output does not match golden fixture\nactual:\n{}",
         serde_json::to_string_pretty(&actual).unwrap()
     );
 }
 
 #[test]
 fn multiple_orphan_calls_injected_in_order() {
-    // 验证多孤儿 FunctionCall 按出现顺序注入占位 tool_result
+    // Verify multiple orphan FunctionCalls inject placeholder tool_results in appearance order
     let mut req = base_req();
     req.input = vec![
         ResponseItem::FunctionCall {
@@ -761,7 +761,7 @@ fn multiple_orphan_calls_injected_in_order() {
         },
     ];
     let v = build(&req, &ctx()).unwrap();
-    // 取所有 tool_result block 的 tool_use_id 顺序
+    // Get all tool_result block tool_use_id in order
     let ids: Vec<&str> = v["messages"]
         .as_array()
         .unwrap()
@@ -772,37 +772,37 @@ fn multiple_orphan_calls_injected_in_order() {
         .filter(|b| b["type"] == "tool_result")
         .map(|b| b["tool_use_id"].as_str().unwrap())
         .collect();
-    assert_eq!(ids, vec!["orphan_a", "orphan_b"], "多孤儿应按出现顺序注入");
+    assert_eq!(ids, vec!["orphan_a", "orphan_b"], "multiple orphans should be injected in appearance order");
 }
 
 // ============================================================
-// §7.1 text.format → 系统指令追加（json_schema 专项测试）
+// §7.1 text.format → system instruction append (json_schema-specific tests)
 // ============================================================
 
-/// 验证 text.format 为 json_schema 时，顶层 system 追加 JSON schema 指令。
-/// TextFormatType 当前只有 JsonSchema 一个变体（见 codex-api/src/common.rs），
-/// 通过 create_text_param_for_request 构造带 format 的 TextControls。
+/// Verify that when text.format is json_schema, top-level system appends JSON schema instruction.
+/// TextFormatType currently has only JsonSchema one variant (see codex-api/src/common.rs),
+/// created via create_text_param_for_request with format TextControls.
 #[test]
 fn text_format_json_schema_appends_system_instruction() {
     let schema = json!({"type": "object", "properties": {"answer": {"type": "string"}}});
     let text_controls =
         codex_api::create_text_param_for_request(None::<Verbosity>, &Some(schema), false);
-    assert!(text_controls.is_some(), "schema 非空时应返回 TextControls");
+    assert!(text_controls.is_some(), "should return TextControls when schema is non-null");
 
     let mut req = base_req();
     req.instructions = "You are a helpful assistant.".into();
     req.text = text_controls;
 
     let v = build(&req, &ctx()).unwrap();
-    let system = v["system"].as_str().expect("system 字段应为字符串");
+    let system = v["system"].as_str().expect("system field should be string");
     assert!(
         system.contains("You must respond with valid JSON matching this schema:"),
-        "text.format=json_schema 应在 system 中追加 schema 指令，实际 system: {system:?}"
+        "text.format=json_schema should append schema instruction in system, actual system: {system:?}"
     );
-    // 原始 instructions 也应保留（追加而非替换）
+    // Original instructions should also be preserved (append not replace)
     assert!(
         system.contains("You are a helpful assistant."),
-        "system 应保留原始 instructions，实际: {system:?}"
+        "system should preserve original instructions, actual: {system:?}"
     );
 }
 

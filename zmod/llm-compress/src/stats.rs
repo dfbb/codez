@@ -1,20 +1,22 @@
-//! 压缩统计 CSV 日志(spec §7)。
+//! Compression statistics CSV log (spec §7).
 //!
-//! 仅当一次请求整体有效压缩(saved_bytes>0)时,Task 08 的 transform 会调用
-//! `log_compression` 写一行。本模块只负责"写一行",是否触发由调用方判断。
+//! The transform in Task 08 calls `log_compression` to write one line only when
+//! a single request has valid compression overall (saved_bytes>0). This module only
+//! handles "writing one line"; whether to trigger is determined by the caller.
 //!
-//! 格式:CSV 四列,无表头,无引号:`时间戳,queryid,压缩前字节,压缩后字节`。
-//! 时间戳为 RFC3339 UTC,秒精度,形如 `2026-06-20T08:15:30Z`。
+//! Format: CSV with four columns, no header, no quotes: `timestamp,queryid,bytes_before,bytes_after`.
+//! Timestamp is RFC3339 UTC with second precision, e.g. `2026-06-20T08:15:30Z`.
 //!
-//! fail-open:写日志失败(目录建不了 / 权限 / 磁盘满)只记一条 `tracing::warn!`,
-//! 绝不 panic、绝不返回 Err 阻断上层压缩流程。
+//! fail-open: logging failures (cannot create directory / permission denied / disk full)
+//! are logged only as `tracing::warn!`, never panicking or returning Err to block
+//! the upper compression pipeline.
 
 use chrono::SecondsFormat;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// 默认日志路径:`~/.codex/log/llm-compress.log`(用 HOME 环境变量解析)。
+/// Default log path: `~/.codex/log/llm-compress.log` (resolved using the HOME environment variable).
 fn default_log_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     Some(
@@ -25,10 +27,11 @@ fn default_log_path() -> Option<PathBuf> {
     )
 }
 
-/// 写一行压缩统计到 ~/.codex/log/llm-compress.log。失败仅 warn,不 panic。
+/// Write one compression statistic line to ~/.codex/log/llm-compress.log. Failures only warn, never panic.
 ///
-/// 内部:解析默认路径、取当前 UTC 时间格式化为 RFC3339(秒精度,`...Z`),
-/// 委托 `log_compression_to`;后者的 `Err` 在此被转成 `tracing::warn!` 吞掉。
+/// Internally: parse the default path, get the current UTC time and format it as RFC3339
+/// (second precision, `...Z`), then delegate to `log_compression_to`; any Err from the latter
+/// is converted to `tracing::warn!` and swallowed here.
 pub fn log_compression(queryid: &str, before: usize, after: usize) {
     let path = match default_log_path() {
         Some(p) => p,
@@ -37,17 +40,18 @@ pub fn log_compression(queryid: &str, before: usize, after: usize) {
             return;
         }
     };
-    // RFC3339,UTC,秒精度,带 Z(use_z=true)
+    // RFC3339, UTC, second precision, with Z (use_z=true)
     let ts = chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     if let Err(e) = log_compression_to(&path, &ts, queryid, before, after) {
         tracing::warn!("llm-compress: failed to write stats log {path:?}: {e}");
     }
 }
 
-/// 测试可注入路径与时间戳的内部版本。
+/// Internal version that allows injection of path and timestamp for testing.
 ///
-/// 纯函数式:给定 path + 时间戳字符串。必要时 `create_dir_all` 父目录,
-/// 以 append+create 模式打开,写 `format!("{ts},{qid},{before},{after}\n")`。
+/// Pure functional: given path + timestamp string. Create parent directories
+/// with `create_dir_all` if necessary, open in append+create mode,
+/// write `format!("{ts},{qid},{before},{after}\n")`.
 pub fn log_compression_to(
     path: &Path,
     timestamp_rfc3339: &str,

@@ -1,10 +1,10 @@
-//! 压缩器公共契约 + ContentRouter(命令感知重排 + first-match + fail-open)。
+//! Compressor common contract + ContentRouter (command-aware reordering + first-match + fail-open).
 
 use crate::command::CommandHint;
 use crate::config::Config;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-/// 产物形态。Json 恒配 lossy=false(spec §4.0 铁律)。
+/// Product form. Json always has lossy=false (spec §4.0 iron rule).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContentKind {
     Text,
@@ -21,7 +21,7 @@ pub struct Budget<'a> {
     pub cmd: Option<&'a CommandHint>,
 }
 
-/// 单个压缩器对一段文本的处理结果。
+/// Single compressor's processing result for a text segment.
 pub enum CompressOutcome {
     Compressed {
         text: String,
@@ -32,14 +32,14 @@ pub enum CompressOutcome {
     Unchanged,
 }
 
-/// 内容识别 + 压缩。detect 也吃 budget(拿 cmd 做命令感知认领)。
+/// Content detection + compression. detect also accepts budget (uses cmd for command-aware claiming).
 pub trait Compressor: Send + Sync {
     fn name(&self) -> &'static str;
     fn detect(&self, text: &str, budget: &Budget) -> bool;
     fn compress(&self, text: &str, budget: &Budget) -> CompressOutcome;
 }
 
-/// 固定优先级 + 命令感知重排;首个 detect 命中者压缩;detect/compress 均 catch_unwind。
+/// Fixed priority + command-aware reordering; first detect hit compresses; both detect/compress catch_unwind.
 pub struct ContentRouter {
     compressors: Vec<Box<dyn Compressor>>,
 }
@@ -49,10 +49,10 @@ impl ContentRouter {
         Self { compressors }
     }
 
-    /// 返回 Some((new, lossy, kind)) 仅当确有压缩(Compressed 且 saved_bytes>0);
-    /// Unchanged / 无命中 / panic → None。命令提示命中时把对应压缩器提到候选最前。
+    /// Returns Some((new, lossy, kind)) only if compression actually occurs (Compressed and saved_bytes>0);
+    /// Unchanged / no hit / panic → None. When command hint matches, move the corresponding compressor to the front of candidates.
     pub fn compress_text(&self, text: &str, budget: &Budget) -> Option<(String, bool, ContentKind)> {
-        // 命令感知重排:命中的命令把对应 name 的压缩器排到最前(稳定,仅前移一个)。
+        // Command-aware reordering: when a command matches, move the compressor with the corresponding name to the front (stable, only moves one).
         let preferred: Option<&'static str> = budget.cmd.and_then(|c| {
             if c.is_git_diff() {
                 Some("diff")
@@ -63,7 +63,7 @@ impl ContentRouter {
             }
         });
 
-        // 构造候选迭代顺序(索引列表):preferred 命中的先排,其余按原序。
+        // Construct candidate iteration order (index list): preferred hit comes first, rest in original order.
         let mut order: Vec<usize> = (0..self.compressors.len()).collect();
         if let Some(name) = preferred {
             if let Some(pos) = self.compressors.iter().position(|c| c.name() == name) {

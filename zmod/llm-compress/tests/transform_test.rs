@@ -1,4 +1,4 @@
-//! transform 端到端编排测试。用真实 codex 类型构造 request。
+//! End-to-end orchestration tests for transform. Constructs requests using real codex types.
 
 use codez_llm_compress::transform;
 use codex_api::ResponsesApiRequest;
@@ -6,8 +6,8 @@ use codex_protocol::models::{
     FunctionCallOutputBody, FunctionCallOutputContentItem, FunctionCallOutputPayload, ResponseItem,
 };
 
-/// 构造一个最小的 ResponsesApiRequest,input 由调用者给。
-/// 字段以 codex-api/src/common.rs 为准,值取空/false/None。
+/// Constructs a minimal ResponsesApiRequest with input provided by the caller.
+/// Fields follow codex-api/src/common.rs, values default to empty/false/None.
 fn req_with(input: Vec<ResponseItem>) -> ResponsesApiRequest {
     ResponsesApiRequest {
         model: "gpt-test".to_string(),
@@ -27,8 +27,9 @@ fn req_with(input: Vec<ResponseItem>) -> ResponsesApiRequest {
     }
 }
 
-/// Provider 无 Default、无 new():手动构造最小实例。
-/// transform 的第二参当前未被读取(仅判别预留),内容不影响测试。
+/// Provider has no Default, no new(): construct minimal instance manually.
+/// The second parameter of transform is currently not read (only distinguished for future use),
+/// content does not affect tests.
 fn provider() -> codex_api::Provider {
     codex_api::Provider {
         name: "test".to_string(),
@@ -59,7 +60,7 @@ fn fco_text(call_id: &str, text: &str) -> ResponseItem {
 
 #[test]
 fn disabled_config_leaves_request_untouched() {
-    // 无 config-zmod 文件 → enabled=false → request 不变。
+    // No config-zmod file → enabled=false → request unchanged.
     let big = "x\n".repeat(10_000);
     let mut r = req_with(vec![fco_text("c1", &big)]);
     let before = r.clone();
@@ -70,7 +71,7 @@ fn disabled_config_leaves_request_untouched() {
         ResponseItem::FunctionCallOutput { output: b, .. },
     ) = (&r.input[0], &before.input[0])
     {
-        // 关闭时逐字节不变
+        // When disabled, unchanged byte-for-byte
         match (&a.body, &b.body) {
             (FunctionCallOutputBody::Text(sa), FunctionCallOutputBody::Text(sb)) => {
                 assert_eq!(sa, sb)
@@ -84,7 +85,7 @@ fn disabled_config_leaves_request_untouched() {
 
 #[test]
 fn non_tooloutput_variants_are_ignored() {
-    // Other 等变体不处理:只验证不 panic、长度不变。
+    // Other variants are not processed: only verify no panic and length unchanged.
     let mut r = req_with(vec![ResponseItem::Other]);
     transform(&mut r, &provider(), "qid-2");
     assert_eq!(r.input.len(), 1);
@@ -93,7 +94,7 @@ fn non_tooloutput_variants_are_ignored() {
 
 #[test]
 fn contentitems_image_preserved() {
-    // ContentItems 含 InputText + InputImage:图片必须原样保留。
+    // ContentItems containing InputText + InputImage: images must be preserved as-is.
     let mut r = req_with(vec![ResponseItem::FunctionCallOutput {
         call_id: "c3".to_string(),
         output: FunctionCallOutputPayload {
@@ -111,7 +112,7 @@ fn contentitems_image_preserved() {
     transform(&mut r, &provider(), "qid-3");
     if let ResponseItem::FunctionCallOutput { output, .. } = &r.input[0] {
         if let FunctionCallOutputBody::ContentItems(items) = &output.body {
-            // 图片项原样保留
+            // Image items preserved as-is
             assert!(items.iter().any(|it| matches!(
                 it,
                 FunctionCallOutputContentItem::InputImage { image_url, .. } if image_url == "data:image/png;base64,AAAA"

@@ -1,8 +1,8 @@
-//! 用途(Purpose)枚举与从 codex SessionSource 的映射(spec §4)。
+//! Purpose enum and mapping from codex SessionSource (spec §4).
 
 use codex_protocol::protocol::{InternalSessionSource, SessionSource, SubAgentSource};
 
-/// 内部用途(spec §4)。第一期三个:compact / review / memory。
+/// Internal purpose (spec §4). Phase 1 has three: compact / review / memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Purpose {
     Compact,
@@ -11,7 +11,7 @@ pub enum Purpose {
 }
 
 impl Purpose {
-    /// 配置表 key,必须与 `[llm-switch.purpose]` 的键一致(spec §3)。
+    /// Config table key; must match the key in `[llm-switch.purpose]` (spec §3).
     pub fn as_key(self) -> &'static str {
         match self {
             Purpose::Compact => "compact",
@@ -21,7 +21,7 @@ impl Purpose {
     }
 }
 
-/// 从 codex 的 SessionSource 解析用途;非内部子任务返回 None(spec §4 映射表)。
+/// Parse purpose from codex's SessionSource; returns None for non-internal sub-tasks (spec §4 mapping table).
 pub fn purpose_from_source(source: &SessionSource) -> Option<Purpose> {
     match source {
         SessionSource::SubAgent(SubAgentSource::Review) => Some(Purpose::Review),

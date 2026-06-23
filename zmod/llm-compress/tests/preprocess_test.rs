@@ -11,16 +11,16 @@ fn strip_progress_removes_download_lines_and_marks_lossy() {
     let (out, lossy) = run(input, &cfg());
     assert!(!out.contains("Downloading"));
     assert!(out.contains("real line"));
-    assert!(lossy, "删进度条 → lossy=true");
+    assert!(lossy, "strip progress → lossy=true");
 }
 
 #[test]
 fn collapse_blank_is_not_lossy() {
     let input = "a\n\n\n\nb";
     let (out, lossy) = run(input, &cfg());
-    // 连续空行归一为一个
+    // Consecutive blank lines normalized to one
     assert_eq!(out, "a\n\nb");
-    assert!(!lossy, "空行归一是格式重构 → lossy=false");
+    assert!(!lossy, "blank line normalization is format reconstruction → lossy=false");
 }
 
 #[test]
@@ -37,10 +37,10 @@ fn blob_fold_replaces_long_base64_and_marks_lossy() {
 fn truncate_line_bytes_marks_lossy_utf8_safe() {
     let mut c = cfg();
     c.truncate_line_bytes = 10;
-    let input = "中文字符串很长很长很长很长".to_string(); // 多字节
+    let input = "中文字符串很长很长很长很长".to_string(); // multi-byte
     let (out, lossy) = run(&input, &c);
     assert!(lossy);
-    // 产物仍是合法 UTF-8(能正常作为 String 存在即合法)
+    // output is still valid UTF-8 (being a valid String means it's valid)
     assert!(out.len() <= input.len());
 }
 
@@ -48,9 +48,9 @@ fn truncate_line_bytes_marks_lossy_utf8_safe() {
 fn dedup_consecutive_not_lossy_and_skips_marker_lines() {
     let input = "x\nx\nx\n[llm-compress: 已有占位]\n[llm-compress: 已有占位]";
     let (out, lossy) = run(input, &cfg());
-    assert!(!lossy, "连续重复折叠是格式重构");
+    assert!(!lossy, "collapsing consecutive duplicates is format reconstruction");
     assert!(out.contains("[llm-compress: 上一行 ×3]"));
-    // 原文已含 [llm-compress: 前缀的行不参与折叠,原样保留两行
+    // lines already containing [llm-compress: prefix do not participate in collapsing, keep both as-is
     assert_eq!(out.matches("[llm-compress: 已有占位]").count(), 2);
 }
 

@@ -1,11 +1,11 @@
-/// chat 出站请求构造测试（Task 04）
+/// chat outbound request construction test (Task 04)
 ///
-/// Step 0 核实的真实类型变体：
+/// Step 0 verified real type variants:
 /// - ContentItem: InputText{text} | InputImage{image_url,detail} | OutputText{text}
 /// - FunctionCallOutputContentItem: InputText{text} | InputImage{image_url,detail} | EncryptedContent{encrypted_content}
 /// - FunctionCallOutputBody: Text(String) | ContentItems(Vec<FunctionCallOutputContentItem>)
 /// - FunctionCallOutputPayload: { body: FunctionCallOutputBody, success: Option<bool> }
-/// - ResponseItem 变体（16个）：Message/AgentMessage/Reasoning/LocalShellCall/FunctionCall/
+/// - ResponseItem variants (16 total): Message/AgentMessage/Reasoning/LocalShellCall/FunctionCall/
 ///   ToolSearchCall/FunctionCallOutput/CustomToolCall/CustomToolCallOutput/ToolSearchOutput/
 ///   WebSearchCall/ImageGenerationCall/Compaction/CompactionTrigger/ContextCompaction/Other
 use codex_protocol::models::{
@@ -27,7 +27,7 @@ fn base_req() -> codex_api::ResponsesApiRequest {
 }
 
 // ============================================================
-// 基本映射
+// Basic mapping
 // ============================================================
 
 #[test]
@@ -65,7 +65,7 @@ fn empty_instructions_no_system_message() {
     }];
     let v = build(&req, &ctx()).unwrap();
     let msgs = v["messages"].as_array().unwrap();
-    assert_eq!(msgs[0]["role"], "user", "空 instructions 不应产生 system 消息");
+    assert_eq!(msgs[0]["role"], "user", "empty instructions should not produce system message");
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn output_text_content_item_maps() {
 }
 
 // ============================================================
-// FunctionCall + FunctionCallOutput 配对
+// FunctionCall + FunctionCallOutput pairing
 // ============================================================
 
 #[test]
@@ -116,7 +116,7 @@ fn function_call_and_output_pair_by_call_id() {
     assert_eq!(asst["tool_calls"][0]["id"], "call_1");
     assert_eq!(asst["tool_calls"][0]["function"]["name"], "get_weather");
     assert_eq!(asst["tool_calls"][0]["function"]["arguments"], "{\"city\":\"SF\"}");
-    // tool result 紧跟 assistant（§4.10 重排）
+    // tool result follows assistant immediately (§4.10 reordering)
     let asst_idx = msgs.iter().position(|m| m["role"] == "assistant").unwrap();
     assert_eq!(msgs[asst_idx + 1]["role"], "tool");
     assert_eq!(msgs[asst_idx + 1]["tool_call_id"], "call_1");
@@ -153,7 +153,7 @@ fn tool_output_failure_prefixes_marker() {
         .unwrap();
     assert!(
         tool["content"].as_str().unwrap().starts_with("[tool error]"),
-        "失败结果应以 [tool error] 开头"
+        "failed result should start with [tool error]"
     );
 }
 
@@ -192,12 +192,12 @@ fn function_call_output_content_items_text_only_maps() {
 }
 
 // ============================================================
-// 孤儿修复（§4.10）
+// Orphan repair (§4.10)
 // ============================================================
 
 #[test]
 fn orphan_tool_call_gets_placeholder_result() {
-    // 有调用、无结果（压缩破坏）→ 注入合成占位结果，不硬失败（§4.10）
+    // Call without result (compression damaged) → inject synthetic placeholder result, don't hard-fail (§4.10)
     let mut req = base_req();
     req.input = vec![ResponseItem::FunctionCall {
         id: None,
@@ -213,7 +213,7 @@ fn orphan_tool_call_gets_placeholder_result() {
         .unwrap()
         .iter()
         .find(|m| m["role"] == "tool");
-    assert!(tool.is_some(), "孤儿 call 必须获得占位 tool result");
+    assert!(tool.is_some(), "orphan call must receive placeholder tool result");
     assert_eq!(tool.unwrap()["tool_call_id"], "orphan");
 }
 
@@ -234,23 +234,23 @@ fn orphan_tool_result_is_dropped() {
         .unwrap()
         .iter()
         .any(|m| m["role"] == "tool");
-    assert!(!has_tool, "没有对应 call 的孤儿 result 应被丢弃");
+    assert!(!has_tool, "orphan result without matching call should be dropped");
 }
 
 // ============================================================
-// 工具定义
+// Tool definitions
 // ============================================================
 
 #[test]
 fn tool_choice_none_when_no_tools() {
-    // 有 tool_choice 但 tools 为空 → strip（§4.10）
+    // Has tool_choice but tools is empty → strip (§4.10)
     let mut req = base_req();
     req.tool_choice = "required".into();
     req.tools = vec![];
     let v = build(&req, &ctx()).unwrap();
     assert!(
         v.get("tool_choice").is_none(),
-        "tool_choice 在无 tools 时应被 strip"
+        "tool_choice should be stripped when no tools"
     );
 }
 
@@ -274,7 +274,7 @@ fn parallel_tool_calls_passthrough() {
 }
 
 // ============================================================
-// 出站丢弃变体（不报错，不出现在 messages）
+// Outbound dropped variants (no error, not in messages)
 // ============================================================
 
 #[test]
@@ -297,9 +297,9 @@ fn reasoning_item_is_discarded_silently() {
         },
     ];
     let v = build(&req, &ctx()).unwrap();
-    // 不报错
+    // no error
     let msgs = v["messages"].as_array().unwrap();
-    // 只有 user 消息，没有 reasoning 相关的消息
+    // only user message, no reasoning-related messages
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0]["role"], "user");
 }
@@ -324,14 +324,14 @@ fn compaction_trigger_is_discarded_silently() {
 }
 
 // ============================================================
-// 硬失败变体（§4.0）
+// Hard-fail variants (§4.0)
 // ============================================================
 
 #[test]
 fn custom_tool_definition_hard_fails() {
     let mut req = base_req();
     req.tools = vec![json!({"type":"custom","name":"freeform"})];
-    assert!(build(&req, &ctx()).is_err(), "custom 工具类型应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "custom tool type should hard-fail");
 }
 
 #[test]
@@ -345,7 +345,7 @@ fn namespaced_function_call_hard_fails() {
         call_id: "c".into(),
         metadata: None,
     }];
-    assert!(build(&req, &ctx()).is_err(), "命名空间函数调用应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "namespaced function call should hard-fail");
 }
 
 #[test]
@@ -361,7 +361,7 @@ fn input_image_hard_fails() {
         phase: None,
         metadata: None,
     }];
-    assert!(build(&req, &ctx()).is_err(), "图片输入应硬失败（v1 无能力标志）");
+    assert!(build(&req, &ctx()).is_err(), "image input should hard-fail (v1 capability marker)");
 }
 
 #[test]
@@ -382,7 +382,7 @@ fn local_shell_call_hard_fails() {
         ),
         metadata: None,
     }];
-    assert!(build(&req, &ctx()).is_err(), "LocalShellCall 应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "LocalShellCall should hard-fail");
 }
 
 #[test]
@@ -396,7 +396,7 @@ fn tool_search_call_hard_fails() {
         arguments: json!({}),
         metadata: None,
     }];
-    assert!(build(&req, &ctx()).is_err(), "ToolSearchCall 应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "ToolSearchCall should hard-fail");
 }
 
 #[test]
@@ -408,7 +408,7 @@ fn web_search_call_hard_fails() {
         action: None,
         metadata: None,
     }];
-    assert!(build(&req, &ctx()).is_err(), "WebSearchCall 应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "WebSearchCall should hard-fail");
 }
 
 #[test]
@@ -421,7 +421,7 @@ fn image_generation_call_hard_fails() {
         result: "base64data".into(),
         metadata: None,
     }];
-    assert!(build(&req, &ctx()).is_err(), "ImageGenerationCall 应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "ImageGenerationCall should hard-fail");
 }
 
 #[test]
@@ -435,7 +435,7 @@ fn custom_tool_call_hard_fails() {
         input: "{}".into(),
         metadata: None,
     }];
-    assert!(build(&req, &ctx()).is_err(), "CustomToolCall 应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "CustomToolCall should hard-fail");
 }
 
 #[test]
@@ -450,7 +450,7 @@ fn custom_tool_call_output_hard_fails() {
         },
         metadata: None,
     }];
-    assert!(build(&req, &ctx()).is_err(), "CustomToolCallOutput 应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "CustomToolCallOutput should hard-fail");
 }
 
 #[test]
@@ -463,7 +463,7 @@ fn tool_search_output_hard_fails() {
         tools: vec![],
         metadata: None,
     }];
-    assert!(build(&req, &ctx()).is_err(), "ToolSearchOutput 应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "ToolSearchOutput should hard-fail");
 }
 
 #[test]
@@ -473,7 +473,7 @@ fn compaction_hard_fails() {
         encrypted_content: "enc".into(),
         metadata: None,
     }];
-    assert!(build(&req, &ctx()).is_err(), "Compaction 应硬失败（加密内容）");
+    assert!(build(&req, &ctx()).is_err(), "Compaction should hard-fail (encrypted content)");
 }
 
 #[test]
@@ -483,7 +483,7 @@ fn context_compaction_hard_fails() {
         encrypted_content: Some("enc".into()),
         metadata: None,
     }];
-    assert!(build(&req, &ctx()).is_err(), "ContextCompaction 应硬失败（加密内容）");
+    assert!(build(&req, &ctx()).is_err(), "ContextCompaction should hard-fail (encrypted content)");
 }
 
 #[test]
@@ -499,21 +499,21 @@ fn agent_message_encrypted_content_hard_fails() {
     }];
     assert!(
         build(&req, &ctx()).is_err(),
-        "AgentMessage 含 EncryptedContent 应硬失败"
+        "AgentMessage with EncryptedContent should hard-fail"
     );
 }
 
 #[test]
 fn other_variant_hard_fails() {
-    // ResponseItem::Other 由 #[serde(other)] 产生，只能用 JSON 反序列化构造
+    // ResponseItem::Other is produced by #[serde(other)], only constructible via JSON deserialization
     let unknown_item: ResponseItem = serde_json::from_str(r#"{"type":"unknown_future_variant"}"#).unwrap();
     let mut req = base_req();
     req.input = vec![unknown_item];
-    assert!(build(&req, &ctx()).is_err(), "Other 未知变体应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "Other unknown variant should hard-fail");
 }
 
 // ============================================================
-// FunctionCallOutput 中的图片/加密内容硬失败
+// Image/encrypted content in FunctionCallOutput hard-fails
 // ============================================================
 
 #[test]
@@ -542,7 +542,7 @@ fn function_call_output_image_content_hard_fails() {
             metadata: None,
         },
     ];
-    assert!(build(&req, &ctx()).is_err(), "工具结果含图片内容应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "tool result with image content should hard-fail");
 }
 
 #[test]
@@ -570,11 +570,11 @@ fn function_call_output_encrypted_content_hard_fails() {
             metadata: None,
         },
     ];
-    assert!(build(&req, &ctx()).is_err(), "工具结果含加密内容应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "tool result with encrypted content should hard-fail");
 }
 
 // ============================================================
-// tool_choice 映射
+// tool_choice mapping
 // ============================================================
 
 #[test]
@@ -614,20 +614,20 @@ fn tool_choice_empty_no_key() {
         vec![json!({"type":"function","name":"f","parameters":{"type":"object"}})];
     req.tool_choice = "".into();
     let v = build(&req, &ctx()).unwrap();
-    assert!(v.get("tool_choice").is_none(), "空 tool_choice 不应写入 JSON");
+    assert!(v.get("tool_choice").is_none(), "empty tool_choice should not be written to JSON");
 }
 
 // ============================================================
-// C1: 黄金 fixture 对比测试
+// C1: Golden fixture comparison tests
 // ============================================================
 
-/// system+user+function call+tool result+assistant 完整往返，对比 fixture
+/// Complete round-trip: system+user+function call+tool result+assistant, compare against fixture
 #[test]
 fn fixture_system_user_tool_roundtrip() {
     let expected: serde_json::Value = serde_json::from_str(
         include_str!("fixtures/chat_req_system_user_tool_roundtrip.expected.json"),
     )
-    .expect("fixture JSON 解析失败");
+    .expect("fixture JSON parse failed");
 
     let mut req = base_req();
     req.instructions = "You are a helpful assistant.".into();
@@ -685,13 +685,13 @@ fn fixture_system_user_tool_roundtrip() {
     assert_eq!(actual, expected);
 }
 
-/// 两个顺序工具往返（§4.10 重排），对比 fixture
+/// Two sequential tool round-trips (§4.10 reordering), compare against fixture
 #[test]
 fn fixture_multi_tool_sequential() {
     let expected: serde_json::Value = serde_json::from_str(
         include_str!("fixtures/chat_req_multi_tool.expected.json"),
     )
-    .expect("fixture JSON 解析失败");
+    .expect("fixture JSON parse failed");
 
     let mut req = base_req();
     req.tools = vec![
@@ -748,10 +748,10 @@ fn fixture_multi_tool_sequential() {
 }
 
 // ============================================================
-// I1: response_format 正确映射（json_schema）
+// I1: response_format correctly maps (json_schema)
 // ============================================================
 
-/// text.format 含 json_schema 时，response_format 应为
+/// When text.format contains json_schema, response_format should be
 /// {"type":"json_schema","json_schema":{"name":...,"schema":...,"strict":...}}
 #[test]
 fn text_format_json_schema_maps_to_response_format() {
@@ -771,59 +771,59 @@ fn text_format_json_schema_maps_to_response_format() {
     let v = build(&req, &ctx()).unwrap();
     let rf = v
         .get("response_format")
-        .expect("text.format 应产生 response_format 字段");
+        .expect("text.format should produce response_format field");
     assert_eq!(
         rf["type"], "json_schema",
-        "response_format.type 应为 json_schema"
+        "response_format.type should be json_schema"
     );
     let inner = rf
         .get("json_schema")
-        .expect("response_format 应含 json_schema 对象");
-    assert_eq!(inner["schema"], schema, "json_schema.schema 应与输入 schema 一致");
-    assert_eq!(inner["strict"], true, "json_schema.strict 应为 true");
+        .expect("response_format should contain json_schema object");
+    assert_eq!(inner["schema"], schema, "json_schema.schema should match input schema");
+    assert_eq!(inner["strict"], true, "json_schema.strict should be true");
     assert_eq!(
         inner["name"], "codex_output_schema",
-        "json_schema.name 应与 TextFormat.name 一致"
+        "json_schema.name should match TextFormat.name"
     );
-    // 不应把原始 TextFormat 的字段直接暴露在顶层
+    // should not expose raw TextFormat fields at top level
     assert!(
         rf.get("schema").is_none(),
-        "response_format 不应含裸 schema 字段（嵌套格式错误）"
+        "response_format should not contain bare schema field (nested format error)"
     );
 }
 
 // ============================================================
-// I2: 非 function 工具定义硬失败（§4.0b）
+// I2: Non-function tool definitions hard-fail (§4.0b)
 // ============================================================
 
-/// native 类型工具定义 → 硬失败
+/// native type tool definition → hard-fail
 #[test]
 fn native_tool_definition_hard_fails() {
     let mut req = base_req();
     req.tools = vec![json!({"type": "native", "name": "shell"})];
-    assert!(build(&req, &ctx()).is_err(), "native 工具类型应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "native tool type should hard-fail");
 }
 
-/// provider 类型工具定义 → 硬失败
+/// provider type tool definition → hard-fail
 #[test]
 fn provider_tool_definition_hard_fails() {
     let mut req = base_req();
     req.tools = vec![json!({"type": "provider", "name": "web_search"})];
-    assert!(build(&req, &ctx()).is_err(), "provider 工具类型应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "provider tool type should hard-fail");
 }
 
-/// freeform 类型工具定义 → 硬失败
+/// freeform type tool definition → hard-fail
 #[test]
 fn freeform_tool_definition_hard_fails() {
     let mut req = base_req();
     req.tools = vec![json!({"type": "freeform", "name": "anything"})];
-    assert!(build(&req, &ctx()).is_err(), "freeform 工具类型应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "freeform tool type should hard-fail");
 }
 
-/// 无 type 字段的工具定义 → 硬失败
+/// tool definition without type field → hard-fail
 #[test]
 fn no_type_tool_definition_hard_fails() {
     let mut req = base_req();
     req.tools = vec![json!({"name": "mystery_tool", "parameters": {"type": "object"}})];
-    assert!(build(&req, &ctx()).is_err(), "缺少 type 字段的工具定义应硬失败");
+    assert!(build(&req, &ctx()).is_err(), "tool definition missing type field should hard-fail");
 }

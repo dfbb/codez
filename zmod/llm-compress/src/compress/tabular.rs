@@ -71,7 +71,7 @@ fn parse_table(text: &str) -> Option<Vec<Vec<String>>> {
         return None;
     }
     let is_md = raw_lines[0].trim_start().starts_with('|');
-    // 含引号的单元格 → 放弃(简单解析器无法稳定还原)
+    // Cells with quotes → abort (simple parser cannot reliably restore)
     if text.contains('"') {
         return None;
     }
@@ -88,7 +88,7 @@ fn parse_table(text: &str) -> Option<Vec<Vec<String>>> {
 
     let mut rows: Vec<Vec<String>> = Vec::new();
     for line in raw_lines.iter() {
-        // Markdown 分隔行 |---|---| 跳过
+        // Markdown separator row |---|---| skip
         if is_md && line.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ')) {
             continue;
         }
@@ -102,7 +102,7 @@ fn parse_table(text: &str) -> Option<Vec<Vec<String>>> {
     if ncol == 0 {
         return None;
     }
-    // header 唯一非空
+    // header unique non-empty
     let header = &rows[0];
     if header.iter().any(|h| h.is_empty()) {
         return None;
@@ -110,10 +110,10 @@ fn parse_table(text: &str) -> Option<Vec<Vec<String>>> {
     let mut seen = std::collections::HashSet::new();
     for h in header {
         if !seen.insert(h) {
-            return None; // 重复列名
+            return None; // duplicate column name
         }
     }
-    // 列数一致
+    // column count consistent
     if rows.iter().any(|r| r.len() != ncol) {
         return None;
     }

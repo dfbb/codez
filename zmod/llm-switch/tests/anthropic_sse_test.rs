@@ -3,7 +3,7 @@ use codex_protocol::models::{ContentItem, ResponseItem};
 use codez_llm_switch::testing::translate_anthropic_sse_for_test as run;
 use serde_json::json;
 
-// ─── 单元测试 ─────────────────────────────────────────────────────────────────
+// ─── Unit Tests ─────────────────────────────────────────────────────────────────
 
 #[test]
 fn text_stream_synthesizes_message_and_completed() {
@@ -18,7 +18,7 @@ fn text_stream_synthesizes_message_and_completed() {
     ];
     let out = run(&events, true).unwrap();
 
-    // OutputTextDelta 流式输出
+    // OutputTextDelta streamed output
     let deltas: Vec<&String> = out
         .iter()
         .filter_map(|e| match e {
@@ -28,7 +28,7 @@ fn text_stream_synthesizes_message_and_completed() {
         .collect();
     assert_eq!(deltas, vec!["Hel", "lo"]);
 
-    // 合成 assistant message 完成项（§4.5）
+    // Synthesize assistant message completion item (§4.5)
     let synth = out
         .iter()
         .find_map(|e| match e {
@@ -42,7 +42,7 @@ fn text_stream_synthesizes_message_and_completed() {
         .expect("synth assistant message");
     assert!(matches!(&synth[0], ContentItem::OutputText { text } if text == "Hello"));
 
-    // Completed：response_id、usage、end_turn
+    // Completed: response_id, usage, end_turn
     let (rid, usage, end) = out
         .iter()
         .find_map(|e| match e {
@@ -76,7 +76,7 @@ fn tool_use_aggregates_partial_json_to_arguments_string() {
     ];
     let out = run(&events, true).unwrap();
 
-    // FunctionCall 完成项
+    // FunctionCall completion item
     let fc = out
         .iter()
         .find_map(|e| match e {
@@ -90,8 +90,8 @@ fn tool_use_aggregates_partial_json_to_arguments_string() {
         })
         .expect("FunctionCall");
     assert_eq!(fc.0, "get_weather");
-    assert_eq!(fc.1, "{\"city\":\"SF\"}"); // partial_json 聚合 → arguments 字符串（§4.3）
-    assert_eq!(fc.2, "toolu_1"); // tool_use.id → call_id（§4.8）
+    assert_eq!(fc.1, "{\"city\":\"SF\"}"); // partial_json aggregated → arguments string (§4.3)
+    assert_eq!(fc.2, "toolu_1"); // tool_use.id → call_id (§4.8)
 
     // tool_use → end_turn=false
     let end = out
@@ -103,7 +103,7 @@ fn tool_use_aggregates_partial_json_to_arguments_string() {
         .unwrap();
     assert_eq!(end, Some(false));
 
-    // 无文本，不合成 assistant Message
+    // No text, do not synthesize assistant Message
     let has_msg = out.iter().any(|e| {
         matches!(
             e,
@@ -118,7 +118,7 @@ fn tool_use_aggregates_partial_json_to_arguments_string() {
 
 #[test]
 fn max_tokens_stop_reason_maps_end_turn_to_none() {
-    // 截断（max_tokens）既非模型主动结束也非工具调用 → end_turn 三态取 None。
+    // Truncation (max_tokens) is neither model-initiated end nor tool use → end_turn three-state takes None.
     let events = vec![
         json!({"type":"message_start","message":{"id":"msg_3","usage":{"input_tokens":1}}}),
         json!({"type":"content_block_start","index":0,"content_block":{"type":"text"}}),
@@ -135,7 +135,7 @@ fn max_tokens_stop_reason_maps_end_turn_to_none() {
             _ => None,
         })
         .expect("Completed");
-    assert_eq!(end, None); // max_tokens → end_turn 三态 None
+    assert_eq!(end, None); // max_tokens → end_turn three-state None
 }
 
 #[test]
@@ -146,7 +146,7 @@ fn error_event_fails() {
 
 #[test]
 fn missing_response_id_synthesizes_id() {
-    // message_start 没有 id 字段时，finish() 合成 llmswitch-resp-N
+    // When message_start has no id field, finish() synthesizes llmswitch-resp-N
     let events = vec![
         json!({"type":"message_start","message":{"usage":{"input_tokens":1}}}),
         json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}),
@@ -168,7 +168,7 @@ fn missing_response_id_synthesizes_id() {
 
 #[test]
 fn no_arg_tool_use_gets_empty_object() {
-    // partial_json 为空（无参数工具）时 arguments 补 "{}"
+    // When partial_json is empty (no-arg tool), arguments is filled with "{}"
     let events = vec![
         json!({"type":"message_start","message":{"id":"msg_3","usage":{"input_tokens":1}}}),
         json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_2","name":"no_args_tool"}}),
@@ -189,12 +189,12 @@ fn no_arg_tool_use_gets_empty_object() {
     assert_eq!(fc, "{}");
 }
 
-// ─── Fixture-based 黄金测试 ───────────────────────────────────────────────────
+// ─── Fixture-based Golden Tests ───────────────────────────────────────────────────
 
-/// 从 JSONL fixture 文件逐行解析 JSON 事件。
+/// Parse JSON events line-by-line from a JSONL fixture file.
 fn load_jsonl(name: &str) -> Vec<serde_json::Value> {
-    // fixture 经 include_str! 做编译期存在性校验，运行时由 fs::read_to_string 解析驱动状态机，
-    // 输出经 assert_eq! 断言。此处用运行时路径读取（集成测试的 fixtures 路径约定），与 chat_sse_test.rs 保持一致。
+    // Fixture is validated at compile-time via include_str!, runtime parsing driven by fs::read_to_string state machine,
+    // output verified by assert_eq!. Here we use runtime path for reading (integration test fixture path convention), consistent with chat_sse_test.rs.
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(name);
@@ -208,8 +208,8 @@ fn load_jsonl(name: &str) -> Vec<serde_json::Value> {
 
 #[test]
 fn fixture_text_stream_produces_correct_events() {
-    // 黄金 fixture：anthropic_sse_text.jsonl（基于 Anthropic Messages streaming 官方规范构造）
-    // 用 include_str! 嵌入，编译期验证文件存在
+    // Golden fixture: anthropic_sse_text.jsonl (constructed per Anthropic Messages streaming official spec)
+    // Embedded via include_str!, compile-time verification that file exists
     let _raw = include_str!("fixtures/anthropic_sse_text.jsonl");
     let events = load_jsonl("anthropic_sse_text.jsonl");
     let out = run(&events, true).unwrap();
@@ -224,7 +224,7 @@ fn fixture_text_stream_produces_correct_events() {
         .collect();
     assert_eq!(deltas, vec!["Hello", ", world"]);
 
-    // assistant message 累计正确
+    // assistant message accumulated correctly
     let msg = out
         .iter()
         .find_map(|e| match e {
@@ -238,7 +238,7 @@ fn fixture_text_stream_produces_correct_events() {
         .expect("assistant message");
     assert!(matches!(&msg[0], ContentItem::OutputText { text } if text == "Hello, world"));
 
-    // response_id 正确
+    // response_id correct
     let rid = out
         .iter()
         .find_map(|e| match e {
@@ -259,7 +259,7 @@ fn fixture_text_stream_produces_correct_events() {
     assert_eq!(usage.input_tokens, 5);
     assert_eq!(usage.output_tokens, 4);
 
-    // end_turn = true（stop_reason=end_turn）
+    // end_turn = true (stop_reason=end_turn)
     let end_turn = out
         .iter()
         .find_map(|e| match e {
@@ -272,8 +272,8 @@ fn fixture_text_stream_produces_correct_events() {
 
 #[test]
 fn fixture_tool_call_stream_produces_correct_events() {
-    // 黄金 fixture：anthropic_sse_tool_call.jsonl（基于 Anthropic Messages streaming 官方规范构造）
-    // 用 include_str! 嵌入，编译期验证文件存在
+    // Golden fixture: anthropic_sse_tool_call.jsonl (constructed per Anthropic Messages streaming official spec)
+    // Embedded via include_str!, compile-time verification that file exists
     let _raw = include_str!("fixtures/anthropic_sse_tool_call.jsonl");
     let events = load_jsonl("anthropic_sse_tool_call.jsonl");
     let out = run(&events, true).unwrap();

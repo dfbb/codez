@@ -1,60 +1,61 @@
-//! DiffCompressor:识别 unified diff,保留全部变更行与结构头,
-//! 仅折叠 hunk 内多余的上下文行。
+//! DiffCompressor: Identifies unified diff, preserves all change lines and structural headers,
+//! and collapses only excess context lines within hunks.
 //!
-//! 折叠规则(spec §6):
-//! - 变更行(`+`/`-` 开头,但非文件头 `+++`/`---`)、hunk 头(`@@`)、
-//!   文件头(`diff --git`/`index`/`--- `/`+++ `)全部保留。
-//! - hunk 内上下文行(以单空格开头)仅保留紧邻变更行前后各 `context_lines` 行,
-//!   中间折叠为一行裸占位 `[llm-compress: 略 N 行上下文]`。
+//! Collapsing rules (spec §6):
+//! - Change lines (`+`/`-` prefix, but not file headers `+++`/`---`), hunk headers (`@@`),
+//!   and file headers (`diff --git`/`index`/`--- `/`+++ `) are all preserved.
+//! - Context lines within hunks (lines starting with a single space) are preserved only for
+//!   `context_lines` lines before and after change lines. Middle lines are collapsed into
+//!   a single placeholder line `[llm-compress: 略 N 行上下文]`.
 
 use crate::router::{Budget, CompressOutcome, Compressor, ContentKind};
 
-/// unified diff 压缩器。
+/// Unified diff compressor.
 pub struct DiffCompressor;
 
 impl DiffCompressor {
-    /// 判断一行是否为 hunk 头 `@@ -a,b +c,d @@`(b、d 可省略)。
+    /// Check if a line is a hunk header `@@ -a,b +c,d @@` (b, d are optional).
     ///
-    /// 不引入正则依赖,手写解析等价于 `^@@ -\d+(,\d+)? \+\d+(,\d+)? @@`。
+    /// No regex dependency; manual parsing equivalent to `^@@ -\d+(,\d+)? \+\d+(,\d+)? @@`.
     fn is_hunk_header(line: &str) -> bool {
-        // 必须以 "@@ -" 起始。
+        // Must start with "@@ -".
         let rest = match line.strip_prefix("@@ -") {
             Some(r) => r,
             None => return false,
         };
-        // 解析 "\d+(,\d+)? " —— 旧区间。
+        // Parse "\d+(,\d+)? " — old range.
         let rest = match Self::consume_range(rest) {
             Some(r) => r,
             None => return false,
         };
-        // 紧跟一个空格。
+        // Followed by a space.
         let rest = match rest.strip_prefix(' ') {
             Some(r) => r,
             None => return false,
         };
-        // 紧跟 "+"。
+        // Followed by "+".
         let rest = match rest.strip_prefix('+') {
             Some(r) => r,
             None => return false,
         };
-        // 解析 "\d+(,\d+)?" —— 新区间。
+        // Parse "\d+(,\d+)?" — new range.
         let rest = match Self::consume_range(rest) {
             Some(r) => r,
             None => return false,
         };
-        // 紧跟 " @@"。
+        // Followed by " @@".
         rest.starts_with(" @@")
     }
 
-    /// 消费一个 `\d+(,\d+)?` 形式的区间,返回剩余切片;失败返回 None。
+    /// Consume a range in the form `\d+(,\d+)?`, returning the remaining slice; returns None on failure.
     fn consume_range(s: &str) -> Option<&str> {
-        // 至少一位数字。
+        // At least one digit.
         let first_len = s.bytes().take_while(|b| b.is_ascii_digit()).count();
         if first_len == 0 {
             return None;
         }
         let s = &s[first_len..];
-        // 可选 ",\d+"。
+        // Optional ",\d+".
         if let Some(after_comma) = s.strip_prefix(',') {
             let len = after_comma.bytes().take_while(|b| b.is_ascii_digit()).count();
             if len == 0 {
@@ -66,7 +67,7 @@ impl DiffCompressor {
         }
     }
 
-    /// 是否为变更行(`+`/`-` 开头,但排除文件头 `+++ `/`--- `)。
+    /// Check if a line is a change line (`+`/`-` prefix, excluding file headers `+++ `/`--- `).
     fn is_change_line(line: &str) -> bool {
         if line.starts_with("+++ ") || line.starts_with("--- ") {
             return false;
@@ -74,7 +75,7 @@ impl DiffCompressor {
         line.starts_with('+') || line.starts_with('-')
     }
 
-    /// 是否为上下文行(hunk 内以单空格开头的未变更行)。
+    /// Check if a line is a context line (an unchanged line within a hunk starting with a single space).
     fn is_context_line(line: &str) -> bool {
         line.starts_with(' ')
     }
@@ -108,29 +109,32 @@ impl Compressor for DiffCompressor {
     fn compress(&self, text: &str, budget: &Budget) -> CompressOutcome {
         let ctx = budget.cfg.diff.context_lines;
 
-        // 第一步:把所有行收集为 Vec,便于做"前后窗口"判定。
+        // Step 1: Collect all lines into a Vec for convenient "window before and after" checks.
         let lines: Vec<&str> = text.lines().collect();
         let n = lines.len();
 
-        // 标记每一行是否为上下文行。
+        // Mark whether each line is a context line.
         let is_ctx: Vec<bool> = lines.iter().map(|l| Self::is_context_line(l)).collect();
-        // 标记每一行是否为"锚点"(变更行 / hunk 头 / 文件头) —— 上下文需围绕变更行保留。
-        // 折叠窗口的依据是"与最近变更行的距离",因此先标记变更行位置。
+        // Mark whether each line is an "anchor" (change line / hunk header / file header) —
+        // context lines need to be retained around change lines.
+        // The basis for the collapsing window is the distance to the nearest change line,
+        // so mark the positions of change lines first.
         let is_change: Vec<bool> = lines.iter().map(|l| Self::is_change_line(l)).collect();
 
-        // 计算每一上下文行到"最近变更行"的距离(只在同一连续上下文段内有意义,
-        // 但用全局最近变更行距离即可正确实现"紧邻变更行前后各 ctx 行"的语义:
-        // 上下文行若其上方 ctx 行内或下方 ctx 行内存在变更行,则保留)。
+        // Compute the distance from each context line to the "nearest change line"
+        // (only meaningful within the same continuous context segment,
+        // but using the global nearest change line distance correctly implements the semantics:
+        // a context line is retained if there is a change line within `ctx` lines above or below it).
         let mut keep: Vec<bool> = vec![true; n];
 
         for i in 0..n {
             if !is_ctx[i] {
-                // 非上下文行(变更行 / hunk 头 / 文件头 / 其它)一律保留。
+                // Non-context lines (change lines / hunk headers / file headers / other) are all retained.
                 continue;
             }
-            // 上下文行:检查上方 ctx 行内是否有变更行。
+            // Context line: check if there is a change line within `ctx` lines above.
             let mut near_change = false;
-            // 向上看 ctx 行。
+            // Look up `ctx` lines.
             let lo = i.saturating_sub(ctx);
             for j in lo..i {
                 if is_change[j] {
@@ -138,7 +142,7 @@ impl Compressor for DiffCompressor {
                     break;
                 }
             }
-            // 向下看 ctx 行。
+            // Look down `ctx` lines.
             if !near_change {
                 let hi = (i + ctx + 1).min(n);
                 for j in (i + 1)..hi {
@@ -151,7 +155,8 @@ impl Compressor for DiffCompressor {
             keep[i] = near_change;
         }
 
-        // 第二步:按顺序输出,遇到连续被丢弃的上下文段折叠为一行占位。
+        // Step 2: Output in order. When encountering consecutive discarded context lines,
+        // collapse them into a single placeholder line.
         let mut out_lines: Vec<String> = Vec::with_capacity(n);
         let mut i = 0;
         let mut any_folded = false;
@@ -160,7 +165,7 @@ impl Compressor for DiffCompressor {
                 out_lines.push(lines[i].to_string());
                 i += 1;
             } else {
-                // 收集一段连续的被丢弃上下文行。
+                // Collect a segment of consecutive discarded context lines.
                 let start = i;
                 while i < n && !keep[i] {
                     i += 1;
@@ -175,13 +180,14 @@ impl Compressor for DiffCompressor {
             return CompressOutcome::Unchanged;
         }
 
-        // 重建文本:保留原文末尾换行习惯。原文以 '\n' 结尾则补一个。
+        // Rebuild the text: preserve the original newline convention at the end.
+        // If the original ends with '\n', add one.
         let mut result = out_lines.join("\n");
         if text.ends_with('\n') {
             result.push('\n');
         }
 
-        // 若折叠后体积未减小(占位反而更长),视为 Unchanged。
+        // If the collapsed text is not smaller (placeholder is even longer), treat as Unchanged.
         if result.len() >= text.len() {
             return CompressOutcome::Unchanged;
         }

@@ -1,5 +1,5 @@
-//! CCR:有损压缩落盘片段原文 + Text 占位写路径,模型用 shell/read 取回(spec §4.7/E)。
-//! 核心总则:enabled 下 attach 只产"含路径占位"或"返回原文",绝无"有损但无路径"。
+//! CCR: Lossy-compressed persisted fragment original text + Text path placeholder write path, model retrieves via shell/read (spec §4.7/E).
+//! Core principle: When enabled, attach produces only "path placeholder included" or "original text returned", never "lossy but no path".
 
 use crate::command::CommandHint;
 use crate::config::CcrCfg;
@@ -8,14 +8,14 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// 一次请求的上下文(Task 11 编排构造)。含可变 CCR registry。
+/// Context for a single request (Task 11 orchestration construction). Contains mutable CCR registry.
 pub struct RequestCtx<'a> {
     pub queryid: &'a str,
     pub cmd_index: HashMap<String, CommandHint>,
     pub ccr: RefCell<CcrRegistry>,
 }
 
-/// 记 (call_id, fragment_hash) → 已落盘文件路径,避免同片段重复落盘。
+/// Record (call_id, fragment_hash) → persisted file path, avoiding duplicate persistence of same fragment.
 #[derive(Default)]
 pub struct CcrRegistry {
     written: HashMap<(String, String), PathBuf>,
@@ -27,41 +27,41 @@ impl CcrRegistry {
     }
 }
 
-/// CCR 根目录 ~/.codex/llm-compress/ccr。HOME 未设 → None。
+/// CCR root directory ~/.codex/llm-compress/ccr. None if HOME is not set.
 pub fn ccr_root() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     Some(PathBuf::from(home).join(".codex").join("llm-compress").join("ccr"))
 }
 
-/// 落盘片段原文 + 追加 Text 取回占位。仅 lossy=true 项调用。
-/// 见 spec §4.7 核心总则:enabled 下要么"含路径占位",要么"返回原文"。
+/// Persist fragment original text + append Text retrieval placeholder. Only called for lossy=true items.
+/// See spec §4.7 core principle: When enabled, either "path placeholder included" or "original text returned".
 pub fn attach(compressed: String, original: &str, ctx: &RequestCtx, call_id: &str, cfg: &CcrCfg) -> String {
     if !cfg.enabled {
-        return compressed; // disabled:保留压缩器自身占位,不加路径
+        return compressed; // disabled: preserve compressor's own placeholder, do not add path
     }
-    // 单文件超限 → 放弃压缩,返回原文(保"有损必可取回")
+    // Single file exceeds limit → abandon compression, return original (ensure "lossy must be retrievable")
     if original.len() > cfg.max_file_bytes {
         return original.to_string();
     }
     match try_persist(original, ctx, call_id, cfg) {
         Some(path) => {
-            let attached = format!("{compressed} [llm-compress: 原文 {}]", path.display());
-            // 二次体积闸门:含路径占位若超原文,放弃压缩返回原文(核心总则:绝不留"有损无路径")
+            let attached = format!("{compressed} [llm-compress: original {}]", path.display());
+            // Secondary size gate: if path placeholder included exceeds original, abandon compression and return original (core principle: never leave "lossy without path")
             if attached.len() <= original.len() {
                 attached
             } else {
                 original.to_string()
             }
         }
-        None => original.to_string(), // 落盘失败 → 返回原文(不留下不可取回有损产物)
+        None => original.to_string(), // Persistence failed → return original (do not leave unretrievable lossy artifact)
     }
 }
 
-/// 落盘:sanitize 路径、双限清理、写文件。成功返回路径;任何失败返回 None。
+/// Persist: sanitize path, apply dual limits and cleanup, write file. Return path on success; None on any failure.
 fn try_persist(original: &str, ctx: &RequestCtx, call_id: &str, cfg: &CcrCfg) -> Option<PathBuf> {
     let frag_hash = short_hash(original);
     let key = (call_id.to_string(), frag_hash.clone());
-    // 同片段已落盘 → 复用
+    // Same fragment already persisted → reuse
     if let Some(p) = ctx.ccr.borrow().written.get(&key) {
         return Some(p.clone());
     }
@@ -82,7 +82,7 @@ fn try_persist(original: &str, ctx: &RequestCtx, call_id: &str, cfg: &CcrCfg) ->
     Some(path)
 }
 
-/// SHA256 前 12 hex。
+/// First 12 hex digits of SHA256.
 fn short_hash(s: &str) -> String {
     let mut h = Sha256::new();
     h.update(s.as_bytes());
@@ -90,7 +90,7 @@ fn short_hash(s: &str) -> String {
     digest.iter().take(6).map(|b| format!("{b:02x}")).collect()
 }
 
-/// 路径组件 sanitize:非 [A-Za-z0-9_-] → '_';超 max_len 字节 → 取 SHA256 前 16 hex。
+/// Path component sanitize: non-[A-Za-z0-9_-] → '_'; exceeds max_len bytes → take first 16 hex of SHA256.
 fn sanitize_component(s: &str, max_len: usize) -> String {
     let cleaned: String = s
         .chars()
@@ -105,7 +105,7 @@ fn sanitize_component(s: &str, max_len: usize) -> String {
     }
 }
 
-/// 双限:文件数超 max_files_per_thread 或目录总字节超 max_thread_bytes → 按 mtime 删最旧。
+/// Dual limits: if file count exceeds max_files_per_thread or directory total bytes exceeds max_thread_bytes → delete oldest by mtime.
 fn enforce_limits(dir: &std::path::Path, cfg: &CcrCfg) {
     let mut entries: Vec<(PathBuf, std::time::SystemTime, u64)> = match std::fs::read_dir(dir) {
         Ok(rd) => rd
@@ -121,7 +121,7 @@ fn enforce_limits(dir: &std::path::Path, cfg: &CcrCfg) {
             .collect(),
         Err(_) => return,
     };
-    // 按 mtime 升序(最旧在前)
+    // Sort by mtime ascending (oldest first)
     entries.sort_by_key(|(_, mtime, _)| *mtime);
     let mut total: u64 = entries.iter().map(|(_, _, sz)| *sz).sum();
     let mut count = entries.len();

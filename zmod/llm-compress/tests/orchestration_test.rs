@@ -1,4 +1,4 @@
-//! transform 端到端:用真实 codex 类型构造 request,验证编排链。
+//! End-to-end transform: construct requests with real codex types and verify the orchestration chain.
 use codez_llm_compress::transform;
 use codex_api::ResponsesApiRequest;
 use codex_protocol::models::{
@@ -52,7 +52,7 @@ fn provider() -> codex_api::Provider {
     }
 }
 
-/// RAII 守卫:在 drop 时恢复 HOME 环境变量至原值。
+/// RAII guard: restore the HOME environment variable to its original value on drop.
 struct HomeGuard {
     _dir: tempfile::TempDir,
     original: Option<std::ffi::OsString>,
@@ -60,7 +60,7 @@ struct HomeGuard {
 
 impl Drop for HomeGuard {
     fn drop(&mut self) {
-        // SAFETY: 测试串行执行(#[serial]),恢复时不存在竞争。
+        // SAFETY: tests run serially (#[serial]), so no race condition exists during restoration.
         unsafe {
             match &self.original {
                 Some(v) => std::env::set_var("HOME", v),
@@ -70,8 +70,8 @@ impl Drop for HomeGuard {
     }
 }
 
-/// 向 tempdir 写 config-zmod.toml 并把 HOME 设为该目录;
-/// 返回 HomeGuard,drop 时自动清理 tempdir 并恢复原 HOME。
+/// Write config-zmod.toml to a tempdir and set HOME to that directory;
+/// return HomeGuard, which automatically cleans up the tempdir and restores the original HOME on drop.
 fn setup_enabled_home() -> HomeGuard {
     let dir = tempfile::TempDir::new().expect("tempdir");
     let codex_dir = dir.path().join(".codex");
@@ -82,29 +82,29 @@ fn setup_enabled_home() -> HomeGuard {
     )
     .expect("write config-zmod.toml");
     let original = std::env::var_os("HOME");
-    // SAFETY: 测试串行执行(#[serial]),修改 HOME 不会与其他测试竞争。
+    // SAFETY: tests run serially (#[serial]), so modifying HOME does not race with other tests.
     unsafe { std::env::set_var("HOME", dir.path()) };
     HomeGuard { _dir: dir, original }
 }
 
-/// HOME 设为不含 config-zmod.toml 的 tempdir → enabled=false。
+/// Set HOME to a tempdir without config-zmod.toml → enabled=false.
 fn setup_disabled_home() -> HomeGuard {
     let dir = tempfile::TempDir::new().expect("tempdir");
     let original = std::env::var_os("HOME");
-    // SAFETY: 测试串行执行(#[serial])。
+    // SAFETY: tests run serially (#[serial]).
     unsafe { std::env::set_var("HOME", dir.path()) };
     HomeGuard { _dir: dir, original }
 }
 
 // ---------------------------------------------------------------------------
-// 原有测试:保持不变,仅加 #[serial] 防止与 enabled 测试竞争 HOME。
+// Existing tests: unchanged, only adding #[serial] to prevent race with enabled tests on HOME.
 // ---------------------------------------------------------------------------
 
 #[test]
 #[serial]
 fn disabled_config_leaves_request_untouched() {
     let _home = setup_disabled_home();
-    // HOME 无 config-zmod.toml → enabled=false → 逐字节不变
+    // HOME lacks config-zmod.toml → enabled=false → unchanged byte-for-byte
     let big = "x\n".repeat(10_000);
     let mut r = req(vec![fco("c1", &big)]);
     let before = r.clone();
@@ -133,10 +133,10 @@ fn non_tooloutput_variants_ignored() {
 }
 
 // ---------------------------------------------------------------------------
-// 新增:enabled=true 端到端测试。
+// New: end-to-end tests with enabled=true.
 // ---------------------------------------------------------------------------
 
-/// 辅助:从 ResponseItem 取出文本。
+/// Helper: extract text from ResponseItem.
 fn get_text(item: &ResponseItem) -> &str {
     match item {
         ResponseItem::FunctionCallOutput { output, .. } => match &output.body {
@@ -147,37 +147,38 @@ fn get_text(item: &ResponseItem) -> &str {
     }
 }
 
-/// 端到端铁律测试:JSON 产物绝不携带 CCR 标记("[原文:")。
+/// End-to-end iron law test: a JSON product never carries the CCR marker ("[Original: ").
 ///
-/// 构造一个同时触发两个维度的输入:
-///   • 前置进度行 "Downloading ..."  → strip_progress 删除 → pre_lossy=true
-///   • 剩余内容是均匀 CSV 表格       → Tabular 压缩认领  → kind=Json, comp_lossy=false
+/// Construct an input that triggers both dimensions:
+///   • Leading progress line "Downloading ..."  → strip_progress removes it  → pre_lossy=true
+///   • Remaining content is uniform CSV table       → Tabular compression claims it  → kind=Json, comp_lossy=false
 ///
-/// BUG 前行为:pre_lossy=true 触发 attach → JSON 后追加 "[原文: /path]" → 非法 JSON。
-/// 修复后行为:kind=Json → 跳过 attach → 产物是纯 JSON 或退回原文,绝无 JSON+CCR。
+/// Buggy behavior: pre_lossy=true triggers attach → JSON followed by "[Original: /path]" → invalid JSON.
+/// Fixed behavior: kind=Json → skip attach → product is pure JSON or falls back to original, never JSON+CCR.
 ///
-/// 可达性说明:
-///   Tabular 的 detect 要求"≥3 行、≥2 列、行间列数一致"。本测试在 strip_progress 后
-///   保留了 200 行均匀 CSV,足以被 Tabular 认领。但若 Tabular 产出不比原文小(体积
-///   闸门过滤),候选被丢弃、原文保留——此时断言"不含 JSON+CCR"同样成立。
-///   因此无论压缩器是否真的压缩成功,铁律断言始终非空。
+/// Reachability note:
+///   Tabular's detect requires "≥3 rows, ≥2 columns, uniform column count across rows". This test preserves
+///   200 rows of uniform CSV after strip_progress, sufficient for Tabular to claim it. However, if Tabular's
+///   output is not smaller than the original (size threshold filters it out), the candidate is discarded and
+///   the original is retained — in which case the assertion "does not contain JSON+CCR" still holds.
+///   Thus regardless of whether compression actually succeeds, the iron law assertion is always satisfied.
 #[test]
 #[serial]
 fn json_kind_never_gets_ccr_attached() {
     let _home = setup_enabled_home();
 
-    // 进度行(会被 strip_progress 删除,触发 pre_lossy=true)
+    // Progress line (removed by strip_progress, triggers pre_lossy=true)
     let progress = "Downloading crates.io index\nFetching metadata 123/456\n";
-    // 均匀 CSV:200 行 × 4 列,Tabular 可认领
+    // Uniform CSV: 200 rows × 4 columns, claimable by Tabular
     let mut csv = String::from("id,name,score,flag\n");
     for i in 0..200_usize {
         csv.push_str(&format!("{i},item_{i},{},{}\n", i % 100, i % 2));
     }
-    // per_item_min_bytes 默认 1024;确保输入超过该阈值
+    // per_item_min_bytes defaults to 1024; ensure input exceeds this threshold
     let input_text = format!("{progress}{csv}");
     assert!(
         input_text.len() >= 1024,
-        "输入需超过 per_item_min_bytes(1024),实际 {} 字节",
+        "input must exceed per_item_min_bytes(1024), actual {} bytes",
         input_text.len()
     );
 
@@ -186,68 +187,68 @@ fn json_kind_never_gets_ccr_attached() {
 
     let out = get_text(&r.input[0]);
 
-    // 铁律:产物要么不含 JSON 结构,要么不含 CCR 标记——二者不能同时出现。
-    // 具体:若输出以 '{' 或 '[' 开头(JSON 产物特征),则不允许含 "[llm-compress: 原文 "。
+    // Iron law: product must either not contain JSON structure, or not contain the CCR marker — both cannot appear together.
+    // Specifically: if output starts with '{' or '[' (JSON product signature), it must not contain "[llm-compress: Original ".
     let looks_like_json = out.trim_start().starts_with('{') || out.trim_start().starts_with('[');
     if looks_like_json {
         assert!(
-            !out.contains("[llm-compress: 原文 "),
-            "JSON 产物不得携带 CCR 标记!\n输出前 200 字节: {:?}",
+            !out.contains("[llm-compress: Original "),
+            "JSON product must not carry CCR marker!\nFirst 200 bytes of output: {:?}",
             &out[..out.len().min(200)]
         );
-        // 额外:JSON 产物必须可 parse。
+        // Additional: JSON product must be parseable.
         serde_json::from_str::<serde_json::Value>(out).unwrap_or_else(|e| {
             panic!(
-                "JSON 产物 parse 失败(非法 JSON): {e}\n输出前 300 字节: {:?}",
+                "JSON product parse failed (invalid JSON): {e}\nFirst 300 bytes of output: {:?}",
                 &out[..out.len().min(300)]
             )
         });
     }
 
-    // 体积不变或缩小。
+    // Size unchanged or reduced.
     assert!(
         out.len() <= input_text.len(),
-        "输出({})大于输入({})字节",
+        "output ({}) larger than input ({}) bytes",
         out.len(),
         input_text.len()
     );
 }
 
-/// 端到端正向测试:大纯文本日志经 enabled 管道压缩后体积缩小。
+/// End-to-end positive test: large plaintext log is compressed to smaller size after passing through enabled pipeline.
 ///
-/// 使用含大量重复模式的日志输入——足以被 Log 或 Truncate 压缩器认领。
-/// 断言输出 < 输入(非空压缩),以及:若输出含 CCR 标记,则对应缓存文件存在。
+/// Use log input with large repetitive patterns — sufficient to be claimed by Log or Truncate compressor.
+/// Assert output < input (non-empty compression), and: if output contains CCR marker, the corresponding cache file exists.
 #[test]
 #[serial]
 fn enabled_compresses_large_plaintext() {
     let _home = setup_enabled_home();
 
-    // 构造一个 >10KB 的重复日志(LogCompressor / TruncateCompressor 均可认领)
+    // Construct a >10KB repetitive log (claimable by LogCompressor / TruncateCompressor)
     let line = "[2024-01-01 00:00:00] INFO  some_module: processing request id=12345 status=ok\n";
     let log = line.repeat(200);
-    assert!(log.len() > 10_000, "日志需 >10KB,实际 {} 字节", log.len());
+    assert!(log.len() > 10_000, "log must be >10KB, actual {} bytes", log.len());
 
     let mut r = req(vec![fco("call-log", &log)]);
     transform(&mut r, &provider(), "qid-log");
 
     let out = get_text(&r.input[0]);
 
-    // 主断言:体积缩小。
+    // Main assertion: size reduced.
     assert!(
         out.len() < log.len(),
-        "期望压缩后体积 < 原文,但 out={} input={} 字节",
+        "expected compressed size < original, but out={} input={} bytes",
         out.len(),
         log.len()
     );
 
-    // 若含 CCR 标记,路径指向的文件必须存在。
-    if let Some(start) = out.find("[llm-compress: 原文 ") {
-        let rest = &out[start + "[llm-compress: 原文 ".len()..];
-        let path_end = rest.find(']').expect("CCR 标记缺少右括号");
+    // If CCR marker is present, the file referenced by its path must exist.
+    if let Some(start) = out.find("[llm-compress: Original ") {
+        let rest = &out[start + "[llm-compress: Original ".len()..];
+        let path_end = rest.find(']').expect("CCR marker missing closing bracket");
         let path = std::path::Path::new(&rest[..path_end]);
         assert!(
             path.exists(),
-            "CCR 路径指向的文件不存在: {path:?}"
+            "file referenced by CCR path does not exist: {path:?}"
         );
     }
 }

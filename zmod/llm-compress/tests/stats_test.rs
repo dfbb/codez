@@ -1,5 +1,5 @@
-//! stats.rs 测试:用 tempfile 注入路径、固定时间戳字符串,
-//! 验证精确行格式、append 语义、父目录自动创建、CSV 四列无引号无表头。
+//! stats.rs tests: inject path via tempfile, fix timestamp string,
+//! verify exact line format, append semantics, auto-create parent directory, CSV four columns without quotes and no header.
 
 use codez_llm_compress::stats::log_compression_to;
 use std::fs;
@@ -12,7 +12,7 @@ fn writes_exact_single_line() {
     log_compression_to(&path, "2026-06-20T08:15:30Z", "abc", 100, 40).unwrap();
 
     let content = fs::read_to_string(&path).unwrap();
-    // 读回断言精确等于(含尾部换行)
+    // Read back and assert exact equality (including trailing newline)
     assert_eq!(content, "2026-06-20T08:15:30Z,abc,100,40\n");
 }
 
@@ -34,7 +34,7 @@ fn appends_second_line() {
 #[test]
 fn creates_missing_parent_dir() {
     let dir = tempfile::tempdir().unwrap();
-    // tempdir 下一个尚不存在的子目录
+    // A nonexistent subdirectory under tempdir
     let path = dir.path().join("nested").join("deeper").join("llm-compress.log");
     assert!(!path.parent().unwrap().exists());
 
@@ -60,9 +60,9 @@ fn line_format_is_four_columns_no_header_no_quotes() {
     .unwrap();
 
     let content = fs::read_to_string(&path).unwrap();
-    // 无引号
+    // No quotes
     assert!(!content.contains('"'));
-    // 单行(无表头),逗号分隔恰好 4 列
+    // Single line (no header), comma-separated exactly 4 columns
     let lines: Vec<&str> = content.lines().collect();
     assert_eq!(lines.len(), 1);
     let cols: Vec<&str> = lines[0].split(',').collect();

@@ -1,5 +1,5 @@
 use codez_llm_switch::{default_plugins, make_connector, run_transforms};
-use codez_llm_switch::Connector as ConnectorKind; // config::Connector 重导出
+use codez_llm_switch::Connector as ConnectorKind; // re-export from config::Connector
 
 #[test]
 fn v1_transforms_are_noop_passthrough() {

@@ -1,5 +1,5 @@
-//! 读取 ~/.codex/config-zmod.toml 的 [llm_compress] 段。
-//! fail-safe:文件/节缺失或解析失败 → enabled=false + 默认阈值。
+//! Read the [llm_compress] section from ~/.codex/config-zmod.toml.
+//! fail-safe: missing file/section or parse failure → enabled=false + default thresholds.
 
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -149,7 +149,7 @@ impl Default for CcrCfg {
     }
 }
 
-/// 顶层文件结构:只关心 [llm_compress] 节。
+/// Top-level file structure: only care about the [llm_compress] section.
 #[derive(Debug, Deserialize)]
 struct RootFile {
     #[serde(default)]
@@ -161,7 +161,7 @@ fn config_path() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".codex").join("config-zmod.toml"))
 }
 
-/// 从指定路径读取(便于测试注入)。
+/// Load from a specified path (convenient for test injection).
 pub fn load_from(path: &std::path::Path) -> Config {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
@@ -176,7 +176,7 @@ pub fn load_from(path: &std::path::Path) -> Config {
     }
 }
 
-/// 从默认路径 ~/.codex/config-zmod.toml 读取。
+/// Load from the default path ~/.codex/config-zmod.toml.
 pub fn load() -> Config {
     match config_path() {
         Some(p) => load_from(&p),
