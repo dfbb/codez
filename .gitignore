@@ -32,5 +32,9 @@ testkey.toml
 # zmod 开发期软链(把 zmod crate 接进 codex-rs workspace 跑测试;dev-only,绝不提交进 codex-rs 子树)
 /codex-rs/llm-compress
 /codex-rs/llm-switch
-
 /.worktrees
+/codex-rs/Cargo.lock
+/codex-rs/Cargo.toml
+/AGENTS.md
+/release/
+/zmod/llm-switch/AGENTS.md

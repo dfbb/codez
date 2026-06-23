@@ -121,6 +121,7 @@ members = [
     "codex-experimental-api-macros",
     "plugin",
     "model-provider",
+    "llm-compress",
 ]
 resolver = "2"
 
