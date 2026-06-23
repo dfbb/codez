@@ -3,7 +3,7 @@ use codez_llm_compress::config::Config;
 use codez_llm_compress::router::{Budget, CompressOutcome, Compressor, ContentKind};
 
 fn budget(cfg: &Config) -> Budget<'_> {
-    Budget { cfg, cmd: None, query: &[] }
+    Budget { cfg, cmd: None }
 }
 
 /// 充分 padding 的 Markdown 表格:schema-form 比原文小。

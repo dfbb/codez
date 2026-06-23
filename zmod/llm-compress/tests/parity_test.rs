@@ -26,7 +26,7 @@ struct Fixture {
 }
 
 fn run_compressor(name: &str, text: &str, cfg: &Config) -> Option<(String, bool)> {
-    let budget = Budget { cfg, cmd: None, query: &[] };
+    let budget = Budget { cfg, cmd: None };
     let c: Box<dyn Compressor> = match name {
         "json" => Box::new(JsonCompressor),
         "search" => Box::new(SearchCompressor),

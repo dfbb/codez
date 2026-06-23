@@ -3,7 +3,7 @@ use codez_llm_compress::config::Config;
 use codez_llm_compress::router::{Budget, CompressOutcome, Compressor, ContentKind};
 
 fn budget(cfg: &Config) -> Budget<'_> {
-    Budget { cfg, cmd: None, query: &[] }
+    Budget { cfg, cmd: None }
 }
 
 #[test]
@@ -65,7 +65,7 @@ fn is_grep_command_forces_detect() {
     let cfg = Config::disabled();
     let c = SearchCompressor;
     let hint = codez_llm_compress::command::CommandHint { program: "rg".to_string(), argv: vec![] };
-    let b = Budget { cfg: &cfg, cmd: Some(&hint), query: &[] };
+    let b = Budget { cfg: &cfg, cmd: Some(&hint) };
     // 多行但非标准 grep 格式;is_grep 命中 → detect true
     assert!(c.detect("matchy line 1\nmatchy line 2\nmatchy line 3", &b));
 }

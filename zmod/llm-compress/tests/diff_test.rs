@@ -46,7 +46,7 @@ index 1234567..89abcde 100644
 fn detect_true_for_real_git_diff() {
     let c = DiffCompressor;
     let cfg = Config::default();
-    let budget = Budget { cfg: &cfg, cmd: None, query: &[] };
+    let budget = Budget { cfg: &cfg, cmd: None };
     assert!(c.detect(REAL_DIFF, &budget), "真实 git diff 应被识别");
 }
 
@@ -54,7 +54,7 @@ fn detect_true_for_real_git_diff() {
 fn detect_true_for_bare_hunk_header() {
     let c = DiffCompressor;
     let cfg = Config::default();
-    let budget = Budget { cfg: &cfg, cmd: None, query: &[] };
+    let budget = Budget { cfg: &cfg, cmd: None };
     let text = "@@ -1,3 +1,4 @@\n a\n-b\n+c\n d\n";
     assert!(c.detect(text, &budget), "含 hunk 头应被识别");
 }
@@ -63,7 +63,7 @@ fn detect_true_for_bare_hunk_header() {
 fn detect_false_for_plain_text() {
     let c = DiffCompressor;
     let cfg = Config::default();
-    let budget = Budget { cfg: &cfg, cmd: None, query: &[] };
+    let budget = Budget { cfg: &cfg, cmd: None };
     let text = "这是一段普通文本。\n没有任何 diff 特征。\n+ 这不是变更行只是个加号开头的句子\n";
     // 注意:仅靠单独的 '+' 开头一行不构成 diff(无 hunk 头、无 diff --git、无 '--- '+'+++ ' 配对)。
     assert!(!c.detect(text, &budget), "普通文本不应被识别");
@@ -73,7 +73,7 @@ fn detect_false_for_plain_text() {
 fn compress_folds_large_context_and_keeps_changes() {
     let c = DiffCompressor;
     let cfg = cfg_with_context(2);
-    let budget = Budget { cfg: &cfg, cmd: None, query: &[] };
+    let budget = Budget { cfg: &cfg, cmd: None };
 
     let outcome = c.compress(REAL_DIFF, &budget);
     let CompressOutcome::Compressed { text, saved_bytes, .. } = outcome else {
@@ -120,7 +120,7 @@ fn compress_folds_large_context_and_keeps_changes() {
 fn compress_small_diff_unchanged() {
     let c = DiffCompressor;
     let cfg = cfg_with_context(3);
-    let budget = Budget { cfg: &cfg, cmd: None, query: &[] };
+    let budget = Budget { cfg: &cfg, cmd: None };
     let small = "\
 diff --git a/a.txt b/a.txt
 index aaa..bbb 100644
@@ -160,7 +160,7 @@ fn diff_fold_marks_lossy_text_kind() {
         lines.push(format!(" ctx{}", 10 + i));
     }
     let text = lines.join("\n");
-    let b = Budget { cfg: &cfg, cmd: None, query: &[] };
+    let b = Budget { cfg: &cfg, cmd: None };
     if let CompressOutcome::Compressed { lossy, kind, .. } = c.compress(&text, &b) {
         assert!(lossy, "diff 折叠上下文 → lossy=true");
         assert_eq!(kind, ContentKind::Text);

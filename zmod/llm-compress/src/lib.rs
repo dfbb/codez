@@ -115,7 +115,7 @@ fn compress_in_place(
     // ③ 预处理
     let (pre, pre_lossy) = crate::preprocess::run(s, &cfg.preprocess);
     // ④⑤ 路由压缩
-    let budget = Budget { cfg, cmd, query: &ctx.query_terms };
+    let budget = Budget { cfg, cmd };
     let mut candidate_is_json = false;
     let candidate = match router.compress_text(&pre, &budget) {
         Some((new, comp_lossy, kind)) => {

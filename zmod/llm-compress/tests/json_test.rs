@@ -4,7 +4,7 @@ use codez_llm_compress::router::{Budget, CompressOutcome, Compressor};
 use serde_json::Value;
 
 fn budget(cfg: &Config) -> Budget<'_> {
-    Budget { cfg, cmd: None, query: &[] }
+    Budget { cfg, cmd: None }
 }
 
 // ===== 保留 Task 01 迁移的 detect 基础用例(更新为 v2 语义:需 max_bytes 足够) =====
@@ -55,7 +55,7 @@ fn output_is_always_valid_json() {
 use codez_llm_compress::router::ContentKind;
 
 fn budget_t05(cfg: &Config) -> Budget<'_> {
-    Budget { cfg, cmd: None, query: &[] }
+    Budget { cfg, cmd: None }
 }
 
 #[test]
