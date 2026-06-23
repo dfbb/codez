@@ -8,3 +8,4 @@ pub mod log;
 pub mod schema;
 pub mod search;
 pub mod tabular;
+pub mod toon;

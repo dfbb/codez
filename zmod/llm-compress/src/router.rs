@@ -9,6 +9,10 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 pub enum ContentKind {
     Text,
     Json,
+    /// TOON product (Token-Oriented Object Notation). Not JSON; always
+    /// lossless (`lossy=false`). The orchestrator treats it like `Json`:
+    /// never appends a CCR pointer, and never re-parses it as JSON.
+    Toon,
 }
 
 /// Compressors read config / command hints from this.
