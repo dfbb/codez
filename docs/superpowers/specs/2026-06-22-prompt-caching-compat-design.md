@@ -35,7 +35,7 @@ Cache mechanics (verified against official docs, 2025-2026):
 | Upstream | Enable | Hit condition | read / write multiple | Min cacheable |
 | --- | --- | --- | --- | --- |
 | OpenAI | automatic | exact prefix match | read 0.1x (GPT-5 era) | 1024 tok |
-| Anthropic | explicit `cache_control` (max 4 breakpoints) | byte-identical prefix up to breakpoint | read 0.1x / write 1.25x (5m) | 1024 or 4096 tok by model |
+| Anthropic | explicit `cache_control` (max 4 breakpoints) OR top-level automatic | byte-identical prefix; reads via longest-prefix lookback (20-block window) | read 0.1x / write 1.25x (5m) | 1024 or 4096 tok by model |
 | DeepSeek | automatic (disk) | prefix-unit match | read ~0.02x | n/a |
 
 codex integration (verified in code):
@@ -118,80 +118,105 @@ construction. Simpler and retains more savings.
 ### Goal
 
 Make requests routed to Claude (main session or purpose-routed `review`) benefit from
-Anthropic prompt caching by emitting `cache_control` breakpoints on the byte-stable
-prefix that Part A guarantees.
+Anthropic prompt caching on the byte-stable prefix that Part A guarantees.
 
-### Breakpoint placement: tools + sliding history
+### How Anthropic caching actually works (verified against official docs)
 
-The translated Anthropic body has a stability gradient (most → least stable):
-`tools` → `system` → `messages`. Anthropic builds the cache prefix in exactly this
-layer order, so a breakpoint covers the whole prefix up to and including its block.
+These mechanics drive the design and corrected an earlier flawed approach:
 
-Use **2 of the 4** available breakpoints (leaving headroom):
+- **Prefix order is `tools → system → messages`.** A `cache_control` breakpoint writes
+  **exactly one** cache entry: the prefix *ending at that block*. It does NOT cache any
+  later block. So a breakpoint on the last tool caches tools only — `system` (which
+  comes after) is not included.
+- **Writes happen only at breakpoints; the cached content is REQUEST content** —
+  including prior assistant turns that are now part of `messages`.
+- **Reads are automatic longest-prefix lookback.** On each request the system hashes
+  the prefix at the breakpoint and, if no match, walks backward block-by-block (window
+  = **20 blocks**) looking for an entry a *prior request actually wrote*. It does not
+  "discover" stable content behind the breakpoint — it only matches prior writes.
+- Therefore the correct multi-turn pattern is to mark the **last block of the last
+  message** every turn: turn N writes the full-prefix entry, turn N+1 (having appended
+  < 20 blocks) lookback-hits turn N's entry, charging all prior conversation at read
+  rate. (The earlier draft's "second-to-last message" reasoning was wrong: the last
+  message is exactly where the marker belongs.)
 
-1. **`tools` breakpoint** — `cache_control` on the **last tool definition** in the
-   `tools` array. Because the prefix is `tools → system`, this one breakpoint caches
-   both the tool definitions and the `system` block (both session-stable).
-2. **Sliding history breakpoint** — `cache_control` on the last content block of the
-   **second-to-last message** in `messages`. Anchoring at the second-to-last (not the
-   last) message ensures the marked prefix is content already sent and cached on the
-   previous turn; the last message is this turn's freshly appended content (a
-   necessary miss). Each turn: only the new tail is a cache write, all history is a
-   cache read.
+### Decision: top-level automatic caching
 
-If `tools` is empty, place breakpoint 1 on `system` instead (set
-`system` as a structured block array with a trailing `cache_control`). If `messages`
-has fewer than 2 messages, skip the sliding breakpoint (nothing stable to cache yet).
+Enable Anthropic's automatic caching by adding a single top-level field to the
+translated request body:
 
-### Anthropic `cache_control` wire format
+```json
+{ "cache_control": { "type": "ephemeral" } }
+```
 
-- Block-level marker: append `"cache_control": {"type": "ephemeral"}` to the target
-  content block object (tool def / system block / message content block).
-- TTL: default (5 minutes). Do not opt into 1h (`"ttl":"1h"`) — extra write cost,
-  not justified for interactive sessions.
-- This requires emitting `system` and `tools` entries as objects that can carry the
-  field. Tool defs are already objects (`map_tools`). `system` is currently a bare
-  string (`anthropic_req.rs:213`); to mark it, it must become a structured form
-  `[{"type":"text","text":..., "cache_control":{...}}]` **only when** it is the
-  breakpoint target (tools empty); otherwise leave it as a string to avoid needless
-  prefix changes.
+Anthropic then places the breakpoint on the last cacheable block and moves it forward
+as the conversation grows — no manual breakpoint bookkeeping, and it is the
+doc's first recommendation for multi-turn conversations. Implementation is a one-line
+addition to the body assembled in `build_anthropic_request` (`anthropic_req.rs:204`),
+after messages/tools/system are set. TTL: default 5 minutes (omit `ttl`).
 
-### Min-length guard
+### Automatic-caching traps to honor (from the doc)
 
-Anthropic silently skips caching below the per-model minimum (1024 or 4096 tokens).
-No token counting in llm-switch (out of scope per v2). Marking below-threshold prefixes
-is harmless (Anthropic ignores the marker, no error). Accept this; document it.
+1. **Last block must not vary per request.** Automatic caching marks the last cacheable
+   block; if it changes every turn, caching writes the wrong thing. codex's translated
+   `messages` end with a user/tool_result block (this turn's content) — correct and
+   stable for this purpose. The orphan-repair path appends a fixed-content placeholder
+   `tool_result` at the user message tail (`anthropic_req.rs:178-192`); content is
+   constant, does not introduce per-request variance. No action needed, but the
+   determinism from Part A is what keeps the *earlier* prefix stable.
+2. **Breakpoint-slot / TTL conflicts.** Automatic caching consumes one of the 4
+   breakpoint slots. Since llm-switch emits no explicit `cache_control` elsewhere, there
+   is no slot exhaustion and no mixed-TTL 400 risk. Keep it that way: do not add
+   explicit breakpoints alongside automatic.
+3. **Platform support is not universal.** Automatic caching works on the Claude API,
+   AWS Claude Platform, and Microsoft Foundry (beta); **Bedrock and Vertex do not
+   support it**. llm-switch targets a user-configured `base_url` that may be a
+   third-party Anthropic-compatible gateway. Treat the top-level field as best-effort:
+   endpoints that don't support it ignore an unknown field (or, at worst, the prefix is
+   simply not cached). This is fail-safe — no error path, no correctness impact, only a
+   missed discount. Document this; do not attempt platform detection.
+4. **Min length still applies** (1024 / 2048 / 4096 tok by model). Below it, Anthropic
+   processes without caching and returns no error. No token counting in llm-switch
+   (out of scope). Accept and document.
 
 ### usage mapping fix
 
 `anthropic_sse.rs` currently reads only `cache_read_input_tokens` and computes
 `total_tokens = input_tokens + output_tokens` (`anthropic_sse.rs:217`). Anthropic's
-`usage.input_tokens` counts only tokens *after the last breakpoint*; the full input is
-`cache_read_input_tokens + cache_creation_input_tokens + input_tokens`. Fix:
+`usage.input_tokens` counts only tokens *after the last cached block*; the full input
+is `cache_read_input_tokens + cache_creation_input_tokens + input_tokens`. Fix:
 
 - Read `cache_creation_input_tokens` in addition to `cache_read_input_tokens`.
 - Map **`cache_read_input_tokens` → codex `cached_input_tokens`** (true cache hits;
   `cache_creation` is billed at 1.25x and is not a hit, so it is NOT reported here).
 - Compute **`total_tokens = cache_read_input_tokens + cache_creation_input_tokens +
   input_tokens + output_tokens`** so totals reconcile with Anthropic billing.
-- Keep codex `input_tokens` = Anthropic `input_tokens` (post-breakpoint), matching how
+- Keep codex `input_tokens` = Anthropic `input_tokens` (post-cache), matching how
   OpenAI reports uncached input. Document the mapping inline.
+
+This also gives an observable cache signal: per the doc, both
+`cache_creation_input_tokens` and `cache_read_input_tokens` being 0 means the prompt
+was not cached (e.g. below min length, or endpoint without automatic support).
 
 ### `prompt_cache_key`
 
 Remains dropped — Anthropic has no equivalent field and caching is driven by the
-explicit breakpoints. No change to `apply_field_downgrade` for this field.
+top-level `cache_control`. No change to `apply_field_downgrade` for this field.
 
 ### Verification
 
-- **Wire-format test**: translate a multi-message request, assert the `tools` array's
-  last entry carries `cache_control`, and the second-to-last message's last block
-  carries `cache_control`.
-- **Edge cases**: empty tools → system carries the marker; <2 messages → no sliding
-  breakpoint; tools present + ≥2 messages → exactly 2 breakpoints.
+- **Wire-format test**: translate a multi-message request, assert the body has top-level
+  `"cache_control": {"type": "ephemeral"}` and that no per-block `cache_control` markers
+  were added (single-mechanism guarantee).
+- **Stability test (the real target)**: simulate a 3-turn conversation through
+  `build_anthropic_request` (with Part A determinism applied upstream); assert the
+  serialized prefix bytes of turn N+1 up to turn N's last block are byte-identical to
+  turn N's serialized prefix — i.e. lookback *can* hit. This replaces the earlier,
+  incorrect "marker on second-to-last" check.
 - **usage test**: feed an Anthropic `message_start` with both
   `cache_read_input_tokens` and `cache_creation_input_tokens`; assert mapping
-  (`cached_input_tokens` = read only; totals reconcile).
+  (`cached_input_tokens` = read only; `total_tokens` reconciles) and that both-zero
+  is surfaced as "uncached".
 - `cargo nextest run -p codez-llm-switch` green.
 
 ## Out of scope
@@ -199,7 +224,8 @@ explicit breakpoints. No change to `apply_field_downgrade` for this field.
 - OpenAI / DeepSeek request-side changes — both auto-cache; Part A's determinism is
   sufficient. No `cache_control` concept there.
 - Token counting / min-length enforcement in llm-switch.
-- Anthropic 1h TTL, automatic top-level cache mode, Bedrock/Vertex specifics.
+- Explicit per-block breakpoints, Anthropic 1h TTL, Bedrock/Vertex automatic-caching
+  support, platform detection.
 - Chat connector cache fields (DeepSeek auto-caches; nothing to mark).
 
 ## Rollout
