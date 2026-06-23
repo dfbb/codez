@@ -4,7 +4,6 @@
 pub mod ccr;
 pub mod command;
 pub mod config;
-pub mod query;
 pub mod router;
 pub mod score;
 pub mod compress;
@@ -50,16 +49,12 @@ pub fn transform(request: &mut ResponsesApiRequest, _api_provider: &ApiProvider,
     // 一次性请求上下文
     let ctx = crate::ccr::RequestCtx {
         queryid,
-        query_terms: crate::query::extract(request),
         cmd_index: crate::command::index(request),
         ccr: std::cell::RefCell::new(crate::ccr::CcrRegistry::new()),
     };
     let router = build_router();
 
     let total_before = total_text_bytes(&request.input);
-    if total_before < cfg.min_total_bytes {
-        return;
-    }
     for item in request.input.iter_mut() {
         compress_item(item, &ctx, &router, &cfg);
     }
@@ -115,21 +110,28 @@ fn compress_in_place(
     // ③ 预处理
     let (pre, pre_lossy) = crate::preprocess::run(s, &cfg.preprocess);
     // ④⑤ 路由压缩
-    let budget = Budget { cfg, cmd, query: &ctx.query_terms };
+    let budget = Budget { cfg, cmd };
     let mut candidate_is_json = false;
     let candidate = match router.compress_text(&pre, &budget) {
         Some((new, comp_lossy, kind)) => {
-            // kind=Json ⟹ 产物是合法 JSON,绝不追加 CCR(§4.0/§4.7 铁律)。
-            // pre_lossy 仅表示预处理删了内容;但若路由器产出 JSON,写回 JSON
-            // 不可再追加"[llm-compress: 原文 /path]"——那会破坏 JSON 合法性。
-            // 规则:只有 kind==Text 且(pre_lossy 或 comp_lossy)才 attach CCR。
-            if kind == ContentKind::Json {
-                candidate_is_json = true;
-                new
-            } else if pre_lossy || comp_lossy {
-                crate::ccr::attach(new, s, ctx, call_id, &cfg.ccr)
-            } else {
-                new
+            // Structured products (Json/Toon) are NEVER decorated with a CCR
+            // pointer: appending "[llm-compress: 原文 …]" would corrupt the
+            // JSON, or break TOON's decodability (TOON is the model's only
+            // view of this output). Only kind==Text may carry a CCR pointer,
+            // and only when content was actually dropped (pre/comp lossy).
+            match kind {
+                ContentKind::Json => {
+                    candidate_is_json = true;
+                    new
+                }
+                ContentKind::Toon => new,
+                ContentKind::Text => {
+                    if pre_lossy || comp_lossy {
+                        crate::ccr::attach(new, s, ctx, call_id, &cfg.ccr)
+                    } else {
+                        new
+                    }
+                }
             }
         }
         None => {

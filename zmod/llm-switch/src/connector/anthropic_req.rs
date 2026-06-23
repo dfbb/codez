@@ -234,6 +234,13 @@ pub(crate) fn build_anthropic_request(
     // ── §7.1 字段降级 ─────────────────────────────────────────────────
     apply_field_downgrade(&mut body, req);
 
+    // Opt-in Anthropic automatic prompt caching (top-level breakpoint). Off by default;
+    // only emitted for providers that set `prompt_cache = true`, since unsupported
+    // endpoints (Bedrock/Vertex/third-party gateways) may 400 on an unknown field.
+    if ctx.prompt_cache {
+        body["cache_control"] = json!({"type": "ephemeral"});
+    }
+
     Ok(body)
 }
 

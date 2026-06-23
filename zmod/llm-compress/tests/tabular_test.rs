@@ -3,14 +3,14 @@ use codez_llm_compress::config::Config;
 use codez_llm_compress::router::{Budget, CompressOutcome, Compressor, ContentKind};
 
 fn budget(cfg: &Config) -> Budget<'_> {
-    Budget { cfg, cmd: None, query: &[] }
+    Budget { cfg, cmd: None }
 }
 
-/// 充分 padding 的 Markdown 表格:schema-form 比原文小。
-/// 输入 237 字节,schema-form 输出 159 字节,节省 78 字节。
+/// A padded Markdown table shrinks under TOON.
 #[test]
-fn padded_markdown_genuinely_shrinks() {
-    let cfg = Config::disabled(); // tabular.enabled = true
+fn padded_markdown_shrinks_to_toon() {
+    let mut cfg = Config::disabled();
+    cfg.truncate.max_bytes = 100_000;
     let c = TabularCompressor;
     let text = "\
 | id    | name       | status   |
@@ -21,76 +21,76 @@ fn padded_markdown_genuinely_shrinks() {
 | 4     | dave       | active   |
 | 5     | erin       | inactive |";
 
-    assert!(c.detect(text, &budget(&cfg)), "充分 padding 的 markdown 应 detect=true");
-
-    match c.compress(text, &budget(&cfg)) {
-        CompressOutcome::Compressed { text: new, lossy, kind, saved_bytes } => {
-            assert!(!lossy, "格式重构不删内容");
-            assert_eq!(kind, ContentKind::Json);
-            assert!(new.len() < text.len(), "schema-form 必须真的更小: {} vs {}", new.len(), text.len());
-            assert_eq!(saved_bytes, text.len() - new.len(), "saved_bytes 应如实上报");
-            let v: serde_json::Value = serde_json::from_str(&new).expect("valid json");
-            assert_eq!(v["_schema"], serde_json::json!(["id", "name", "status"]));
-            assert_eq!(v["_rows"][0], serde_json::json!(["1", "alice", "active"]));
-            assert_eq!(v["_rows"][4], serde_json::json!(["5", "erin", "inactive"]));
-        }
-        _ => panic!("expect Compressed"),
-    }
+    assert!(c.detect(text, &budget(&cfg)), "padded markdown should be claimed");
+    let CompressOutcome::Compressed { text: new, lossy, kind, saved_bytes } =
+        c.compress(text, &budget(&cfg))
+    else {
+        panic!("expected Compressed");
+    };
+    assert!(!lossy);
+    assert_eq!(kind, ContentKind::Toon);
+    assert!(new.len() < text.len(), "{} vs {}", new.len(), text.len());
+    assert_eq!(saved_bytes, text.len() - new.len());
+    // TOON round-trips to an array of {id,name,status} objects.
+    let back: serde_json::Value = toon_format::decode_default(&new).unwrap();
+    assert_eq!(back[0]["id"], serde_json::json!("1"));
+    assert_eq!(back[0]["name"], serde_json::json!("alice"));
+    assert_eq!(back[4]["status"], serde_json::json!("inactive"));
 }
 
-/// 紧凑 CSV:schema-form 比原文大,应让位给 Truncate。
+/// Compact CSV whose TOON form is not smaller → yield to Truncate.
 #[test]
 fn compact_csv_yields_to_truncate() {
-    let cfg = Config::disabled();
+    let mut cfg = Config::disabled();
+    cfg.truncate.max_bytes = 100_000;
     let c = TabularCompressor;
     let text = "id,name\n1,alice\n2,bob\n3,carol";
-    assert!(!c.detect(text, &budget(&cfg)), "紧凑 CSV schema-form 更大,应 detect=false 让给 Truncate");
+    assert!(!c.detect(text, &budget(&cfg)), "no benefit → yield");
     assert!(matches!(c.compress(text, &budget(&cfg)), CompressOutcome::Unchanged));
 }
 
-/// 小 Markdown 表格(2 行),schema-form 比原文大,应让位。
-#[test]
-fn small_markdown_yields() {
-    let cfg = Config::disabled();
-    let c = TabularCompressor;
-    let text = "| id | name |\n|----|------|\n| 1 | alice |\n| 2 | bob |";
-    assert!(!c.detect(text, &budget(&cfg)), "小 markdown schema-form 更大,应 detect=false");
-    assert!(matches!(c.compress(text, &budget(&cfg)), CompressOutcome::Unchanged));
-}
-
-/// 重复列名 → detect false。
+/// Duplicate column names → not a valid table → not claimed.
 #[test]
 fn duplicate_column_names_detect_false() {
-    let cfg = Config::disabled();
+    let mut cfg = Config::disabled();
+    cfg.truncate.max_bytes = 100_000;
     let c = TabularCompressor;
     let text = "id,id\n1,2\n3,4";
-    assert!(!c.detect(text, &budget(&cfg)), "重复列名 → detect false 让 Truncate");
+    assert!(!c.detect(text, &budget(&cfg)));
 }
 
-/// 列数不齐 → detect false。
+/// Ragged columns → not claimed.
 #[test]
 fn ragged_columns_detect_false() {
-    let cfg = Config::disabled();
+    let mut cfg = Config::disabled();
+    cfg.truncate.max_bytes = 100_000;
     let c = TabularCompressor;
     let text = "a,b,c\n1,2\n3,4,5";
-    assert!(!c.detect(text, &budget(&cfg)), "列数不齐 → detect false");
+    assert!(!c.detect(text, &budget(&cfg)));
 }
 
-/// 含引号单元格 → detect false。
+/// Quoted cells → not claimed (parser can't safely round-trip).
 #[test]
 fn quoted_cell_detect_false() {
-    let cfg = Config::disabled();
+    let mut cfg = Config::disabled();
+    cfg.truncate.max_bytes = 100_000;
     let c = TabularCompressor;
     let text = "a,b\n\"x,y\",z\n1,2";
-    assert!(!c.detect(text, &budget(&cfg)), "含引号转义单元格 → detect false");
+    assert!(!c.detect(text, &budget(&cfg)));
 }
 
-/// tabular.enabled=false → detect false。
+/// use_toon=false → not claimed.
 #[test]
-fn disabled_config_detect_false() {
+fn use_toon_false_detect_false() {
     let mut cfg = Config::disabled();
-    cfg.tabular.enabled = false;
+    cfg.truncate.max_bytes = 100_000;
+    cfg.json.use_toon = false;
     let c = TabularCompressor;
-    let text = "id,name\n1,alice\n2,bob";
+    let text = "\
+| id    | name       | status   |
+| ----- | ---------- | -------- |
+| 1     | alice      | active   |
+| 2     | bob        | inactive |
+| 3     | carol      | active   |";
     assert!(!c.detect(text, &budget(&cfg)));
 }

@@ -34,7 +34,7 @@ impl Compressor for PanicCompressor {
     fn compress(&self, _t: &str, _b: &Budget) -> CompressOutcome { panic!("boom") }
 }
 
-fn budget(cfg: &Config) -> Budget<'_> { Budget { cfg, cmd: None, query: &[] } }
+fn budget(cfg: &Config) -> Budget<'_> { Budget { cfg, cmd: None } }
 
 #[test]
 fn first_detecting_compressor_wins() {
@@ -119,7 +119,7 @@ fn cmd_hint_reorders_diff_to_front() {
 
     // 带 git diff 命令提示:diff 被重排到最前,应得到 [diff] 输出。
     let cmd = CommandHint { program: "git".into(), argv: vec!["diff".into()] };
-    let b_with_cmd = Budget { cfg: &cfg, cmd: Some(&cmd), query: &[] };
+    let b_with_cmd = Budget { cfg: &cfg, cmd: Some(&cmd) };
     let r2 = ContentRouter::new(vec![Box::new(SearchFake), Box::new(DiffFake)]);
     let (out_with_cmd, _, _) = r2.compress_text(text, &b_with_cmd).unwrap();
     assert!(out_with_cmd.starts_with("[diff]"), "git diff 命令提示应把 diff 重排到前");

@@ -91,6 +91,30 @@ fn responses_provider_with_auth_key_is_rejected() {
 }
 
 #[test]
+fn prompt_cache_defaults_false_and_parses_true() {
+    let toml = r#"
+[llm-switch]
+enabled = true
+
+[llm-switch.providers.claude-default]
+connector = "anthropic"
+base_url  = "https://api.anthropic.com"
+auth      = "x-api-key"
+key_env   = "ANTHROPIC_API_KEY"
+
+[llm-switch.providers.claude-cached]
+connector    = "anthropic"
+base_url     = "https://api.anthropic.com"
+auth         = "x-api-key"
+key_env      = "ANTHROPIC_API_KEY"
+prompt_cache = true
+"#;
+    let cfg = load_config_from_str(toml, false).expect("parse ok");
+    assert!(!cfg.providers.get("claude-default").unwrap().prompt_cache);
+    assert!(cfg.providers.get("claude-cached").unwrap().prompt_cache);
+}
+
+#[test]
 fn parses_purpose_table() {
     let toml = r#"
 [llm-switch]

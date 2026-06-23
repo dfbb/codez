@@ -58,7 +58,6 @@ impl Compressor for SearchCompressor {
 fn compress_search(text: &str, budget: &Budget) -> Option<String> {
     let max_per_file = budget.cfg.search.max_per_file.max(2);
     let max_files = budget.cfg.search.max_files.max(1);
-    let query = budget.query;
 
     let lines: Vec<&str> = text.lines().collect();
     // 分组:保持文件首次出现顺序
@@ -87,7 +86,7 @@ fn compress_search(text: &str, budget: &Budget) -> Option<String> {
     let mut scored_files: Vec<(String, f32)> = order
         .iter()
         .map(|k| {
-            let best = groups[k].iter().map(|l| line_score(l, query)).fold(0.0_f32, f32::max);
+            let best = groups[k].iter().map(|l| line_score(l)).fold(0.0_f32, f32::max);
             (k.clone(), best)
         })
         .collect();
@@ -105,7 +104,7 @@ fn compress_search(text: &str, budget: &Budget) -> Option<String> {
             continue;
         }
         let matches = &groups[key];
-        out.extend(select_in_file(matches, max_per_file, query));
+        out.extend(select_in_file(matches, max_per_file));
     }
     if folded_files > 0 {
         out.push(format!("[llm-compress: 略 {folded_files} 个文件]"));
@@ -114,7 +113,7 @@ fn compress_search(text: &str, budget: &Budget) -> Option<String> {
 }
 
 /// 组内选取:必留首+末;中间按分选 top-(K-2);丢弃段折叠计数;回原序。
-fn select_in_file(matches: &[&str], max_per_file: usize, query: &[String]) -> Vec<String> {
+fn select_in_file(matches: &[&str], max_per_file: usize) -> Vec<String> {
     if matches.len() <= max_per_file {
         return matches.iter().map(|s| s.to_string()).collect();
     }
@@ -123,7 +122,7 @@ fn select_in_file(matches: &[&str], max_per_file: usize, query: &[String]) -> Ve
     keep_idx.insert(0);
     keep_idx.insert(n - 1);
     // 中间按分排序取 top
-    let mut mids: Vec<(usize, f32)> = (1..n - 1).map(|i| (i, line_score(matches[i], query))).collect();
+    let mut mids: Vec<(usize, f32)> = (1..n - 1).map(|i| (i, line_score(matches[i]))).collect();
     mids.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     for (i, _) in mids.into_iter().take(max_per_file.saturating_sub(2)) {
         keep_idx.insert(i);

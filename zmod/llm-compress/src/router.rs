@@ -9,13 +9,16 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 pub enum ContentKind {
     Text,
     Json,
+    /// TOON product (Token-Oriented Object Notation). Not JSON; always
+    /// lossless (`lossy=false`). The orchestrator treats it like `Json`:
+    /// never appends a CCR pointer, and never re-parses it as JSON.
+    Toon,
 }
 
-/// 压缩器从中取配置/命令提示/查询词。
+/// Compressors read config / command hints from this.
 pub struct Budget<'a> {
     pub cfg: &'a Config,
     pub cmd: Option<&'a CommandHint>,
-    pub query: &'a [String],
 }
 
 /// 单个压缩器对一段文本的处理结果。

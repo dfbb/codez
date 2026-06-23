@@ -39,6 +39,8 @@ pub struct EgressCtx {
     pub anthropic_version: Option<String>,
     pub path_override: Option<String>,
     pub default_max_tokens: Option<u32>,
+    /// Opt-in: emit top-level `cache_control` for Anthropic (off by default).
+    pub prompt_cache: bool,
     pub http: reqwest::Client,
     /// bearer 密钥退路（§5.3 item 3）：key 为 None 且 auth 为 Bearer 时借用。
     pub auth_fallback: Option<codex_api::SharedAuthProvider>,

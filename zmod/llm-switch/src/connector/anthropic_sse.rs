@@ -50,6 +50,8 @@ pub(crate) struct AnthropicSseState {
     input_tokens: i64,
     /// message_start.message.usage.cache_read_input_tokens。
     cached_input_tokens: i64,
+    /// message_start.message.usage.cache_creation_input_tokens。
+    cache_creation_input_tokens: i64,
     /// message_delta.usage.output_tokens。
     output_tokens: i64,
     /// content block 按 index 聚合。BTreeMap 保证有序输出。
@@ -68,10 +70,7 @@ impl AnthropicSseState {
 
         match evt.get("type").and_then(Value::as_str) {
             Some("error") => {
-                let msg = evt
-                    .get("error")
-                    .map(|e| e.to_string())
-                    .unwrap_or_default();
+                let msg = evt.get("error").map(|e| e.to_string()).unwrap_or_default();
                 return Err(ConnError::HardFail(format!(
                     "anthropic upstream error: {msg}"
                 )));
@@ -88,11 +87,16 @@ impl AnthropicSseState {
                         if let Some(it) = usage.get("input_tokens").and_then(Value::as_i64) {
                             self.input_tokens = it;
                         }
-                        if let Some(ct) = usage
-                            .get("cache_read_input_tokens")
-                            .and_then(Value::as_i64)
+                        if let Some(ct) =
+                            usage.get("cache_read_input_tokens").and_then(Value::as_i64)
                         {
                             self.cached_input_tokens = ct;
+                        }
+                        if let Some(cc) = usage
+                            .get("cache_creation_input_tokens")
+                            .and_then(Value::as_i64)
+                        {
+                            self.cache_creation_input_tokens = cc;
                         }
                     }
                 }
@@ -120,9 +124,7 @@ impl AnthropicSseState {
                 let delta = evt.get("delta");
                 match delta.and_then(|d| d.get("type")).and_then(Value::as_str) {
                     Some("text_delta") => {
-                        if let Some(t) =
-                            delta.and_then(|d| d.get("text")).and_then(Value::as_str)
-                        {
+                        if let Some(t) = delta.and_then(|d| d.get("text")).and_then(Value::as_str) {
                             self.text.push_str(t);
                             out.push(ResponseEvent::OutputTextDelta(t.to_string()));
                         }
@@ -217,7 +219,10 @@ impl AnthropicSseState {
                 cached_input_tokens: self.cached_input_tokens,
                 output_tokens: self.output_tokens,
                 reasoning_output_tokens: 0,
-                total_tokens: self.input_tokens + self.output_tokens,
+                total_tokens: self.cached_input_tokens
+                    + self.cache_creation_input_tokens
+                    + self.input_tokens
+                    + self.output_tokens,
             }),
             end_turn: map_end_turn(self.stop_reason.as_deref()),
         });
@@ -250,7 +255,10 @@ fn map_end_turn(stop_reason: Option<&str>) -> Option<bool> {
 // ─── SseTranslator impl ──────────────────────────────────────────────────────
 
 impl crate::connector::SseTranslator for AnthropicSseState {
-    fn push(&mut self, data: &serde_json::Value) -> Result<Vec<codex_api::ResponseEvent>, crate::connector::ConnError> {
+    fn push(
+        &mut self,
+        data: &serde_json::Value,
+    ) -> Result<Vec<codex_api::ResponseEvent>, crate::connector::ConnError> {
         self.push_event(data)
     }
     fn finish(&mut self) -> Vec<codex_api::ResponseEvent> {
