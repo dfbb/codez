@@ -2,6 +2,8 @@
 
 在 codex LLM 请求发送边界原地压缩工具调用返回内容,降低 token 消耗。
 
+> **TOON 编码**:JSON 对象/数组与表格类工具输出默认编码为 [TOON](https://github.com/toon-format/toon-rust)(Token-Oriented Object Notation),比 JSON 更省 token。线上请求信封仍是 JSON,**模型照常输出 JSON**——改变的只是模型*读到*的那段内容字符串。由 `[llm_compress.json] use_toon`(缺省 true)统一开关;写回前做 `decode → 原值` round-trip 自检,不可逆则退回原文(fail-open)。
+
 ## 架构概览(v2)
 
 ```
@@ -24,10 +26,10 @@ transform(request)
 
 | 优先级 | 压缩器 | 认领条件 | 方式 |
 |--------|--------|----------|------|
-| 1 | JsonCompressor | 有效 JSON 对象/数组,且无损压后 ≤ truncate.max_bytes | 连续 RLE 去重 + csv-schema 重构(无损,不挂 CCR) |
+| 1 | JsonCompressor | `use_toon=true`、有效 JSON 对象/数组、TOON 产物比原文严格更小且 ≤ truncate.max_bytes | 编码为 TOON(无损,kind=Toon,不挂 CCR;写回前 round-trip 自检) |
 | 2 | SearchCompressor | grep/rg 风格结果 | 按文件分组、保首尾匹配 + 评分选中段(有损,挂 CCR) |
 | 3 | DiffCompressor | git diff / unified diff | 折叠大段 context(有损,挂 CCR) |
-| 4 | TabularCompressor | CSV/TSV/Markdown 表格,且 csv-schema 后更小 | csv-schema 重构(无损,不挂 CCR) |
+| 4 | TabularCompressor | `use_toon=true`、CSV/TSV/Markdown 表格、TOON 产物比原文严格更小且 ≤ truncate.max_bytes | 编码为 TOON(无损,kind=Toon,不挂 CCR;写回前 round-trip 自检) |
 | 5 | LogCompressor | 日志行(含时间戳/栈帧/重复) | 级别评分保留(保 error/warn/栈帧,删低价值行;有损,挂 CCR) |
 | 6 | TruncateCompressor | 任意文本(兜底) | 头尾保留 + 中段截断到 max_bytes(有损,挂 CCR) |
 
@@ -64,7 +66,8 @@ tail_lines = 50            # 截断时保留的尾部行数
 max_bytes = 65536
 
 [llm_compress.json]
-csv_schema = true          # 对象数组转 csv-schema 重构(无损)
+use_toon = true            # JSON 对象/数组 + 表格统一编码为 TOON(缺省 true);
+                           # 同时门控 JsonCompressor 与 TabularCompressor。设 false 则两者均不认领
 
 [llm_compress.diff]
 context_lines = 3          # 每个 hunk 保留的上下文行数
@@ -72,9 +75,6 @@ context_lines = 3          # 每个 hunk 保留的上下文行数
 [llm_compress.search]
 max_per_file = 5           # 每文件保留的匹配行上限
 max_files = 15             # 保留的文件数上限,超出折叠
-
-[llm_compress.tabular]
-enabled = true             # 是否启用表格 → csv-schema 重构
 
 [llm_compress.log]
 keep_levels = ["error", "warn"]  # 必留日志级别
@@ -115,7 +115,7 @@ CARGO_HOME=/Users/dfbb/.cargo HOME=$(mktemp -d) cargo test -p codez-llm-compress
 |------|------|
 | `tests/transform_test.rs` | 图片保留等黑盒回归 |
 | `tests/orchestration_test.rs` | 端到端编排链 |
-| `tests/parity_test.rs` | 继承 fixture 硬不变量(体积不劣、JSON 可解析) |
+| `tests/parity_test.rs` | 继承 fixture 硬不变量(体积不劣、TOON 可解码 round-trip) |
 | `tests/*_test.rs` | 各模块单元测试 |
 
 继承 fixture 来源见 `tests/fixtures/inherited/NOTICE.md`。
