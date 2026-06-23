@@ -31,6 +31,7 @@ pub struct ProviderCfg {
     pub model: Option<String>,
     pub anthropic_version: Option<String>,
     pub default_max_tokens: Option<u32>,
+    pub prompt_cache: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +66,8 @@ struct RawProvider {
     model: Option<String>,
     anthropic_version: Option<String>,
     default_max_tokens: Option<u32>,
+    #[serde(default)]
+    prompt_cache: bool,
 }
 
 /// 解析 config-zmod 文本。`allow_inline_key=false` 为运行时主路径(出现 auth_key 直接报错);
@@ -103,6 +106,7 @@ pub fn load_config_from_str(toml_text: &str, allow_inline_key: bool) -> Result<C
             model: raw.model,
             anthropic_version: raw.anthropic_version,
             default_max_tokens: raw.default_max_tokens,
+            prompt_cache: raw.prompt_cache,
         });
     }
     Ok(Config { enabled: sw.enabled, providers })

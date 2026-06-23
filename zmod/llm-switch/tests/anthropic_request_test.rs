@@ -162,7 +162,6 @@ fn tool_output_maps_is_error() {
             metadata: None,
         },
         ResponseItem::FunctionCallOutput {
-            id: None,
             call_id: "c".into(),
             output: FunctionCallOutputPayload {
                 body: FunctionCallOutputBody::Text("boom".into()),
@@ -192,7 +191,6 @@ fn tool_output_success_no_is_error_field() {
             metadata: None,
         },
         ResponseItem::FunctionCallOutput {
-            id: None,
             call_id: "c".into(),
             output: FunctionCallOutputPayload {
                 body: FunctionCallOutputBody::Text("ok".into()),
@@ -224,7 +222,6 @@ fn tool_result_image_content_hard_fails() {
             metadata: None,
         },
         ResponseItem::FunctionCallOutput {
-            id: None,
             call_id: "c".into(),
             output: FunctionCallOutputPayload {
                 body: FunctionCallOutputBody::ContentItems(vec![
@@ -257,7 +254,6 @@ fn tool_result_encrypted_content_hard_fails() {
             metadata: None,
         },
         ResponseItem::FunctionCallOutput {
-            id: None,
             call_id: "c".into(),
             output: FunctionCallOutputPayload {
                 body: FunctionCallOutputBody::ContentItems(vec![
@@ -357,7 +353,6 @@ fn orphan_tool_call_gets_placeholder_tool_result() {
 fn orphan_tool_result_is_dropped() {
     let mut req = base_req();
     req.input = vec![ResponseItem::FunctionCallOutput {
-        id: None,
         call_id: "ghost".into(),
         output: FunctionCallOutputPayload {
             body: FunctionCallOutputBody::Text("x".into()),
@@ -413,7 +408,7 @@ fn reasoning_item_is_discarded_silently() {
     let mut req = base_req();
     req.input = vec![
         ResponseItem::Reasoning {
-            id: None,
+            id: String::new(),
             summary: vec![],
             content: None,
             encrypted_content: None,
@@ -543,7 +538,7 @@ fn web_search_call_hard_fails() {
 fn image_generation_call_hard_fails() {
     let mut req = base_req();
     req.input = vec![ResponseItem::ImageGenerationCall {
-        id: None,
+        id: String::new(),
         status: "completed".into(),
         revised_prompt: None,
         result: "base64data".into(),
@@ -573,7 +568,6 @@ fn custom_tool_call_hard_fails() {
 fn custom_tool_call_output_hard_fails() {
     let mut req = base_req();
     req.input = vec![ResponseItem::CustomToolCallOutput {
-        id: None,
         call_id: "c".into(),
         name: None,
         output: FunctionCallOutputPayload {
@@ -592,7 +586,6 @@ fn custom_tool_call_output_hard_fails() {
 fn tool_search_output_hard_fails() {
     let mut req = base_req();
     req.input = vec![ResponseItem::ToolSearchOutput {
-        id: None,
         call_id: None,
         status: "done".into(),
         execution: "{}".into(),
@@ -606,7 +599,6 @@ fn tool_search_output_hard_fails() {
 fn compaction_hard_fails() {
     let mut req = base_req();
     req.input = vec![ResponseItem::Compaction {
-        id: None,
         encrypted_content: "enc".into(),
         metadata: None,
     }];
@@ -620,7 +612,6 @@ fn compaction_hard_fails() {
 fn context_compaction_hard_fails() {
     let mut req = base_req();
     req.input = vec![ResponseItem::ContextCompaction {
-        id: None,
         encrypted_content: Some("enc".into()),
         metadata: None,
     }];
@@ -634,7 +625,6 @@ fn context_compaction_hard_fails() {
 fn agent_message_encrypted_content_hard_fails() {
     let mut req = base_req();
     req.input = vec![ResponseItem::AgentMessage {
-        id: None,
         author: "agent".into(),
         recipient: "user".into(),
         content: vec![AgentMessageInputContent::EncryptedContent {
@@ -720,7 +710,6 @@ fn golden_system_user_tool_roundtrip() {
             metadata: None,
         },
         ResponseItem::FunctionCallOutput {
-            id: None,
             call_id: "call_weather_1".into(),
             output: FunctionCallOutputPayload {
                 body: FunctionCallOutputBody::Text("Sunny, 72°F".into()),

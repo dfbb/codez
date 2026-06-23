@@ -40,6 +40,7 @@ pub mod testing {
             anthropic_version: None,
             path_override: None,
             default_max_tokens: None,
+            prompt_cache: false,
             http: reqwest::Client::new(),
             auth_fallback: None,
         }
@@ -63,6 +64,7 @@ pub mod testing {
             anthropic_version: Some("2023-06-01".into()),
             path_override: None,
             default_max_tokens,
+            prompt_cache: false,
             http: reqwest::Client::new(),
             auth_fallback: None,
         }
@@ -186,6 +188,7 @@ pub async fn run(
         anthropic_version: rt.cfg.anthropic_version.clone(),
         path_override: rt.cfg.path.clone(),
         default_max_tokens: rt.cfg.default_max_tokens,
+        prompt_cache: rt.cfg.prompt_cache,
         http: shared_http_client(),
         auth_fallback: Some(api_auth),
     };
