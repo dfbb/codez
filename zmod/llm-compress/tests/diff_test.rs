@@ -1,25 +1,25 @@
-//! DiffCompressor 集成测试。
+//! DiffCompressor integration tests.
 //!
-//! 覆盖:
-//! - detect 对真实 git diff 为 true、对普通文本为 false;
-//! - 大段上下文的 hunk 被折叠,变更行全保留;
-//! - 占位标记存在;
-//! - 小 diff(上下文本就少)→ Unchanged;
-//! - saved_bytes 正确。
+//! Coverage:
+//! - detect returns true for real git diff, false for plain text;
+//! - large context hunks are collapsed, change lines fully preserved;
+//! - placeholder markers present;
+//! - small diff (little context) → Unchanged;
+//! - saved_bytes calculated correctly.
 
 use codez_llm_compress::compress::diff::DiffCompressor;
 use codez_llm_compress::router::{Budget, CompressOutcome, Compressor};
 use codez_llm_compress::config::Config;
 
-/// 构造一个 context_lines=N 的 Config(借助 Task 01 的默认值再覆盖 diff 字段)。
+/// Construct a Config with context_lines=N (using Task 01 defaults and overriding diff field).
 fn cfg_with_context(n: usize) -> Config {
     let mut cfg = Config::default();
     cfg.diff.context_lines = n;
     cfg
 }
 
-/// 一段真实的多行 unified diff fixture:单文件、单 hunk,含大段未变更上下文。
-/// hunk 内:6 行上文 + 1 行删除 + 1 行新增 + 6 行下文。
+/// A real multi-line unified diff fixture: single file, single hunk, with large unchanged context.
+/// hunk contains: 6 context lines before + 1 deleted line + 1 added line + 6 context lines after.
 const REAL_DIFF: &str = "\
 diff --git a/src/lib.rs b/src/lib.rs
 index 1234567..89abcde 100644
@@ -47,7 +47,7 @@ fn detect_true_for_real_git_diff() {
     let c = DiffCompressor;
     let cfg = Config::default();
     let budget = Budget { cfg: &cfg, cmd: None };
-    assert!(c.detect(REAL_DIFF, &budget), "真实 git diff 应被识别");
+    assert!(c.detect(REAL_DIFF, &budget), "real git diff should be recognized");
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn detect_true_for_bare_hunk_header() {
     let cfg = Config::default();
     let budget = Budget { cfg: &cfg, cmd: None };
     let text = "@@ -1,3 +1,4 @@\n a\n-b\n+c\n d\n";
-    assert!(c.detect(text, &budget), "含 hunk 头应被识别");
+    assert!(c.detect(text, &budget), "hunk header should be recognized");
 }
 
 #[test]
@@ -65,8 +65,8 @@ fn detect_false_for_plain_text() {
     let cfg = Config::default();
     let budget = Budget { cfg: &cfg, cmd: None };
     let text = "这是一段普通文本。\n没有任何 diff 特征。\n+ 这不是变更行只是个加号开头的句子\n";
-    // 注意:仅靠单独的 '+' 开头一行不构成 diff(无 hunk 头、无 diff --git、无 '--- '+'+++ ' 配对)。
-    assert!(!c.detect(text, &budget), "普通文本不应被识别");
+    // Note: a single line starting with '+' alone does not constitute a diff (no hunk header, no diff --git, no '--- '+'+++ ' pairing).
+    assert!(!c.detect(text, &budget), "plain text should not be recognized");
 }
 
 #[test]
@@ -77,42 +77,42 @@ fn compress_folds_large_context_and_keeps_changes() {
 
     let outcome = c.compress(REAL_DIFF, &budget);
     let CompressOutcome::Compressed { text, saved_bytes, .. } = outcome else {
-        panic!("大段上下文应被压缩");
+        panic!("large context should be compressed");
     };
 
-    // 变更行必须完整保留。
-    assert!(text.contains("-old changed line"), "删除行须保留");
-    assert!(text.contains("+new changed line"), "新增行须保留");
+    // Change lines must be fully preserved.
+    assert!(text.contains("-old changed line"), "deleted line must be preserved");
+    assert!(text.contains("+new changed line"), "added line must be preserved");
 
-    // 文件头与 hunk 头须保留。
+    // File header and hunk header must be preserved.
     assert!(text.contains("diff --git a/src/lib.rs b/src/lib.rs"));
     assert!(text.contains("index 1234567..89abcde 100644"));
     assert!(text.contains("--- a/src/lib.rs"));
     assert!(text.contains("+++ b/src/lib.rs"));
     assert!(text.contains("@@ -1,14 +1,14 @@"));
 
-    // 紧邻变更行前后各 2 行上下文须保留。
-    assert!(text.contains(" line ctx 5"), "变更行前第 2 行须保留");
-    assert!(text.contains(" line ctx 6"), "变更行前第 1 行须保留");
-    assert!(text.contains(" line ctx 7"), "变更行后第 1 行须保留");
-    assert!(text.contains(" line ctx 8"), "变更行后第 2 行须保留");
+    // 2 context lines before and after the change line must be preserved.
+    assert!(text.contains(" line ctx 5"), "2nd line before change must be preserved");
+    assert!(text.contains(" line ctx 6"), "1st line before change must be preserved");
+    assert!(text.contains(" line ctx 7"), "1st line after change must be preserved");
+    assert!(text.contains(" line ctx 8"), "2nd line after change must be preserved");
 
-    // 被折叠的远端上下文不应出现。
-    assert!(!text.contains(" line ctx 1"), "远端上文应被折叠");
-    assert!(!text.contains(" line ctx 12"), "远端下文应被折叠");
+    // Distant context that was folded should not appear.
+    assert!(!text.contains(" line ctx 1"), "remote context before should be folded");
+    assert!(!text.contains(" line ctx 12"), "remote context after should be folded");
 
-    // 占位标记须存在。
+    // Placeholder markers must exist.
     assert!(
         text.contains("[llm-compress: 略 4 行上下文]"),
-        "上文 6-2=4 行应折叠为占位,实际输出:\n{text}"
+        "4 context lines before (6-2=4) should be folded into placeholder, actual output:\n{text}"
     );
     assert!(
         text.contains("[llm-compress: 略 4 行上下文]"),
-        "下文 6-2=4 行应折叠为占位"
+        "4 context lines after (6-2=4) should be folded into placeholder"
     );
 
-    // saved_bytes 应等于原文与压缩后文本的字节差。
-    assert_eq!(saved_bytes, REAL_DIFF.len() - text.len(), "saved_bytes 须为字节差");
+    // saved_bytes should equal the byte difference between original and compressed text.
+    assert_eq!(saved_bytes, REAL_DIFF.len() - text.len(), "saved_bytes must be byte difference");
     assert!(saved_bytes > 0);
 }
 
@@ -136,7 +136,7 @@ index aaa..bbb 100644
     let outcome = c.compress(small, &budget);
     assert!(
         matches!(outcome, CompressOutcome::Unchanged),
-        "无可折叠上下文时应 Unchanged"
+        "should be Unchanged when no foldable context"
     );
 }
 
@@ -149,7 +149,7 @@ fn diff_fold_marks_lossy_text_kind() {
     let mut cfg = Config::disabled();
     cfg.diff.context_lines = 1;
     let c = DiffCompressor;
-    // 构造一个有多余上下文可折叠的 diff
+    // Construct a diff with excess context that can be folded
     let mut lines = vec!["diff --git a/f b/f".to_string(), "--- a/f".to_string(), "+++ b/f".to_string(), "@@ -1,20 +1,20 @@".to_string()];
     for i in 0..10 {
         lines.push(format!(" ctx{i}"));
@@ -162,7 +162,7 @@ fn diff_fold_marks_lossy_text_kind() {
     let text = lines.join("\n");
     let b = Budget { cfg: &cfg, cmd: None };
     if let CompressOutcome::Compressed { lossy, kind, .. } = c.compress(&text, &b) {
-        assert!(lossy, "diff 折叠上下文 → lossy=true");
+        assert!(lossy, "diff context folding → lossy=true");
         assert_eq!(kind, ContentKind::Text);
     } else {
         panic!("expected compressed diff");

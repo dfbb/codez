@@ -44,10 +44,10 @@ connector = "chat"
 auth = "bearer"
 auth_key = "sk-secret"
 "#;
-    // 运行时路径 allow_inline_key=false:必须报配置错误拒绝启动
+    // Runtime path with allow_inline_key=false: must reject with config error on startup
     let err = load_config_from_str(toml, false).unwrap_err();
     assert!(format!("{err}").contains("auth_key"), "err should mention auth_key: {err}");
-    // testkey 路径 allow_inline_key=true:接受
+    // Testkey path with allow_inline_key=true: accepts inline key
     let ok = load_config_from_str(toml, true).expect("testkey path accepts inline key");
     assert_eq!(
         ok.providers.get("deepseek").unwrap().auth_key.as_deref(),
@@ -65,7 +65,7 @@ connector = "responses"
 auth = "bearer"
 "#;
     let cfg = load_config_from_str(toml, false).expect("parse ok");
-    // responses 不进 zmod:解析允许,但 route() 不返回它(见 lib.rs 测试 Step 6)
+    // responses is not part of zmod: parsing allows it, but route() does not return it (see lib.rs test Step 6)
     assert!(cfg.providers.get("openai").is_none(), "responses provider dropped from routable map");
 }
 
@@ -80,14 +80,14 @@ fn missing_section_means_disabled() {
 fn unknown_connector_is_rejected() {
     let toml = "[llm-switch]\nenabled=true\n[llm-switch.providers.x]\nconnector=\"anthropics\"\nauth=\"bearer\"\n";
     let err = load_config_from_str(toml, false).unwrap_err();
-    assert!(matches!(err, codez_llm_switch::ConfigError::UnknownConnector(_, _)), "应为 UnknownConnector: {err:?}");
+    assert!(matches!(err, codez_llm_switch::ConfigError::UnknownConnector(_, _)), "should be UnknownConnector: {err:?}");
 }
 
 #[test]
 fn responses_provider_with_auth_key_is_rejected() {
     let toml = "[llm-switch]\nenabled=true\n[llm-switch.providers.openai]\nconnector=\"responses\"\nauth=\"bearer\"\nauth_key=\"sk-secret\"\n";
     let err = load_config_from_str(toml, false).unwrap_err();
-    assert!(format!("{err}").contains("auth_key"), "应提到 auth_key: {err}");
+    assert!(format!("{err}").contains("auth_key"), "should mention auth_key: {err}");
 }
 
 #[test]
@@ -153,7 +153,7 @@ auth = "bearer"
 
 #[test]
 fn purpose_value_to_unknown_provider_is_kept_not_rejected() {
-    // 坏映射不在解析层拒绝;route() 运行时再 warn+回退(spec §4 第 3a)
+    // Bad mapping is not rejected at parse time; route() warns and falls back at runtime (spec §4 item 3a)
     let toml = r#"
 [llm-switch]
 enabled = true

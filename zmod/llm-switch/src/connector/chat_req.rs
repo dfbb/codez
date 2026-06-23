@@ -1,8 +1,8 @@
-//! chat 出站请求构造（Task 04）
+//! Chat outbound request construction (Task 04)
 //!
-//! 把 codex `ResponsesApiRequest` 翻译成 OpenAI Chat Completions 请求 JSON。
+//! Translate codex `ResponsesApiRequest` into OpenAI Chat Completions request JSON.
 //!
-//! # Step 0 核实的真实类型变体
+//! # Step 0 Verified actual type variants
 //!
 //! ## ContentItem
 //! - `InputText { text: String }`
@@ -18,12 +18,12 @@
 //! - `Text(String)`
 //! - `ContentItems(Vec<FunctionCallOutputContentItem>)`
 //!
-//! ## ResponseItem（16 变体）
-//! - 出站丢弃：`Reasoning`、`CompactionTrigger`
-//! - 硬失败：`LocalShellCall`、`ToolSearchCall`、`CustomToolCall`、`CustomToolCallOutput`、
-//!   `ToolSearchOutput`、`WebSearchCall`、`ImageGenerationCall`、`Compaction`、
-//!   `ContextCompaction`、`Other`
-//! - 普通映射：`Message`、`FunctionCall`（无 namespace）、`FunctionCallOutput`、`AgentMessage`
+//! ## ResponseItem (16 variants)
+//! - Outbound discard: `Reasoning`, `CompactionTrigger`
+//! - Hard fail: `LocalShellCall`, `ToolSearchCall`, `CustomToolCall`, `CustomToolCallOutput`,
+//!   `ToolSearchOutput`, `WebSearchCall`, `ImageGenerationCall`, `Compaction`,
+//!   `ContextCompaction`, `Other`
+//! - Normal mapping: `Message`, `FunctionCall` (no namespace), `FunctionCallOutput`, `AgentMessage`
 
 use std::collections::{HashMap, HashSet};
 
@@ -36,17 +36,17 @@ use codex_protocol::models::{
 
 use crate::connector::{ConnError, EgressCtx};
 
-/// 构造 Chat Completions 请求 JSON。
+/// Build Chat Completions request JSON.
 ///
-/// 覆盖 spec §4.2、§4.0/§4.0b、§4.6、§4.8、§4.9、§4.10、§4.11、§7.1。
+/// Covers spec §4.2, §4.0/§4.0b, §4.6, §4.8, §4.9, §4.10, §4.11, §7.1.
 pub(crate) fn build_chat_request(
     req: &codex_api::ResponsesApiRequest,
     ctx: &EgressCtx,
 ) -> Result<Value, ConnError> {
-    // ── 工具定义分级（§4.0b）──────────────────────────────────────────
+    // ── Tool definition tiering (§4.0b) ────────────────────────────────
     let tools = map_tools(&req.tools)?;
 
-    // ── messages 构造 ──────────────────────────────────────────────────
+    // ── messages construction ──────────────────────────────────────────
     let mut messages: Vec<Value> = Vec::new();
 
     // instructions → system
@@ -54,7 +54,7 @@ pub(crate) fn build_chat_request(
         messages.push(json!({"role": "system", "content": req.instructions}));
     }
 
-    // call_id 追踪：已见调用集合、待补结果集合
+    // call_id tracking: seen calls set, calls awaiting results set
     let mut seen_calls: HashSet<String> = HashSet::new();
     let mut calls_needing_result: HashSet<String> = HashSet::new();
 
@@ -71,10 +71,10 @@ pub(crate) fn build_chat_request(
                 call_id,
                 ..
             } => {
-                // 命名空间函数调用 v1 不支持（§4.0）
+                // Namespaced function calls not supported in v1 (§4.0)
                 if namespace.is_some() {
                     return Err(ConnError::HardFail(format!(
-                        "命名空间函数调用 '{name}' 在 v1 chat connector 中不支持"
+                        "namespaced function call '{name}' not supported in v1 chat connector"
                     )));
                 }
                 seen_calls.insert(call_id.clone());
@@ -96,10 +96,10 @@ pub(crate) fn build_chat_request(
                 call_id, output, ..
             } => {
                 if !seen_calls.contains(call_id) {
-                    // 孤儿结果 → 删除（§4.10）
+                    // Orphan result → discard (§4.10)
                     tracing::warn!(
                         call_id = %call_id,
-                        "丢弃孤儿 tool result（无对应 FunctionCall）"
+                        "discarding orphan tool result (no corresponding FunctionCall)"
                     );
                     continue;
                 }
@@ -111,74 +111,74 @@ pub(crate) fn build_chat_request(
                 messages.push(map_agent_message(content)?);
             }
 
-            // ── 出站丢弃（§4.0 / §4.4）────────────────────────────────
+            // ── Outbound discard (§4.0 / §4.4) ────────────────────────
             ResponseItem::Reasoning { .. } => {
-                // Reasoning 历史项出站丢弃，不动本地历史
+                // Reasoning history items discarded on egress, local history unchanged
             }
             ResponseItem::CompactionTrigger { .. } => {
-                // CompactionTrigger 出站丢弃
+                // CompactionTrigger discarded on egress
             }
 
-            // ── v1 硬失败变体（§4.0）─────────────────────────────────
+            // ── v1 hard fail variants (§4.0) ──────────────────────────
             ResponseItem::LocalShellCall { .. } => {
                 return Err(ConnError::HardFail(
-                    "LocalShellCall 在 v1 chat connector 中不支持".into(),
+                    "LocalShellCall not supported in v1 chat connector".into(),
                 ));
             }
             ResponseItem::ToolSearchCall { .. } => {
                 return Err(ConnError::HardFail(
-                    "ToolSearchCall 在 v1 chat connector 中不支持".into(),
+                    "ToolSearchCall not supported in v1 chat connector".into(),
                 ));
             }
             ResponseItem::ToolSearchOutput { .. } => {
                 return Err(ConnError::HardFail(
-                    "ToolSearchOutput 在 v1 chat connector 中不支持".into(),
+                    "ToolSearchOutput not supported in v1 chat connector".into(),
                 ));
             }
             ResponseItem::WebSearchCall { .. } => {
                 return Err(ConnError::HardFail(
-                    "WebSearchCall 在 v1 chat connector 中不支持".into(),
+                    "WebSearchCall not supported in v1 chat connector".into(),
                 ));
             }
             ResponseItem::ImageGenerationCall { .. } => {
                 return Err(ConnError::HardFail(
-                    "ImageGenerationCall 在 v1 chat connector 中不支持".into(),
+                    "ImageGenerationCall not supported in v1 chat connector".into(),
                 ));
             }
             ResponseItem::CustomToolCall { .. } => {
                 return Err(ConnError::HardFail(
-                    "CustomToolCall 在 v1 chat connector 中不支持".into(),
+                    "CustomToolCall not supported in v1 chat connector".into(),
                 ));
             }
             ResponseItem::CustomToolCallOutput { .. } => {
                 return Err(ConnError::HardFail(
-                    "CustomToolCallOutput 在 v1 chat connector 中不支持".into(),
+                    "CustomToolCallOutput not supported in v1 chat connector".into(),
                 ));
             }
             ResponseItem::Compaction { .. } => {
                 return Err(ConnError::HardFail(
-                    "Compaction（加密内容）在 v1 chat connector 中不支持".into(),
+                    "Compaction (encrypted content) not supported in v1 chat connector".into(),
                 ));
             }
             ResponseItem::ContextCompaction { .. } => {
                 return Err(ConnError::HardFail(
-                    "ContextCompaction（加密内容）在 v1 chat connector 中不支持".into(),
+                    "ContextCompaction (encrypted content) not supported in v1 chat connector".into(),
                 ));
             }
             ResponseItem::Other => {
                 return Err(ConnError::HardFail(
-                    "未知 ResponseItem 变体（Other）在 v1 chat connector 中不支持".into(),
+                    "unknown ResponseItem variant (Other) not supported in v1 chat connector".into(),
                 ));
             }
         }
     }
 
-    // ── 孤儿调用修复：注入占位结果（§4.10）────────────────────────────
-    // 注意：孤儿 call_id 无固定顺序，注入到末尾；重排步骤会把它们归位
+    // ── Orphan call remediation: inject placeholder results (§4.10) ────
+    // Note: orphan call_ids have no fixed order; injection is at end; reordering step will normalize them
     for call_id in &calls_needing_result {
         tracing::warn!(
             call_id = %call_id,
-            "注入占位 tool result（孤儿 FunctionCall 无对应 FunctionCallOutput）"
+            "injecting placeholder tool result (orphan FunctionCall has no corresponding FunctionCallOutput)"
         );
         messages.push(json!({
             "role": "tool",
@@ -187,10 +187,10 @@ pub(crate) fn build_chat_request(
         }));
     }
 
-    // ── tool 消息重排（§4.10，复刻 _reorder_tool_messages）────────────
+    // ── tool message reordering (§4.10, replicates _reorder_tool_messages) ────
     let messages = reorder_tool_messages(messages);
 
-    // ── 组装顶层 body ─────────────────────────────────────────────────
+    // ── assemble top-level body ────────────────────────────────────────
     let mut body = json!({
         "model": ctx.model,
         "messages": messages,
@@ -201,13 +201,13 @@ pub(crate) fn build_chat_request(
 
     if let Some(tools_arr) = tools {
         body["tools"] = Value::Array(tools_arr);
-        // tool_choice 仅在有 tools 时写入；否则 strip（§4.10）
+        // tool_choice only written if tools present; otherwise stripped (§4.10)
         if let Some(tc) = map_tool_choice(&req.tool_choice)? {
             body["tool_choice"] = tc;
         }
     }
 
-    // ── §7.1 字段降级 ─────────────────────────────────────────────────
+    // ── §7.1 field downgrade ──────────────────────────────────────────
     apply_field_downgrade(&mut body, req);
 
     Ok(body)
@@ -215,8 +215,8 @@ pub(crate) fn build_chat_request(
 
 // ── map_message ───────────────────────────────────────────────────────────────
 
-/// 把 `Message` 变体的 content 列表转成 Chat 消息。
-/// 图片内容 → 硬失败（§4.9，v1 无能力标志）。
+/// Convert `Message` variant's content list into Chat message.
+/// Image content → hard fail (§4.9, v1 lacks capability flag).
 fn map_message(role: &str, content: &[ContentItem]) -> Result<Value, ConnError> {
     let mut text = String::new();
     for c in content {
@@ -226,7 +226,7 @@ fn map_message(role: &str, content: &[ContentItem]) -> Result<Value, ConnError> 
             }
             ContentItem::InputImage { .. } => {
                 return Err(ConnError::HardFail(
-                    "图片输入在 v1 chat connector 中不支持（无能力判定标志）".into(),
+                    "image input not supported in v1 chat connector (no capability flag)".into(),
                 ));
             }
         }
@@ -236,8 +236,8 @@ fn map_message(role: &str, content: &[ContentItem]) -> Result<Value, ConnError> 
 
 // ── map_agent_message ─────────────────────────────────────────────────────────
 
-/// 把 `AgentMessage` 变体转成 assistant 消息。
-/// EncryptedContent → 硬失败（§4.0）。
+/// Convert `AgentMessage` variant into assistant message.
+/// EncryptedContent → hard fail (§4.0).
 fn map_agent_message(content: &[AgentMessageInputContent]) -> Result<Value, ConnError> {
     let mut text = String::new();
     for c in content {
@@ -247,7 +247,7 @@ fn map_agent_message(content: &[AgentMessageInputContent]) -> Result<Value, Conn
             }
             AgentMessageInputContent::EncryptedContent { .. } => {
                 return Err(ConnError::HardFail(
-                    "AgentMessage 含加密内容（EncryptedContent），v1 chat connector 无法读取".into(),
+                    "AgentMessage contains encrypted content (EncryptedContent), v1 chat connector cannot read it".into(),
                 ));
             }
         }
@@ -257,9 +257,9 @@ fn map_agent_message(content: &[AgentMessageInputContent]) -> Result<Value, Conn
 
 // ── map_function_call_output ──────────────────────────────────────────────────
 
-/// 把 `FunctionCallOutput` 转成 Chat tool 消息。
-/// - `success == Some(false)` → 前缀 `[tool error]`（Chat 无 is_error 字段）。
-/// - ContentItems 含图片/加密 → 硬失败（§4.6）。
+/// Convert `FunctionCallOutput` into Chat tool message.
+/// - `success == Some(false)` → prefix with `[tool error]` (Chat has no is_error field).
+/// - ContentItems with images/encrypted → hard fail (§4.6).
 fn map_function_call_output(
     call_id: &str,
     output: &FunctionCallOutputPayload,
@@ -272,7 +272,7 @@ fn map_function_call_output(
     if output.success == Some(false) {
         tracing::warn!(
             call_id = %call_id,
-            "工具结果标记为失败；添加 [tool error] 前缀（Chat 协议无 is_error 字段）"
+            "tool result marked as failure; adding [tool error] prefix (Chat protocol has no is_error field)"
         );
         text = format!("[tool error] {text}");
     }
@@ -286,8 +286,8 @@ fn map_function_call_output(
 
 // ── content_items_to_text ─────────────────────────────────────────────────────
 
-/// 把 `FunctionCallOutputContentItem` 列表转成纯文本。
-/// 遇到图片或加密内容 → 硬失败（§4.6）。
+/// Convert `FunctionCallOutputContentItem` list into plain text.
+/// On encountering images or encrypted content → hard fail (§4.6).
 fn content_items_to_text(items: &[FunctionCallOutputContentItem]) -> Result<String, ConnError> {
     let mut text = String::new();
     for item in items {
@@ -297,12 +297,12 @@ fn content_items_to_text(items: &[FunctionCallOutputContentItem]) -> Result<Stri
             }
             FunctionCallOutputContentItem::InputImage { .. } => {
                 return Err(ConnError::HardFail(
-                    "工具结果含图片内容（InputImage），v1 chat connector 不支持".into(),
+                    "tool result contains image content (InputImage), v1 chat connector does not support it".into(),
                 ));
             }
             FunctionCallOutputContentItem::EncryptedContent { .. } => {
                 return Err(ConnError::HardFail(
-                    "工具结果含加密内容（EncryptedContent），v1 chat connector 不支持".into(),
+                    "tool result contains encrypted content (EncryptedContent), v1 chat connector does not support it".into(),
                 ));
             }
         }
@@ -312,8 +312,8 @@ fn content_items_to_text(items: &[FunctionCallOutputContentItem]) -> Result<Stri
 
 // ── map_tools ─────────────────────────────────────────────────────────────────
 
-/// 把工具定义列表从 Responses 格式转成 Chat Completions 格式。
-/// v1 只支持标准 `function` 类型；其他类型 → 硬失败（§4.0b）。
+/// Convert tool definition list from Responses format to Chat Completions format.
+/// v1 only supports standard `function` type; other types → hard fail (§4.0b).
 fn map_tools(tools: &[Value]) -> Result<Option<Vec<Value>>, ConnError> {
     if tools.is_empty() {
         return Ok(None);
@@ -339,7 +339,7 @@ fn map_tools(tools: &[Value]) -> Result<Option<Vec<Value>>, ConnError> {
             }
             other => {
                 return Err(ConnError::HardFail(format!(
-                    "工具定义类型 {:?} 在 v1 chat connector 中不支持（仅支持标准 function）",
+                    "tool definition type {:?} not supported in v1 chat connector (only standard function supported)",
                     other
                 )));
             }
@@ -350,14 +350,14 @@ fn map_tools(tools: &[Value]) -> Result<Option<Vec<Value>>, ConnError> {
 
 // ── map_tool_choice ───────────────────────────────────────────────────────────
 
-/// 把 codex 的 `tool_choice` 字符串映射成 Chat Completions 的对应值（§4.11）。
+/// Map codex `tool_choice` string to corresponding Chat Completions value (§4.11).
 fn map_tool_choice(tc: &str) -> Result<Option<Value>, ConnError> {
     match tc {
         "auto" => Ok(Some(json!("auto"))),
         "none" => Ok(Some(json!("none"))),
         "required" => Ok(Some(json!("required"))),
         "" => Ok(None),
-        // 若 codex 用 JSON 字符串表达强制指定某函数，解析并转换格式
+        // If codex uses JSON string to express forced specification of a function, parse and convert format
         other => {
             if let Ok(v) = serde_json::from_str::<Value>(other) {
                 if v.get("type").and_then(|x| x.as_str()) == Some("function") {
@@ -370,7 +370,7 @@ fn map_tool_choice(tc: &str) -> Result<Option<Value>, ConnError> {
                 }
             }
             Err(ConnError::HardFail(format!(
-                "tool_choice '{other}' 无法在 Chat Completions 协议中表达"
+                "tool_choice '{other}' cannot be expressed in Chat Completions protocol"
             )))
         }
     }
@@ -378,15 +378,15 @@ fn map_tool_choice(tc: &str) -> Result<Option<Value>, ConnError> {
 
 // ── reorder_tool_messages ─────────────────────────────────────────────────────
 
-/// 重排 tool 消息，使每条 tool 消息紧跟产生它的 assistant tool_calls（§4.10）。
+/// Reorder tool messages so each tool message immediately follows the assistant tool_calls that produced it (§4.10).
 ///
-/// 复刻 llm-rosetta `_reorder_tool_messages` 算法：
-/// 1. 先收集所有 tool 消息，按 `tool_call_id` 建索引。
-/// 2. 遍历非 tool 消息；遇到带 `tool_calls` 的 assistant 消息后，
-///    按 `tool_calls[].id` 顺序紧跟插入对应的 tool 消息。
-/// 3. 未被插入的孤儿 tool 消息追加末尾（附 warn）。
+/// Replicates llm-rosetta `_reorder_tool_messages` algorithm:
+/// 1. First collect all tool messages, index by `tool_call_id`.
+/// 2. Iterate non-tool messages; after assistant message with `tool_calls`,
+///    immediately insert corresponding tool messages in order of `tool_calls[].id`.
+/// 3. Orphan tool messages not inserted are appended at end (with warn).
 fn reorder_tool_messages(messages: Vec<Value>) -> Vec<Value> {
-    // 按 tool_call_id 收集 tool 消息（可能一个 id 多条，保留顺序）
+    // Collect tool messages by tool_call_id (can be multiple per id, preserving order)
     let mut tool_by_id: HashMap<String, Vec<Value>> = HashMap::new();
     let mut non_tool: Vec<Value> = Vec::new();
 
@@ -395,7 +395,7 @@ fn reorder_tool_messages(messages: Vec<Value>) -> Vec<Value> {
             if let Some(id) = msg.get("tool_call_id").and_then(|v| v.as_str()) {
                 tool_by_id.entry(id.to_string()).or_default().push(msg);
             } else {
-                // 没有 tool_call_id 的 tool 消息，当普通消息处理
+                // tool message without tool_call_id, treat as normal message
                 non_tool.push(msg);
             }
         } else {
@@ -423,12 +423,12 @@ fn reorder_tool_messages(messages: Vec<Value>) -> Vec<Value> {
         }
     }
 
-    // 未被匹配的 tool 消息追加末尾
+    // Append unmatched tool messages at end
     for (id, remaining) in tool_by_id {
         tracing::warn!(
             tool_call_id = %id,
             count = remaining.len(),
-            "tool 消息无对应 assistant tool_calls，追加末尾"
+            "tool message has no corresponding assistant tool_calls, appending at end"
         );
         result.extend(remaining);
     }
@@ -438,33 +438,33 @@ fn reorder_tool_messages(messages: Vec<Value>) -> Vec<Value> {
 
 // ── apply_field_downgrade ─────────────────────────────────────────────────────
 
-/// §7.1 字段降级：把 Responses API 特有字段降级或丢弃。
+/// §7.1 field downgrade: downgrade or discard fields specific to Responses API.
 ///
-/// - `reasoning.effort` → `reasoning_effort`（可安全传递）
-/// - `reasoning` 其他字段 → warn 后丢弃
-/// - `text.format` 含 json_schema → `response_format`
-/// - `store`/`include`/`prompt_cache_key`/`service_tier`/`client_metadata` → 静默丢弃
+/// - `reasoning.effort` → `reasoning_effort` (safe to pass through)
+/// - Other `reasoning` fields → warn then discard
+/// - `text.format` containing json_schema → `response_format`
+/// - `store`/`include`/`prompt_cache_key`/`service_tier`/`client_metadata` → silently discard
 fn apply_field_downgrade(body: &mut Value, req: &codex_api::ResponsesApiRequest) {
     // reasoning.effort → reasoning_effort
     if let Some(reasoning) = &req.reasoning {
         if let Some(effort) = &reasoning.effort {
-            // ReasoningEffortConfig 实现了 serde，序列化为字符串（low/medium/high）
+            // ReasoningEffortConfig implements serde, serializes as string (low/medium/high)
             if let Ok(effort_val) = serde_json::to_value(effort) {
                 body["reasoning_effort"] = effort_val;
             }
         } else if reasoning.summary.is_some() || reasoning.context.is_some() {
-            tracing::warn!("reasoning.summary/context 在 v1 chat connector 中不支持，已丢弃");
+            tracing::warn!("reasoning.summary/context not supported in v1 chat connector, discarded");
         }
     }
 
-    // text.format → response_format（仅 json_schema）
-    // TextFormat 序列化为 {"type":"json_schema","strict":bool,"schema":{...},"name":"..."}
-    // Chat API 期望 {"type":"json_schema","json_schema":{"name":"...","schema":{...},"strict":true}}
+    // text.format → response_format (json_schema only)
+    // TextFormat serializes as {"type":"json_schema","strict":bool,"schema":{...},"name":"..."}
+    // Chat API expects {"type":"json_schema","json_schema":{"name":"...","schema":{...},"strict":true}}
     if let Some(text_controls) = &req.text {
         if let Some(format) = &text_controls.format {
             if let Ok(fmt_val) = serde_json::to_value(format) {
                 if fmt_val.get("type").and_then(|t| t.as_str()) == Some("json_schema") {
-                    // 从 TextFormat 字段重组 Chat API 所需形状
+                    // Restructure from TextFormat into Chat API required shape
                     let mut json_schema = serde_json::Map::new();
                     if let Some(name) = fmt_val.get("name") {
                         json_schema.insert("name".into(), name.clone());
@@ -482,13 +482,13 @@ fn apply_field_downgrade(body: &mut Value, req: &codex_api::ResponsesApiRequest)
                 } else {
                     tracing::warn!(
                         format = ?fmt_val,
-                        "text.format 在 v1 chat connector 中无法映射，已丢弃"
+                        "text.format cannot be mapped in v1 chat connector, discarded"
                     );
                 }
             }
         }
-        // verbosity 不映射
+        // verbosity not mapped
     }
 
-    // store/include/prompt_cache_key/service_tier/client_metadata 静默丢弃（§7.1 可安全忽略级）
+    // store/include/prompt_cache_key/service_tier/client_metadata silently discarded (§7.1 safely ignorable)
 }

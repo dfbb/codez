@@ -7,12 +7,12 @@ mod transform;
 mod connector;
 mod sse;
 
-/// 测试辅助模块（集成测试入口；不进入正式公共 API）。
+/// Test helper module (integration test entry point; not part of the official public API).
 #[doc(hidden)]
 pub mod testing {
     use crate::connector::{ConnError, EgressCtx};
 
-    /// 构造最小 `ResponsesApiRequest` 样本（供各集成测试复用）。
+    /// Construct a minimal `ResponsesApiRequest` sample (for reuse in integration tests).
     pub fn sample_request() -> codex_api::ResponsesApiRequest {
         codex_api::ResponsesApiRequest {
             model: "test".into(),
@@ -32,7 +32,7 @@ pub mod testing {
         }
     }
 
-    /// 构造最小 `EgressCtx`（供各集成测试复用）。
+    /// Construct a minimal `EgressCtx` (for reuse in integration tests).
     pub fn dummy_ctx(model: &str) -> EgressCtx {
         EgressCtx {
             base_url: "https://api.example.com".into(),
@@ -48,7 +48,7 @@ pub mod testing {
         }
     }
 
-    /// 转发 `build_chat_request`，供集成测试调用内部逻辑。
+    /// Forward `build_chat_request` for integration tests to call internal logic.
     pub fn build_chat_request_for_test(
         req: &codex_api::ResponsesApiRequest,
         ctx: &EgressCtx,
@@ -56,7 +56,7 @@ pub mod testing {
         crate::connector::chat::build_chat_request(req, ctx)
     }
 
-    /// 构造针对 anthropic connector 的最小 `EgressCtx`。
+    /// Construct a minimal `EgressCtx` for the anthropic connector.
     pub fn dummy_ctx_anthropic(model: &str, default_max_tokens: Option<u32>) -> EgressCtx {
         EgressCtx {
             base_url: "https://api.anthropic.com".into(),
@@ -72,7 +72,7 @@ pub mod testing {
         }
     }
 
-    /// 转发 `build_anthropic_request`，供集成测试调用内部逻辑。
+    /// Forward `build_anthropic_request` for integration tests to call internal logic.
     pub fn build_anthropic_request_for_test(
         req: &codex_api::ResponsesApiRequest,
         ctx: &EgressCtx,
@@ -80,9 +80,9 @@ pub mod testing {
         crate::connector::anthropic::build_anthropic_request(req, ctx)
     }
 
-    /// 把整段 SSE chunk 序列跑完，返回所有 `ResponseEvent`。
-    /// `done = true` 时自动调用 `finish()`（模拟 `[DONE]`）。
-    /// 供集成测试使用（集成测试访问不到 `#[cfg(test)]` 内的函数）。
+    /// Run through an entire SSE chunk sequence and return all `ResponseEvent`s.
+    /// When `done = true`, automatically call `finish()` (simulating `[DONE]`).
+    /// For use in integration tests (integration tests cannot access functions inside `#[cfg(test)]`).
     pub fn translate_chat_sse_for_test(
         chunks: &[serde_json::Value],
         done: bool,
@@ -90,9 +90,9 @@ pub mod testing {
         crate::connector::chat_sse::translate_chat_sse(chunks, done)
     }
 
-    /// 把整段 Anthropic Messages SSE 事件序列跑完，返回所有 `ResponseEvent`。
-    /// `done = true` 时自动调用 `finish()`（模拟 `message_stop`）。
-    /// 供集成测试使用（集成测试访问不到 `#[cfg(test)]` 内的函数）。
+    /// Run through an entire Anthropic Messages SSE event sequence and return all `ResponseEvent`s.
+    /// When `done = true`, automatically call `finish()` (simulating `message_stop`).
+    /// For use in integration tests (integration tests cannot access functions inside `#[cfg(test)]`).
     pub fn translate_anthropic_sse_for_test(
         events: &[serde_json::Value],
         done: bool,
@@ -100,18 +100,18 @@ pub mod testing {
         crate::connector::anthropic_sse::translate_anthropic_sse(events, done)
     }
 
-    /// 返回 chat 连接器的 `SseTranslator` 实例（供 `run_egress_for_test` 使用）。
+    /// Return a `SseTranslator` instance for the chat connector (for use in `run_egress_for_test`).
     pub fn chat_translator() -> Box<dyn crate::SseTranslator> {
         Box::new(crate::connector::chat_sse::ChatSseState::default())
     }
 
-    /// 构造最小合法鉴权头（Bearer + 测试密钥）。
+    /// Construct minimal valid auth headers (Bearer + test key).
     pub fn dummy_headers() -> reqwest::header::HeaderMap {
         crate::http::build_headers(crate::AuthKind::Bearer, Some("testkey"), None)
             .expect("dummy_headers should not fail")
     }
 
-    /// 转发 `sse::run_egress`，供 `run_test.rs` 集成测试使用。
+    /// Forward `sse::run_egress` for use in the `run_test.rs` integration test.
     pub async fn run_egress_for_test(
         url: String,
         headers: reqwest::header::HeaderMap,
@@ -121,7 +121,7 @@ pub mod testing {
         crate::sse::run_egress(url, headers, body, reqwest::Client::new(), translator).await
     }
 
-    /// 永不写鉴权头的 Noop `AuthProvider`（供实跑测试使用；testkey 自带 auth_key，无需退路）。
+    /// Noop `AuthProvider` that never writes auth headers (for use in live tests; testkey includes auth_key, no fallback needed).
     pub fn noop_auth_provider() -> codex_api::SharedAuthProvider {
         struct Noop;
         impl codex_api::AuthProvider for Noop {
@@ -143,46 +143,46 @@ pub use purpose::{purpose_from_source, Purpose};
 use codex_protocol::protocol::SessionSource;
 use std::sync::OnceLock;
 
-/// 仅供实跑测试 / 独立运行：从 gitignored testkey.toml 读配置，允许内联 auth_key。
+/// For live tests / standalone runs only: load config from gitignored testkey.toml, allowing inline auth_key.
 pub fn load_testkey_config(path: &std::path::Path) -> Result<Config, ConfigError> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| ConfigError::Parse(e.to_string()))?;
     load_config_from_str(&text, true)
 }
 
-/// 路由结果:命中某个被接管的 provider。
+/// Route result: hits a managed provider.
 #[derive(Debug, Clone)]
 pub struct Route {
     pub provider_id: String,
     pub cfg: ProviderCfg,
 }
 
-/// 主入口（Task 09 patch 调用契约，签名逐字固定）。
+/// Main entry point (Task 09 patch call contract; signature is fixed exactly).
 ///
-/// 流水线：变换层 → 组装 `EgressCtx`（含密钥退路）→ 派发连接器。
-/// `base_url` 必填；缺失时早返回 `ApiError::InvalidRequest`。
+/// Pipeline: transform layer → assemble `EgressCtx` (with key fallback) → dispatch connector.
+/// `base_url` is required; return `ApiError::InvalidRequest` early if missing.
 pub async fn run(
     rt: Route,
     mut request: codex_api::ResponsesApiRequest,
     api_auth: codex_api::SharedAuthProvider,
 ) -> Result<codex_api::ResponseStream, codex_api::ApiError> {
-    // ① 变换层（v1 直通）
+    // ① Transform layer (v1 pass-through)
     let plugins = pipeline::default_plugins();
     pipeline::run_transforms(&plugins, &mut request)
         .map_err(codex_api::ApiError::from)?;
 
-    // ② base_url 必填校验（§ plan Step 6 注）
+    // ② base_url required validation (see plan Step 6 notes)
     let base_url = rt.cfg.base_url.clone().ok_or_else(|| {
         codex_api::ApiError::InvalidRequest {
             message: format!("provider {} missing base_url", rt.provider_id),
         }
     })?;
 
-    // ③ 密钥解析
+    // ③ Key resolution
     let key = http::resolve_key(&rt.cfg)
         .map_err(|e| codex_api::ApiError::InvalidRequest { message: e.to_string() })?;
 
-    // ④ 出口模型：config 覆盖 > 请求里的 model
+    // ④ Egress model: config override > model in request
     let model = rt.cfg.model.clone().unwrap_or_else(|| request.model.clone());
 
     let ctx = connector::EgressCtx {
@@ -206,7 +206,7 @@ fn shared_http_client() -> reqwest::Client {
     CLIENT.get_or_init(reqwest::Client::new).clone()
 }
 
-/// 进程级配置缓存。运行时从 ~/.codex/config-zmod.toml 读一次。
+/// Process-level config cache. Read once at runtime from ~/.codex/config-zmod.toml.
 fn loaded() -> &'static Config {
     static CACHE: OnceLock<Config> = OnceLock::new();
     CACHE.get_or_init(|| {
@@ -216,13 +216,13 @@ fn loaded() -> &'static Config {
                 tracing::warn!("llm-switch disabled: bad config-zmod.toml: {e}");
                 Config { enabled: false, providers: Default::default(), purpose: Default::default() }
             }),
-            Err(_) => Config { enabled: false, providers: Default::default(), purpose: Default::default() }, // 缺文件 = 关闭
+            Err(_) => Config { enabled: false, providers: Default::default(), purpose: Default::default() }, // missing file = disabled
         }
     })
 }
 
 fn dirs_config_zmod_path() -> std::path::PathBuf {
-    // ~/.codex/config-zmod.toml;CODEX_HOME 覆盖优先(与 codex 约定一致)
+    // ~/.codex/config-zmod.toml; CODEX_HOME override takes precedence (consistent with codex convention)
     let home = std::env::var_os("CODEX_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".codex")))
@@ -230,13 +230,13 @@ fn dirs_config_zmod_path() -> std::path::PathBuf {
     home.join("config-zmod.toml")
 }
 
-/// 全局开关:`[llm-switch].enabled`。
+/// Global toggle: `[llm-switch].enabled`.
 pub fn enabled() -> bool {
     loaded().enabled
 }
 
-/// 两级路由纯函数(spec §4):purpose 优先 -> provider-id 回退 -> None。
-/// `has_ns_tools` 由调用方用 request 预检算好(spec §4.1)。
+/// Two-level pure function route (spec §4): purpose priority -> provider-id fallback -> None.
+/// `has_ns_tools` is pre-computed by caller using request (spec §4.1).
 fn route_in(
     cfg: &Config,
     provider_id: &str,
@@ -246,20 +246,20 @@ fn route_in(
     if !cfg.enabled {
         return None;
     }
-    // 第 3 步:purpose 分支
+    // Step 3: purpose branch
     if let Some(p) = purpose {
         if let Some(target) = cfg.purpose.get(p.as_key()) {
             match cfg.providers.get(target) {
                 None => {
                     tracing::warn!(
-                        "llm-switch purpose '{}' -> unknown provider '{}', 回退 provider-id 路由",
+                        "llm-switch purpose '{}' -> unknown provider '{}', falling back to provider-id routing",
                         p.as_key(),
                         target
                     );
                 }
                 Some(_) if has_ns_tools => {
                     tracing::warn!(
-                        "llm-switch purpose '{}' 命中但请求含不可表达工具,放弃用途路由、回退 provider-id",
+                        "llm-switch purpose '{}' matched but request contains inexpressible tools, abandon purpose routing and fall back to provider-id",
                         p.as_key()
                     );
                 }
@@ -269,17 +269,17 @@ fn route_in(
             }
         }
     }
-    // 第 4 步:provider-id 分支(不看 has_ns_tools,保留 v1 硬失败契约)
+    // Step 4: provider-id branch (ignore has_ns_tools, preserve v1 hard-fail contract)
     cfg.providers.get(provider_id).map(|p| Route {
         provider_id: provider_id.to_string(),
         cfg: p.clone(),
     })
 }
 
-/// WS 绕过纯函数(spec §4.2):只看 source/purpose,不做 namespace 预检。
+/// WebSocket bypass pure function (spec §4.2): only check source/purpose, do not pre-check namespace.
 ///
-/// `_provider_id` 入参仅为与 `route_in` / 公开入口签名保持一致而保留;
-/// 绕过判定只看 source/purpose,不消费 provider id。
+/// `_provider_id` parameter is retained only to maintain consistency with `route_in` / public entry point signature;
+/// bypass determination only checks source/purpose and does not consume provider id.
 fn should_bypass_in(cfg: &Config, _provider_id: &str, purpose: Option<Purpose>) -> bool {
     if !cfg.enabled {
         return false;
@@ -294,8 +294,8 @@ fn should_bypass_in(cfg: &Config, _provider_id: &str, purpose: Option<Purpose>) 
     }
 }
 
-/// 两级路由入口(Task 5 patch 调用契约,签名逐字固定)。
-/// purpose 由 source 解析;namespace 预检对 purpose 分支生效(spec §4 / §4.1)。
+/// Two-level route entry point (Task 5 patch call contract, signature is fixed exactly).
+/// purpose is parsed from source; namespace pre-check applies to purpose branch (spec §4 / §4.1).
 pub fn route(
     provider_id: &str,
     source: Option<&SessionSource>,
@@ -307,8 +307,8 @@ pub fn route(
     route_in(cfg, provider_id, purpose, has_ns_tools)
 }
 
-/// 传输层绕过判定(Task 5 patch 调用契约,签名逐字固定)。
-/// purpose 命中且映射目标存在时返回 true,使 stream() 跳过 WebSocket、走 HTTP(spec §4.2)。
+/// Transport layer bypass determination (Task 5 patch call contract, signature is fixed exactly).
+/// Return true when purpose matches and the mapped target exists, causing stream() to skip WebSocket and use HTTP (spec §4.2).
 pub fn should_bypass_websocket(
     provider_id: &str,
     source: Option<&SessionSource>,
@@ -334,7 +334,7 @@ mod tests {
     }
 
     fn cfg_with_purpose() -> Config {
-        // providers: gpt(主)、cheap(用途目标);purpose: compact->cheap, review->nonexist
+        // providers: gpt (primary), cheap (purpose target); purpose: compact->cheap, review->nonexist
         load_config_from_str(
             r#"
 [llm-switch]
@@ -357,7 +357,7 @@ review  = "nonexist"
     #[test]
     fn purpose_hit_routes_to_target() {
         let cfg = cfg_with_purpose();
-        // compact 命中 -> 目标 cheap,无 ns 工具
+        // compact matched -> target cheap, no ns tools
         let r = route_in(&cfg, "gpt", Some(Purpose::Compact), false).expect("route some");
         assert_eq!(r.provider_id, "cheap");
     }
@@ -365,7 +365,7 @@ review  = "nonexist"
     #[test]
     fn purpose_bad_mapping_falls_back_to_provider_id() {
         let cfg = cfg_with_purpose();
-        // review -> "nonexist" 不存在 -> 回退 provider-id(gpt 存在)
+        // review -> "nonexist" does not exist -> fall back to provider-id (gpt exists)
         let r = route_in(&cfg, "gpt", Some(Purpose::Review), false).expect("route some");
         assert_eq!(r.provider_id, "gpt");
     }
@@ -373,7 +373,7 @@ review  = "nonexist"
     #[test]
     fn purpose_with_ns_tools_falls_back_to_provider_id() {
         let cfg = cfg_with_purpose();
-        // compact 命中但含 ns 工具 -> 放弃用途路由,回退 provider-id
+        // compact matched but contains ns tools -> abandon purpose routing, fall back to provider-id
         let r = route_in(&cfg, "gpt", Some(Purpose::Compact), true).expect("route some");
         assert_eq!(r.provider_id, "gpt");
     }
@@ -394,7 +394,7 @@ review  = "nonexist"
     #[test]
     fn purpose_memory_unmapped_falls_back_to_provider_id() {
         let cfg = cfg_with_purpose();
-        // cfg_with_purpose 未配 memory 用途 -> 回退 provider-id(gpt 存在)
+        // cfg_with_purpose does not configure memory purpose -> fall back to provider-id (gpt exists)
         let r = route_in(&cfg, "gpt", Some(Purpose::Memory), false).expect("route some");
         assert_eq!(r.provider_id, "gpt");
     }
@@ -402,7 +402,7 @@ review  = "nonexist"
     #[test]
     fn purpose_hit_unknown_provider_id_still_routes_to_purpose() {
         let cfg = cfg_with_purpose();
-        // 主 provider 不存在,但 compact 命中 cheap -> 用途路由仍生效
+        // primary provider does not exist, but compact hits cheap -> purpose routing still applies
         let r = route_in(&cfg, "unknown-main", Some(Purpose::Compact), false).expect("route some");
         assert_eq!(r.provider_id, "cheap");
     }
@@ -431,7 +431,7 @@ review  = "nonexist"
     #[test]
     fn bypass_ws_false_on_bad_mapping() {
         let cfg = cfg_with_purpose();
-        // review -> nonexist:目标不存在 -> 不绕 WS(会回退 provider-id,本可走原生 WS)
+        // review -> nonexist: target does not exist -> do not bypass WS (will fall back to provider-id, can use native WS)
         assert!(!should_bypass_in(&cfg, "gpt", Some(Purpose::Review)));
     }
 

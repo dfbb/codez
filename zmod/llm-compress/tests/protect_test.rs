@@ -3,7 +3,7 @@ use codez_llm_compress::protect::should_protect;
 
 #[test]
 fn small_error_output_is_protected() {
-    let cfg = Config::disabled(); // protect.error_max_bytes 默认 8192
+    let cfg = Config::disabled(); // protect.error_max_bytes default 8192
     let text = "Traceback (most recent call last):\n  File x\nValueError: boom";
     assert!(should_protect(text, None, &cfg));
 }

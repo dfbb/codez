@@ -41,7 +41,7 @@ pub struct Config {
     pub purpose: HashMap<String, String>,
 }
 
-// ---- 原始 TOML 反序列化层(私有) ----
+// ---- Raw TOML deserialization layer (private) ----
 #[derive(Deserialize)]
 struct RawRoot {
     #[serde(rename = "llm-switch")]
@@ -73,8 +73,8 @@ struct RawProvider {
     prompt_cache: bool,
 }
 
-/// 解析 config-zmod 文本。`allow_inline_key=false` 为运行时主路径(出现 auth_key 直接报错);
-/// `true` 仅供从 gitignored tests/testkey.toml 加载时使用。
+/// Parse config-zmod text. `allow_inline_key=false` is the main runtime path (inline auth_key causes immediate error);
+/// `true` is only used when loading from gitignored tests/testkey.toml.
 pub fn load_config_from_str(toml_text: &str, allow_inline_key: bool) -> Result<Config, ConfigError> {
     let root: RawRoot = toml::from_str(toml_text).map_err(|e| ConfigError::Parse(e.to_string()))?;
     let Some(sw) = root.llm_switch else {
@@ -82,12 +82,12 @@ pub fn load_config_from_str(toml_text: &str, allow_inline_key: bool) -> Result<C
     };
     let mut providers = HashMap::new();
     for (id, raw) in sw.providers {
-        // 任何 provider(含 responses)出现内联 auth_key 且 allow_inline_key=false 时,
-        // 都在解析期报错——必须在 connector match 之前检测,避免 responses 的 continue 绕过。
+        // When any provider (including responses) has inline auth_key and allow_inline_key=false,
+        // report error during parsing — must check before connector match to prevent responses' continue from bypassing.
         if raw.auth_key.is_some() && !allow_inline_key {
             return Err(ConfigError::InlineAuthKeyForbidden(id.clone()));
         }
-        // responses / 未知 connector 不进可路由表(走原生分支,spec §4.1)
+        // responses / unknown connector do not enter routable table (use native branch, spec §4.1)
         let connector = match raw.connector.as_str() {
             "chat" => Connector::Chat,
             "anthropic" => Connector::Anthropic,

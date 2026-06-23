@@ -1,14 +1,14 @@
-//! SearchCompressor —— grep/ripgrep 输出:按文件分组、保首尾匹配、评分选中段(spec §5②)。
-//! lossy=true, kind=Text,挂 CCR。
+//! SearchCompressor — grep/ripgrep output: group by file, keep first/last matches, score-select segments (spec §5②).
+//! lossy=true, kind=Text, hang CCR.
 
 use crate::router::{Budget, CompressOutcome, Compressor, ContentKind};
 use crate::score::line_score;
 
 pub struct SearchCompressor;
 
-/// 解析 `path:line:content` 或 `path:line:col:content`;返回 path 或 None。
+/// Parse `path:line:content` or `path:line:col:content`; return path or None.
 fn parse_match(line: &str) -> Option<&str> {
-    // 至少两个 ':',第一个 ':' 后紧跟数字(行号)
+    // At least two ':', first ':' followed immediately by digits (line number)
     let first = line.find(':')?;
     let rest = &line[first + 1..];
     let second_rel = rest.find(':')?;
@@ -25,7 +25,7 @@ impl Compressor for SearchCompressor {
     }
 
     fn detect(&self, text: &str, budget: &Budget) -> bool {
-        // 命令提示命中 grep → 直接认领
+        // Command prompt hit grep → claim directly
         if budget.cmd.is_some_and(|c| c.is_grep()) {
             return text.lines().count() >= 3;
         }
@@ -34,7 +34,7 @@ impl Compressor for SearchCompressor {
             return false;
         }
         let matched = lines.iter().filter(|l| parse_match(l).is_some()).count();
-        // 多数行是匹配格式
+        // Majority of lines are match format
         matched * 2 >= lines.len() && matched >= 3
     }
 
@@ -54,13 +54,13 @@ impl Compressor for SearchCompressor {
     }
 }
 
-/// 核心:按文件分组,组内保首尾+评分选中,文件数超限折叠。
+/// Core: group by file, keep first/last + score-select within group, fold files over limit.
 fn compress_search(text: &str, budget: &Budget) -> Option<String> {
     let max_per_file = budget.cfg.search.max_per_file.max(2);
     let max_files = budget.cfg.search.max_files.max(1);
 
     let lines: Vec<&str> = text.lines().collect();
-    // 分组:保持文件首次出现顺序
+    // Group: maintain file first-appearance order
     let mut order: Vec<String> = Vec::new();
     let mut groups: std::collections::HashMap<String, Vec<&str>> = std::collections::HashMap::new();
     let mut preamble: Vec<&str> = Vec::new();
@@ -80,9 +80,9 @@ fn compress_search(text: &str, budget: &Budget) -> Option<String> {
         return None;
     }
 
-    // 每组选取:首 + 末 + 中间 top-K
+    // Per-group selection: first + last + top-K from middle
     let mut out: Vec<String> = preamble.iter().map(|s| s.to_string()).collect();
-    // 文件级评分 = 组内最高 line_score
+    // File-level score = highest line_score in group
     let mut scored_files: Vec<(String, f32)> = order
         .iter()
         .map(|k| {
@@ -90,7 +90,7 @@ fn compress_search(text: &str, budget: &Budget) -> Option<String> {
             (k.clone(), best)
         })
         .collect();
-    // 选 max_files 个高分文件(保持原序输出,但先确定保留集合)
+    // Select max_files high-scoring files (output in original order, but determine keep set first)
     let mut keep: std::collections::HashSet<String> = scored_files.iter().map(|(k, _)| k.clone()).collect();
     if order.len() > max_files {
         scored_files.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -107,12 +107,12 @@ fn compress_search(text: &str, budget: &Budget) -> Option<String> {
         out.extend(select_in_file(matches, max_per_file));
     }
     if folded_files > 0 {
-        out.push(format!("[llm-compress: 略 {folded_files} 个文件]"));
+        out.push(format!("[llm-compress: skipped {folded_files} files]"));
     }
     Some(out.join("\n"))
 }
 
-/// 组内选取:必留首+末;中间按分选 top-(K-2);丢弃段折叠计数;回原序。
+/// Within-group selection: must keep first + last; middle by score top-(K-2); collapsed dropped segments with count; return in original order.
 fn select_in_file(matches: &[&str], max_per_file: usize) -> Vec<String> {
     if matches.len() <= max_per_file {
         return matches.iter().map(|s| s.to_string()).collect();
@@ -121,13 +121,13 @@ fn select_in_file(matches: &[&str], max_per_file: usize) -> Vec<String> {
     let mut keep_idx: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     keep_idx.insert(0);
     keep_idx.insert(n - 1);
-    // 中间按分排序取 top
+    // Middle sorted by score, take top
     let mut mids: Vec<(usize, f32)> = (1..n - 1).map(|i| (i, line_score(matches[i]))).collect();
     mids.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     for (i, _) in mids.into_iter().take(max_per_file.saturating_sub(2)) {
         keep_idx.insert(i);
     }
-    // 回原序输出,被丢的连续段折叠计数
+    // Output in original order, collapsed dropped consecutive segments with count
     let mut out: Vec<String> = Vec::new();
     let mut i = 0;
     while i < n {
@@ -139,7 +139,7 @@ fn select_in_file(matches: &[&str], max_per_file: usize) -> Vec<String> {
             while i < n && !keep_idx.contains(&i) {
                 i += 1;
             }
-            out.push(format!("[llm-compress: 略 {} 个匹配]", i - start));
+            out.push(format!("[llm-compress: skipped {} matches]", i - start));
         }
     }
     out

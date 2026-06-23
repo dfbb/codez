@@ -1,13 +1,13 @@
-//! rtk 风格通用预处理层(spec §4.6/D1)。返回 (处理后文本, 是否删了实质内容)。
-//! 顺序:strip_progress → blob_fold → collapse_blank → truncate_line_bytes → dedup_consecutive。
-//! 删内容段(strip_progress/blob_fold/truncate_line_bytes)置 lossy=true;格式重构段不置。
-//! base64/blob 折叠唯一执行位置(#6),Truncate 不再折叠。
+//! Generic preprocessing layer in rtk style (spec §4.6/D1). Returns (processed text, whether substantial content was deleted).
+//! Order: strip_progress → blob_fold → collapse_blank → truncate_line_bytes → dedup_consecutive.
+//! Content deletion steps (strip_progress/blob_fold/truncate_line_bytes) set lossy=true; format reconstruction steps do not.
+//! base64/blob folding is the only execution location (#6); Truncate no longer folds.
 
 use crate::config::PreprocessCfg;
 
 const MARKER_PREFIX: &str = "[llm-compress: ";
 
-/// 主入口:按顺序跑各段。返回 (文本, 是否删实质内容)。
+/// Main entry point: runs each stage in order. Returns (text, whether substantial content was deleted).
 pub fn run(text: &str, cfg: &PreprocessCfg) -> (String, bool) {
     let mut s = text.to_string();
     let mut lossy = false;
@@ -23,7 +23,7 @@ pub fn run(text: &str, cfg: &PreprocessCfg) -> (String, bool) {
         lossy |= changed;
     }
     if cfg.collapse_blank {
-        s = collapse_blank(&s); // 格式重构,不置 lossy
+        s = collapse_blank(&s); // format reconstruction, do not set lossy
     }
     if cfg.truncate_line_bytes > 0 {
         let (ns, changed) = truncate_lines(&s, cfg.truncate_line_bytes);
@@ -31,12 +31,12 @@ pub fn run(text: &str, cfg: &PreprocessCfg) -> (String, bool) {
         lossy |= changed;
     }
     if cfg.dedup_consecutive {
-        s = dedup_consecutive(&s); // 格式重构,不置 lossy
+        s = dedup_consecutive(&s); // format reconstruction, do not set lossy
     }
     (s, lossy)
 }
 
-/// 删进度条/下载行(删内容)。返回 (文本, 是否删了行)。
+/// Delete progress bars/download lines (deletes content). Returns (text, whether lines were deleted).
 fn strip_progress(text: &str) -> (String, bool) {
     let mut kept: Vec<&str> = Vec::new();
     let mut removed = false;
@@ -55,23 +55,23 @@ fn is_progress_line(line: &str) -> bool {
     if t.starts_with("Downloading") || t.starts_with("Downloaded") || t.starts_with("Fetching") {
         return true;
     }
-    // 含回车覆写(\r)或百分比进度
+    // contains carriage return (\r) or percentage progress
     if line.contains('\r') {
         return true;
     }
-    // 形如 " 45%" / "[####    ] 80%"
+    // like " 45%" / "[####    ] 80%"
     let has_pct = t.split_whitespace().any(|w| w.ends_with('%') && w.trim_end_matches('%').parse::<f64>().is_ok());
     has_pct && (t.contains('[') || t.contains('#') || t.contains('='))
 }
 
-/// 折叠超长 base64/data-uri 段(删内容,#6 唯一位置)。返回 (文本, 是否折叠)。
+/// Fold long base64/data-uri segments (deletes content, #6 only location). Returns (text, whether folded).
 fn blob_fold(text: &str, min_bytes: usize) -> (String, bool) {
     let mut out: Vec<String> = Vec::new();
     let mut folded = false;
     for line in text.split('\n') {
         let trimmed = line.trim();
         if trimmed.len() >= min_bytes && is_blobish(trimmed) {
-            out.push(format!("[llm-compress: base64 {} 字节]", trimmed.len()));
+            out.push(format!("[llm-compress: base64 {} bytes]", trimmed.len()));
             folded = true;
         } else {
             out.push(line.to_string());
@@ -80,7 +80,7 @@ fn blob_fold(text: &str, min_bytes: usize) -> (String, bool) {
     (out.join("\n"), folded)
 }
 
-/// 判定一行是否像 base64/data-uri:data: 前缀,或长串且字符集限于 base64 字母表。
+/// Determine if a line looks like base64/data-uri: has "data:" prefix, or is a long string with characters limited to base64 alphabet.
 fn is_blobish(s: &str) -> bool {
     if s.starts_with("data:") {
         return true;
@@ -92,14 +92,14 @@ fn is_blobish(s: &str) -> bool {
     !body.is_empty() && b64_ratio == body.len()
 }
 
-/// 连续空行归一为一个空行(格式重构,不删实质内容)。
+/// Normalize consecutive blank lines to a single blank line (format reconstruction, does not delete substantial content).
 fn collapse_blank(text: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
     let mut prev_blank = false;
     for line in text.split('\n') {
         let blank = line.trim().is_empty();
         if blank && prev_blank {
-            continue; // 跳过多余空行
+            continue; // skip extra blank lines
         }
         out.push(line);
         prev_blank = blank;
@@ -107,13 +107,13 @@ fn collapse_blank(text: &str) -> String {
     out.join("\n")
 }
 
-/// 超长单行按字节截断(UTF-8 边界安全,删内容)。返回 (文本, 是否截断)。
+/// Truncate long single lines by byte count (UTF-8 boundary safe, deletes content). Returns (text, whether truncated).
 fn truncate_lines(text: &str, max_bytes: usize) -> (String, bool) {
     let mut out: Vec<String> = Vec::new();
     let mut truncated = false;
     for line in text.split('\n') {
         if line.len() > max_bytes {
-            // 在 ≤ max_bytes 的最大字符边界截断
+            // truncate at the maximum character boundary within max_bytes
             let mut cut = 0;
             for (idx, ch) in line.char_indices() {
                 let end = idx + ch.len_utf8();
@@ -123,7 +123,7 @@ fn truncate_lines(text: &str, max_bytes: usize) -> (String, bool) {
                     break;
                 }
             }
-            out.push(format!("{}[llm-compress: 行截断]", &line[..cut]));
+            out.push(format!("{}[llm-compress: line truncated]", &line[..cut]));
             truncated = true;
         } else {
             out.push(line.to_string());
@@ -132,8 +132,8 @@ fn truncate_lines(text: &str, max_bytes: usize) -> (String, bool) {
     (out.join("\n"), truncated)
 }
 
-/// 连续完全相同行折叠为 行 + [llm-compress: 上一行 ×N](格式重构,不删内容)。
-/// #6:本身即 [llm-compress: 前缀的行不参与折叠(原样保留),避免占位混淆。
+/// Fold consecutive identical lines into line + [llm-compress: previous line ×N] (format reconstruction, does not delete content).
+/// #6: lines that already start with [llm-compress: prefix do not participate in folding (kept as-is) to avoid position confusion.
 fn dedup_consecutive(text: &str) -> String {
     let lines: Vec<&str> = text.split('\n').collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
@@ -141,7 +141,7 @@ fn dedup_consecutive(text: &str) -> String {
     while i < lines.len() {
         let cur = lines[i];
         if cur.starts_with(MARKER_PREFIX) {
-            out.push(cur.to_string()); // 占位行不折叠
+            out.push(cur.to_string()); // placeholder lines do not fold
             i += 1;
             continue;
         }
@@ -152,7 +152,7 @@ fn dedup_consecutive(text: &str) -> String {
         let count = j - i;
         out.push(cur.to_string());
         if count >= 2 {
-            out.push(format!("[llm-compress: 上一行 ×{count}]"));
+            out.push(format!("[llm-compress: previous line ×{count}]"));
         }
         i = j;
     }

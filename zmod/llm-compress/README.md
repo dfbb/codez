@@ -1,120 +1,120 @@
 # codez-llm-compress
 
-在 codex LLM 请求发送边界原地压缩工具调用返回内容,降低 token 消耗。
+Compress tool call return contents in place at the LLM request sending boundary in codex, reducing token consumption.
 
-> **TOON 编码**:JSON 对象/数组与表格类工具输出默认编码为 [TOON](https://github.com/toon-format/toon-rust)(Token-Oriented Object Notation),比 JSON 更省 token。线上请求信封仍是 JSON,**模型照常输出 JSON**——改变的只是模型*读到*的那段内容字符串。由 `[llm_compress.json] use_toon`(缺省 true)统一开关;写回前做 `decode → 原值` round-trip 自检,不可逆则退回原文(fail-open)。
+> **TOON Encoding**: JSON objects/arrays and table-like tool outputs are encoded by default as [TOON](https://github.com/toon-format/toon-rust) (Token-Oriented Object Notation), which is more token-efficient than JSON. The online request envelope remains JSON, and **models output JSON as usual**—only the string content the model *reads* changes. Controlled uniformly via `[llm_compress.json] use_toon` (defaults to true); a `decode → original value` round-trip self-check is performed before writing back, reverting to the original if irreversible (fail-open).
 
-## 架构概览(v2)
+## Architecture Overview (v2)
 
 ```
 transform(request)
-  ├─ config::load()            — 读 ~/.codex/config-zmod.toml [llm_compress]
-  ├─ ccr::RequestCtx           — 构造一次性请求上下文
-  │    └─ command::index()     — 建立 call_id → 命令名 索引
+  ├─ config::load()            — Read ~/.codex/config-zmod.toml [llm_compress]
+  ├─ ccr::RequestCtx           — Construct one-time request context
+  │    └─ command::index()     — Build call_id → command name index
   ├─ build_router()            — Json→Search→Diff→Tabular→Log→Truncate
   └─ per-item compress_in_place()
-       ① per_item_min_bytes 阈值门
-       ② protect::should_protect()  — 保护门(命中则原文跳过)
-       ③ preprocess::run()          — ANSI 清洗 / 进度行去除
-       ④ ContentRouter::compress_text() — 路由压缩
-       ⑤ ccr::attach()              — lossy 时写 CCR 存档
-       ⑥ 体积闸门(只写回≤原文)
+       ① per_item_min_bytes threshold gate
+       ② protect::should_protect()  — Protection gate (skip original if hit)
+       ③ preprocess::run()          — ANSI cleanup / progress line removal
+       ④ ContentRouter::compress_text() — Route compression
+       ⑤ ccr::attach()              — Write CCR archive for lossy
+       ⑥ Volume gate (only write back ≤ original)
 ```
 
-## 六个压缩器
+## Six Compressors
 
-| 优先级 | 压缩器 | 认领条件 | 方式 |
-|--------|--------|----------|------|
-| 1 | JsonCompressor | `use_toon=true`、有效 JSON 对象/数组、TOON 产物比原文严格更小且 ≤ truncate.max_bytes | 编码为 TOON(无损,kind=Toon,不挂 CCR;写回前 round-trip 自检) |
-| 2 | SearchCompressor | grep/rg 风格结果 | 按文件分组、保首尾匹配 + 评分选中段(有损,挂 CCR) |
-| 3 | DiffCompressor | git diff / unified diff | 折叠大段 context(有损,挂 CCR) |
-| 4 | TabularCompressor | `use_toon=true`、CSV/TSV/Markdown 表格、TOON 产物比原文严格更小且 ≤ truncate.max_bytes | 编码为 TOON(无损,kind=Toon,不挂 CCR;写回前 round-trip 自检) |
-| 5 | LogCompressor | 日志行(含时间戳/栈帧/重复) | 级别评分保留(保 error/warn/栈帧,删低价值行;有损,挂 CCR) |
-| 6 | TruncateCompressor | 任意文本(兜底) | 头尾保留 + 中段截断到 max_bytes(有损,挂 CCR) |
+| Priority | Compressor | Activation Condition | Method |
+|----------|------------|----------------------|--------|
+| 1 | JsonCompressor | `use_toon=true`, valid JSON object/array, TOON output strictly smaller and ≤ truncate.max_bytes | Encode as TOON (lossless, kind=Toon, no CCR; round-trip self-check before write-back) |
+| 2 | SearchCompressor | grep/rg-style results | Group by file, preserve first/last match + score-based segment selection (lossy, attach CCR) |
+| 3 | DiffCompressor | git diff / unified diff | Collapse large context sections (lossy, attach CCR) |
+| 4 | TabularCompressor | `use_toon=true`, CSV/TSV/Markdown tables, TOON output strictly smaller and ≤ truncate.max_bytes | Encode as TOON (lossless, kind=Toon, no CCR; round-trip self-check before write-back) |
+| 5 | LogCompressor | Log lines (with timestamps/stack frames/duplicates) | Level-scored retention (preserve error/warn/stack frames, delete low-value lines; lossy, attach CCR) |
+| 6 | TruncateCompressor | Arbitrary text (fallback) | Keep head/tail + truncate middle to max_bytes (lossy, attach CCR) |
 
-## 预处理层
+## Preprocessing Layer
 
-`preprocess::run()` 在路由压缩前对原始字符串做无损或 lossy 清洗:
+`preprocess::run()` performs lossless or lossy cleanup on the raw string before routing compression:
 
-- ANSI 转义序列剥离(无损)
-- 进度条行去除(lossy,计入 CCR)
-- 可通过 `[llm_compress.preprocess]` 配置项按需开关
+- ANSI escape sequence stripping (lossless)
+- Progress bar line removal (lossy, counted in CCR)
+- Can be toggled per-need via `[llm_compress.preprocess]` config options
 
-## 命令感知
+## Command Awareness
 
-`command::index()` 从 request 中的 tool 调用历史抽取 call_id → 命令名映射,`Budget.cmd` 把命令名传给各压缩器。压缩器可据此调整压缩策略(如日志压缩器对 `run_tests` 调用保留更多错误行)。
+`command::index()` extracts call_id → command name mappings from the tool call history in the request, with `Budget.cmd` passing the command name to each compressor. Compressors can adjust compression strategy accordingly (e.g., log compressor retains more error lines for `run_tests` calls).
 
-## CCR 取回机制
+## CCR Retrieval Mechanism
 
-lossy 压缩后,`ccr::attach()` 把原文写入 `~/.codex/llm-compress/ccr/<queryid>/` 目录,并在压缩结果头部插入取回提示。用户或后续 codex 工具可按需读取原始内容。
+After lossy compression, `ccr::attach()` writes the original content to `~/.codex/llm-compress/ccr/<queryid>/` directory and inserts a retrieval hint at the head of the compressed result. Users or subsequent codex tools can retrieve the original content as needed.
 
-CCR 可通过 `[llm_compress.ccr].enabled = false` 关闭。
+CCR can be disabled via `[llm_compress.ccr].enabled = false`.
 
-## 配置
+## Configuration
 
 `~/.codex/config-zmod.toml`:
 
 ```toml
 [llm_compress]
 enabled = true
-per_item_min_bytes = 512   # 低于此字节数的 item 跳过
+per_item_min_bytes = 512   # Items below this byte count are skipped
 
 [llm_compress.truncate]
-head_lines = 50            # 截断时保留的头部行数
-tail_lines = 50            # 截断时保留的尾部行数
+head_lines = 50            # Head lines to preserve on truncation
+tail_lines = 50            # Tail lines to preserve on truncation
 max_bytes = 65536
 
 [llm_compress.json]
-use_toon = true            # JSON 对象/数组 + 表格统一编码为 TOON(缺省 true);
-                           # 同时门控 JsonCompressor 与 TabularCompressor。设 false 则两者均不认领
+use_toon = true            # JSON objects/arrays + tables uniformly encoded as TOON (defaults to true);
+                           # gates both JsonCompressor and TabularCompressor. Set false to disable both
 
 [llm_compress.diff]
-context_lines = 3          # 每个 hunk 保留的上下文行数
+context_lines = 3          # Context lines to preserve per hunk
 
 [llm_compress.search]
-max_per_file = 5           # 每文件保留的匹配行上限
-max_files = 15             # 保留的文件数上限,超出折叠
+max_per_file = 5           # Max match lines to keep per file
+max_files = 15             # Max files to keep, collapse if exceeded
 
 [llm_compress.log]
-keep_levels = ["error", "warn"]  # 必留日志级别
+keep_levels = ["error", "warn"]  # Log levels to always keep
 
 [llm_compress.preprocess]
-strip_progress = true       # 删进度条/下载行
-collapse_blank = true       # 连续空行归一
-truncate_line_bytes = 2000  # 超长单行按字节截断(0=关闭)
-dedup_consecutive = true    # 连续重复行折叠为计数
-blob_min_bytes = 256        # 超此长度的 base64/blob 行折叠(0=关闭)
+strip_progress = true       # Remove progress/download lines
+collapse_blank = true       # Collapse consecutive blank lines to one
+truncate_line_bytes = 2000  # Truncate oversized single lines by bytes (0=disabled)
+dedup_consecutive = true    # Collapse consecutive duplicate lines to count
+blob_min_bytes = 256        # Fold base64/blob lines exceeding this length (0=disabled)
 
 [llm_compress.ccr]
 enabled = true
-max_files_per_thread = 200      # 单线程目录文件数上限
-max_thread_bytes = 67108864     # 单线程目录总字节上限(64 MiB)
-max_file_bytes = 4194304        # 单个落盘文件上限(4 MiB),超限则放弃压缩返回原文
+max_files_per_thread = 200      # Max files per directory per thread
+max_thread_bytes = 67108864     # Max total bytes per directory per thread (64 MiB)
+max_file_bytes = 4194304        # Max single file size (4 MiB), abandon compression if exceeded
 
 [llm_compress.protect]
-error_max_bytes = 8192      # 含错误标记且小于此字节的输出整段不压缩(0=关闭保护)
+error_max_bytes = 8192      # Outputs with error marker and smaller than this byte count are not compressed (0=protection disabled)
 ```
 
-缺失文件或 table 时,对应功能默认**关闭**(fail-safe)。
+When the file or table is missing, the corresponding feature is **disabled** by default (fail-safe).
 
-## 构建
+## Build
 
 ```bash
-# 在 codez-v2 根下
+# From codez-v2 root
 cd codex-rs
 cargo build -p codez-llm-compress
 
-# 全量测试(隔离 HOME,避免本地 config-zmod 干扰)
+# Full test suite (isolate HOME to avoid local config-zmod interference)
 CARGO_HOME=/Users/dfbb/.cargo HOME=$(mktemp -d) cargo test -p codez-llm-compress
 ```
 
-## 测试结构
+## Test Structure
 
-| 文件 | 覆盖 |
-|------|------|
-| `tests/transform_test.rs` | 图片保留等黑盒回归 |
-| `tests/orchestration_test.rs` | 端到端编排链 |
-| `tests/parity_test.rs` | 继承 fixture 硬不变量(体积不劣、TOON 可解码 round-trip) |
-| `tests/*_test.rs` | 各模块单元测试 |
+| File | Coverage |
+|------|----------|
+| `tests/transform_test.rs` | Black-box regression (image preservation, etc.) |
+| `tests/orchestration_test.rs` | End-to-end orchestration chain |
+| `tests/parity_test.rs` | Inherited fixture invariants (no size regression, TOON decodable round-trip) |
+| `tests/*_test.rs` | Per-module unit tests |
 
-继承 fixture 来源见 `tests/fixtures/inherited/NOTICE.md`。
+See `tests/fixtures/inherited/NOTICE.md` for inherited fixture sources.

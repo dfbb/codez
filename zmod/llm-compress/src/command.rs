@@ -1,8 +1,8 @@
-//! call_id → 命令提示。类型与判别在此(Task 01 地基);index() 解析在 Task 03。
+//! call_id → command hint. Type and discriminant here (Task 01 foundation); index() parsing in Task 03.
 use std::collections::HashMap;
 use codex_protocol::models::ResponseItem;
 
-/// 从 FunctionCall 解析出的命令提示,仅作路由提示用(spec §4.3)。
+/// Command hint parsed from FunctionCall, used only as a routing hint (spec §4.3).
 #[derive(Debug, Clone, Default)]
 pub struct CommandHint {
     pub program: String,
@@ -24,9 +24,9 @@ impl CommandHint {
     }
 }
 
-/// 遍历 request.input 的 FunctionCall,建 call_id → CommandHint 索引。
-/// shell_command.command / exec_command.cmd 是单字符串命令行(spec §4.3,已核实)。
-/// 解析失败/非 JSON/取不到命令字段 → 该 call_id 不入索引(fail-open)。
+/// Iterate through request.input FunctionCalls and build a call_id → CommandHint index.
+/// shell_command.command / exec_command.cmd are single-string command lines (spec §4.3, verified).
+/// Parse failure / non-JSON / unable to fetch command field → that call_id not indexed (fail-open).
 pub fn index(request: &codex_api::ResponsesApiRequest) -> HashMap<String, CommandHint> {
     let mut map = HashMap::new();
     for item in &request.input {
@@ -40,7 +40,7 @@ pub fn index(request: &codex_api::ResponsesApiRequest) -> HashMap<String, Comman
 }
 
 fn parse_hint(name: &str, arguments: &str) -> Option<CommandHint> {
-    // shell 类工具:从 JSON 取命令行字符串;解析失败 → 不入索引
+    // Shell-like tools: fetch command line string from JSON; parse failure → not indexed
     match name {
         "shell_command" => {
             let line = serde_json::from_str::<serde_json::Value>(arguments)
@@ -61,7 +61,7 @@ fn parse_hint(name: &str, arguments: &str) -> Option<CommandHint> {
             Some(CommandHint { program, argv: it.collect() })
         }
         _ => {
-            // 非 shell 工具:program = name,argv 空。仅当 name 非空时入索引。
+            // Non-shell tools: program = name, argv empty. Only indexed if name is non-empty.
             if name.is_empty() {
                 None
             } else {
@@ -71,7 +71,7 @@ fn parse_hint(name: &str, arguments: &str) -> Option<CommandHint> {
     }
 }
 
-/// 轻量 shell 分词:按空白切,尊重单/双引号(只读不执行,失败容忍)。
+/// Lightweight shell tokenization: split by whitespace, respect single/double quotes (read-only, no execution, failure tolerant).
 fn shell_split(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();

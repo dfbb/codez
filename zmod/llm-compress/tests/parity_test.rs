@@ -1,5 +1,5 @@
-//! 遍历 fixtures/inherited/manifest.toml,对每个继承样本跑硬不变量(spec §8.3)。
-//! 不做逐字节相等;参考输出仅用于"体积不劣"对比。
+//! Walk through fixtures/inherited/manifest.toml and run hard invariants (spec §8.3) for each inherited sample.
+//! No byte-for-byte equality; reference output is only used for "size no worse" comparison.
 
 use codez_llm_compress::compress::{
     diff::DiffCompressor, json::JsonCompressor, log::LogCompressor, search::SearchCompressor,
@@ -49,7 +49,7 @@ fn parity_invariants_hold_for_all_fixtures() {
     let dir = fixtures_dir();
     let manifest_path = dir.join("manifest.toml");
     if !manifest_path.exists() {
-        eprintln!("manifest.toml 不存在,跳过 parity(fixture 未就位)");
+        eprintln!("manifest.toml does not exist, skipping parity (fixture not ready)");
         return;
     }
     let manifest: Manifest =
@@ -57,38 +57,40 @@ fn parity_invariants_hold_for_all_fixtures() {
 
     let mut cfg = Config::disabled();
     cfg.enabled = true;
-    // 给足阈值让压缩器认领(parity 关注算法输出而非让位)
+    // Provide sufficient threshold for compressors to claim (parity focuses on algorithm output, not yielding)
     cfg.truncate.max_bytes = 1_000_000;
 
     for fx in &manifest.fixture {
-        // preprocess 无直接对应 Compressor,跳过(preprocess 在 transform 流水线中测)
+        // preprocess has no direct Compressor correspondence, skip (preprocess is tested in the transform pipeline)
         if fx.compressor == "preprocess" {
             continue;
         }
         let input = std::fs::read_to_string(dir.join(&fx.file))
-            .unwrap_or_else(|_| panic!("读不到 fixture {}", fx.file));
+            .unwrap_or_else(|_| panic!("cannot read fixture {}", fx.file));
         let Some((out, lossy)) = run_compressor(&fx.compressor, &input, &cfg) else {
-            continue; // 未认领/未压缩,跳过(允许)
+            continue; // not claimed/not compressed, skip (allowed)
         };
 
-        // 硬不变量 1:压后 ≤ 压前
-        assert!(out.len() <= input.len(), "[{}] 压后体积应 ≤ 压前", fx.file);
-        // 硬不变量 2:UTF-8 合法(out 是 String,天然合法)
+        // Hard invariant 1: compressed size ≤ original size
+        assert!(out.len() <= input.len(), "[{}] compressed size should be ≤ original size", fx.file);
+        // Hard invariant 2: UTF-8 valid (out is String, naturally valid)
         // Hard invariant 3: json/tabular compressors emit round-trippable TOON.
         if fx.compressor == "json" || fx.compressor == "tabular" {
             toon_format::decode_default::<serde_json::Value>(&out)
                 .unwrap_or_else(|_| panic!("[{}] TOON product must decode", fx.file));
         }
-        // 对比 4:体积不劣于参考(若有 ref_output)。
-        // 仅当我方产物本身有损时才与参考比比例——headroom/rtk 的参考输出多为有损
-        // (如 smart_crusher 抽样),而 v2 的 JSON/Tabular 是无损口径(spec §4.0/round-3
-        // "JSON 不做有损"),无损产物天然压不过有损参考,比 1.5x 无意义。无损产物的
-        // 正确性已由硬不变量 1(压后≤压前)保证,此处不再与有损参考比体积。
+        // Comparison 4: size not worse than reference (if present).
+        // Only compare ratio against reference when our output is lossy — most reference outputs
+        // from headroom/rtk are lossy (e.g., smart_crusher sampling), while v2's JSON/Tabular
+        // uses lossless semantics (spec §4.0/round-3 "JSON no lossy"), lossless output naturally
+        // cannot compress as well as lossy reference, comparing at 1.5x is meaningless. Correctness
+        // of lossless output is already guaranteed by hard invariant 1 (compressed ≤ original),
+        // no need to compare size against lossy reference here.
         if lossy && !fx.ref_output.is_empty() {
             if let Ok(reference) = std::fs::read_to_string(dir.join(&fx.ref_output)) {
                 assert!(
                     out.len() as f64 <= reference.len() as f64 * 1.5,
-                    "[{}] 我方产物 {} 不应远超参考 {} 的 1.5x",
+                    "[{}] our output {} should not significantly exceed reference {} by 1.5x",
                     fx.file,
                     out.len(),
                     reference.len()

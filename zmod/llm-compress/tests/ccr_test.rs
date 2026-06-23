@@ -25,10 +25,10 @@ fn enabled_writes_file_and_appends_path() {
     let original = "VERY LONG ORIGINAL CONTENT ".repeat(50);
     let compressed = "[llm-compress: 略 49 行]".to_string();
     let out = attach(compressed.clone(), &original, &c, "call1", &cfg_enabled());
-    // 占位里追加了原文路径
-    assert!(out.contains("[llm-compress: 原文 "), "含路径占位");
+    // Appended original text path to placeholder
+    assert!(out.contains("[llm-compress: 原文 "), "contains path placeholder");
     assert!(out.starts_with("[llm-compress: 略 49 行]"));
-    // 路径指向的文件内容 == 原文
+    // File content at path == original text
     let path_part = out.split("原文 ").nth(1).unwrap().trim().trim_end_matches(']').trim();
     let written = std::fs::read_to_string(path_part).unwrap();
     assert_eq!(written, original);
@@ -44,7 +44,7 @@ fn disabled_returns_compressed_unchanged() {
     cfg.enabled = false;
     let compressed = "[llm-compress: 略 N 行]".to_string();
     let out = attach(compressed.clone(), "original", &c, "call1", &cfg);
-    assert_eq!(out, compressed, "disabled:原样返回 compressed,不加路径");
+    assert_eq!(out, compressed, "disabled: return compressed as-is, no path appended");
 }
 
 #[test]
@@ -58,7 +58,7 @@ fn over_max_file_bytes_returns_original() {
     let original = "x".repeat(500); // > 100
     let compressed = "[llm-compress: 略]".to_string();
     let out = attach(compressed, &original, &c, "call1", &cfg);
-    assert_eq!(out, original, "超 max_file_bytes → 返回原文(保有损必可取回)");
+    assert_eq!(out, original, "exceeds max_file_bytes → return original (preserve lossy recovery capability)");
 }
 
 #[test]
@@ -66,42 +66,42 @@ fn over_max_file_bytes_returns_original() {
 fn sanitizes_unsafe_path_components() {
     let tmp = tempfile::tempdir().unwrap();
     std::env::set_var("HOME", tmp.path());
-    // queryid 含 / 和 ..,call_id 含 /
+    // queryid contains / and .., call_id contains /
     let c = ctx("../../etc/evil");
     let original = "LONG CONTENT ".repeat(50);
     let out = attach("[llm-compress: 略]".to_string(), &original, &c, "a/b/../c", &cfg_enabled());
     let path_part = out.split("原文 ").nth(1).unwrap().trim().trim_end_matches(']').trim();
-    // 路径必须落在 HOME/.codex/llm-compress/ccr 下,无穿越
+    // Path must stay within HOME/.codex/llm-compress/ccr, no traversal
     let root = tmp.path().join(".codex/llm-compress/ccr");
     let canon = std::fs::canonicalize(path_part).unwrap();
-    assert!(canon.starts_with(std::fs::canonicalize(&root).unwrap()), "路径不得穿越到 ccr 根外");
+    assert!(canon.starts_with(std::fs::canonicalize(&root).unwrap()), "path must not escape ccr root");
 }
 
-/// 核心总则回归:短原文 + 长路径场景下,attach 必须返回原文,
-/// 绝不产出"有损但无路径"的 `见 ccr` 字符串。
+/// Core invariant regression: with short original + long path,
+/// attach must return original, never produce "lossy without path" marker.
 ///
-/// 构造方式:原文约 50 字节 (足以通过 max_file_bytes 检查但很短),
-/// compressed 为 "[c]" (3 字节),使 attached = "[c] [llm-compress: 原文 <path>]" 极易超原文长度。
-/// 断言:结果要么 == original,要么包含 "[llm-compress: 原文 " — 不得含 "见 ccr"。
+/// Construction: original ~50 bytes (passes max_file_bytes but very short),
+/// compressed is "[c]" (3 bytes), so attached = "[c] [llm-compress: 原文 <path>]" easily exceeds original length.
+/// Assert: result is either == original or contains "[llm-compress: 原文 " — must not contain "见 ccr".
 #[test]
 #[serial]
 fn short_original_never_emits_pathless_marker() {
     let tmp = tempfile::tempdir().unwrap();
     std::env::set_var("HOME", tmp.path());
     let c = ctx("thread-short");
-    // 原文足够短:~50 字节。tmp 路径通常 50+ 字节,加上 "[c] [llm-compress: 原文 …]" 前缀必然超长。
+    // Original is short enough: ~50 bytes. tmp path typically 50+ bytes, plus "[c] [llm-compress: 原文 …]" prefix must exceed length.
     let original = "short original text for ccr test!!!!!";
     let compressed = "[c]".to_string();
     let cfg = cfg_enabled();
     let out = attach(compressed, original, &c, "call-short", &cfg);
-    // 核心总则:结果只允许是"含路径占位"或"原文",绝无"有损无路径"
+    // Core invariant: result must be either "with path placeholder" or "original", never "lossy without path"
     assert!(
         out == original || out.contains("[llm-compress: 原文 "),
-        "违反核心总则:结果既非原文又无路径占位 => {:?}",
+        "violates core invariant: result is neither original nor has path placeholder => {:?}",
         out
     );
-    // 具体回归断言:不得出现无路径 marker
-    assert!(!out.contains("见 ccr"), "违反核心总则:产出无路径 marker `见 ccr` => {:?}", out);
+    // Specific regression assert: must not emit pathless marker
+    assert!(!out.contains("見 ccr"), "violates core invariant: emitted pathless marker `見 ccr` => {:?}", out);
 }
 
 #[test]
@@ -113,7 +113,7 @@ fn same_fragment_reuses_file() {
     let original = "REPEATED CONTENT ".repeat(50);
     let o1 = attach("[c1]".to_string(), &original, &c, "call1", &cfg_enabled());
     let o2 = attach("[c2]".to_string(), &original, &c, "call1", &cfg_enabled());
-    // 同 (call_id, fragment_hash) → 同一文件路径
+    // Same (call_id, fragment_hash) → same file path
     let p1 = o1.split("原文 ").nth(1).unwrap().trim().trim_end_matches(']').trim();
     let p2 = o2.split("原文 ").nth(1).unwrap().trim().trim_end_matches(']').trim();
     assert_eq!(p1, p2);

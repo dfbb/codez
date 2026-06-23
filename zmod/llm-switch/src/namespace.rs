@@ -1,18 +1,18 @@
-//! 请求是否含 llm-switch v1 不可表达的工具(spec §4.1 预检)。
+//! Check if the request contains tools that cannot be expressed by llm-switch v1 (spec §4.1 pre-check).
 
 use codex_protocol::models::ResponseItem;
 
-/// 请求是否含 v1 连接器不可表达的工具(spec §4.1)。
-/// 覆盖两个硬失败来源:tools 里的非 function 工具定义、input 里的 namespaced FunctionCall。
+/// Check if the request contains tools that cannot be expressed by v1 connector (spec §4.1).
+/// Covers two hard failure sources: non-function tool definitions in tools, namespaced FunctionCall in input.
 pub fn request_has_namespace_tools(req: &codex_api::ResponsesApiRequest) -> bool {
-    // ① 工具定义:任一非 "function" 类型(含缺失 type)→ 不可表达
+    // ① Tool definitions: any non-"function" type (including missing type) → unexpressible
     let bad_tool_def = req.tools.iter().any(|t| {
         t.get("type").and_then(|v| v.as_str()) != Some("function")
     });
     if bad_tool_def {
         return true;
     }
-    // ② 函数调用:任一带 namespace 的 FunctionCall → 不可表达
+    // ② Function calls: any FunctionCall with namespace → unexpressible
     req.input.iter().any(|item| {
         matches!(item, ResponseItem::FunctionCall { namespace: Some(_), .. })
     })

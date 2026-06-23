@@ -2,7 +2,7 @@ use codez_llm_compress::config::Config;
 use codez_llm_compress::command::CommandHint;
 use codez_llm_compress::router::{Budget, CompressOutcome, Compressor, ContentRouter, ContentKind};
 
-/// 认领一切、把文本替换为固定短串的假压缩器。
+/// A fake compressor that claims everything and replaces text with a fixed short string.
 struct HalfCompressor;
 impl Compressor for HalfCompressor {
     fn name(&self) -> &'static str { "half" }
@@ -18,7 +18,7 @@ impl Compressor for HalfCompressor {
     }
 }
 
-/// 永不认领。
+/// Never claims anything.
 struct NeverCompressor;
 impl Compressor for NeverCompressor {
     fn name(&self) -> &'static str { "never" }
@@ -26,7 +26,7 @@ impl Compressor for NeverCompressor {
     fn compress(&self, _t: &str, _b: &Budget) -> CompressOutcome { CompressOutcome::Unchanged }
 }
 
-/// detect 命中但 compress panic —— 验证 fail-open。
+/// detect is hit but compress panics — verify fail-open.
 struct PanicCompressor;
 impl Compressor for PanicCompressor {
     fn name(&self) -> &'static str { "panic" }
@@ -58,7 +58,7 @@ fn no_detect_returns_none() {
 fn panic_in_compress_is_caught_and_returns_none() {
     let cfg = Config::disabled();
     let r = ContentRouter::new(vec![Box::new(PanicCompressor)]);
-    // 不得 panic 出来;返回 None 让调用方保留原文。
+    // Must not panic; return None to let the caller preserve the original text.
     let out = r.compress_text("some payload text", &budget(&cfg));
     assert!(out.is_none());
 }
@@ -76,10 +76,10 @@ fn unchanged_outcome_returns_none() {
     assert!(r.compress_text("xxxx", &budget(&cfg)).is_none());
 }
 
-/// 命令感知重排:git diff 命令提示把 "diff" 压缩器排到最前,其输出优先。
+/// Command-aware reordering: "git diff" command hint moves the "diff" compressor to the front for priority output.
 #[test]
 fn cmd_hint_reorders_diff_to_front() {
-    // "diff" 压缩器:认领一切,在文本上打 [diff] 标记。
+    // "diff" compressor: claims everything, tags the text with [diff].
     struct DiffFake;
     impl Compressor for DiffFake {
         fn name(&self) -> &'static str { "diff" }
@@ -94,7 +94,7 @@ fn cmd_hint_reorders_diff_to_front() {
             }
         }
     }
-    // "search" 压缩器:同样认领一切,在文本上打 [search] 标记。
+    // "search" compressor: also claims everything, tags the text with [search].
     struct SearchFake;
     impl Compressor for SearchFake {
         fn name(&self) -> &'static str { "search" }
@@ -111,16 +111,16 @@ fn cmd_hint_reorders_diff_to_front() {
     }
 
     let cfg = Config::disabled();
-    // 不带命令提示:search 排在前,应得到 [search] 输出。
+    // Without command hint: search comes first, should get [search] output.
     let r = ContentRouter::new(vec![Box::new(SearchFake), Box::new(DiffFake)]);
-    let text = "0123456789ABCDEF"; // 16 bytes,够压
+    let text = "0123456789ABCDEF"; // 16 bytes, compressible
     let (out_no_cmd, _, _) = r.compress_text(text, &budget(&cfg)).unwrap();
-    assert!(out_no_cmd.starts_with("[search]"), "无命令提示时 search 应在前");
+    assert!(out_no_cmd.starts_with("[search]"), "without command hint, search should be first");
 
-    // 带 git diff 命令提示:diff 被重排到最前,应得到 [diff] 输出。
+    // With "git diff" command hint: diff is reordered to the front, should get [diff] output.
     let cmd = CommandHint { program: "git".into(), argv: vec!["diff".into()] };
     let b_with_cmd = Budget { cfg: &cfg, cmd: Some(&cmd) };
     let r2 = ContentRouter::new(vec![Box::new(SearchFake), Box::new(DiffFake)]);
     let (out_with_cmd, _, _) = r2.compress_text(text, &b_with_cmd).unwrap();
-    assert!(out_with_cmd.starts_with("[diff]"), "git diff 命令提示应把 diff 重排到前");
+    assert!(out_with_cmd.starts_with("[diff]"), "git diff command hint should reorder diff to the front");
 }

@@ -1,5 +1,5 @@
-//! codez-llm-compress:在 codex LLM 请求边界压缩请求。
-//! 入口 transform() 接线全部编排链:命令识别→保护门→预处理→路由压缩→CCR挂载→体积闸门。
+//! codez-llm-compress: compress requests at codex LLM request boundary.
+//! Entry point transform() wires the entire orchestration chain: command recognition → protection gate → preprocessing → routing compression → CCR attachment → volume gate.
 
 pub mod ccr;
 pub mod command;
@@ -11,7 +11,7 @@ pub mod stats;
 pub mod protect;
 pub mod preprocess;
 
-/// 是否启用压缩(读 ~/.codex/config-zmod.toml 的 [llm_compress].enabled)。
+/// Whether compression is enabled (read [llm_compress].enabled from ~/.codex/config-zmod.toml).
 pub fn enabled() -> bool {
     config::load().enabled
 }
@@ -39,14 +39,14 @@ fn build_router() -> ContentRouter {
     ])
 }
 
-/// crate 单一入口:在 LLM 请求发送边界原地压缩 request。
-/// fail-open:任何环节出问题都退回原文,绝不阻断请求(返回 () 而非 Result)。
+/// Single entry point of crate: compress request in-place at LLM request send boundary.
+/// fail-open: if any step fails, fall back to original; never block the request (returns () instead of Result).
 pub fn transform(request: &mut ResponsesApiRequest, _api_provider: &ApiProvider, queryid: &str) {
     let cfg = config::load();
     if !cfg.enabled {
         return;
     }
-    // 一次性请求上下文
+    // One-time request context
     let ctx = crate::ccr::RequestCtx {
         queryid,
         cmd_index: crate::command::index(request),
@@ -103,13 +103,13 @@ fn compress_in_place(
         return;
     }
     let cmd = ctx.cmd_index.get(call_id);
-    // ② 保护门:命中即整段逐字节不变
+    // ② Protection gate: if hit, keep the entire segment byte-for-byte unchanged
     if crate::protect::should_protect(s, cmd, cfg) {
         return;
     }
-    // ③ 预处理
+    // ③ Preprocessing
     let (pre, pre_lossy) = crate::preprocess::run(s, &cfg.preprocess);
-    // ④⑤ 路由压缩
+    // ④⑤ Routing compression
     let budget = Budget { cfg, cmd };
     let mut candidate_is_json = false;
     let candidate = match router.compress_text(&pre, &budget) {
@@ -142,7 +142,7 @@ fn compress_in_place(
             }
         }
     };
-    // ⑥ 最终写回闸门(体积 + JSON 保卫:Json 产物必须仍可 parse)
+    // ⑥ Final write-back gate (volume + JSON guard: Json result must still be parseable)
     let json_valid = !candidate_is_json
         || serde_json::from_str::<serde_json::Value>(&candidate).is_ok();
     if candidate.len() <= s.len() && json_valid {
@@ -150,7 +150,7 @@ fn compress_in_place(
     }
 }
 
-/// 统计 input 中所有"可压缩文本片段"的字节总和(与压缩作用对象一致)。
+/// Count total bytes of all "compressible text segments" in input (aligned with compression targets).
 fn total_text_bytes(input: &[ResponseItem]) -> usize {
     let mut total = 0usize;
     for item in input {

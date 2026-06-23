@@ -26,13 +26,13 @@ fn keeps_first_and_last_match_per_file() {
     let mut cfg = Config::disabled();
     cfg.search.max_per_file = 2;
     let c = SearchCompressor;
-    // 一个文件 5 个匹配
+    // One file with 5 matches
     let text = "f.rs:1:one\nf.rs:2:two\nf.rs:3:three\nf.rs:4:four\nf.rs:5:five";
     if let CompressOutcome::Compressed { text: new, lossy, kind, .. } = c.compress(text, &budget(&cfg)) {
         assert!(lossy);
         assert_eq!(kind, ContentKind::Text);
-        assert!(new.contains("f.rs:1:one"), "保留首匹配");
-        assert!(new.contains("f.rs:5:five"), "保留末匹配");
+        assert!(new.contains("f.rs:1:one"), "keep first match");
+        assert!(new.contains("f.rs:5:five"), "keep last match");
         assert!(new.contains("[llm-compress: 略"));
     } else {
         panic!("expected compressed");
@@ -53,7 +53,7 @@ fn files_over_limit_are_folded() {
     }
     let text = lines.join("\n");
     if let CompressOutcome::Compressed { text: new, .. } = c.compress(&text, &budget(&cfg)) {
-        assert!(new.contains("个文件"), "文件数超限折叠");
+        assert!(new.contains("个文件"), "file count exceeds limit, fold");
     } else {
         panic!("expected compressed");
     }
@@ -61,11 +61,11 @@ fn files_over_limit_are_folded() {
 
 #[test]
 fn is_grep_command_forces_detect() {
-    // 即使行格式不典型,is_grep 命中也认领(由 budget.cmd 提供)。本测试只验证 detect 读 budget.cmd 不 panic。
+    // Even if line format is atypical, is_grep match claims it (provided by budget.cmd). This test only verifies that detect reads budget.cmd without panic.
     let cfg = Config::disabled();
     let c = SearchCompressor;
     let hint = codez_llm_compress::command::CommandHint { program: "rg".to_string(), argv: vec![] };
     let b = Budget { cfg: &cfg, cmd: Some(&hint) };
-    // 多行但非标准 grep 格式;is_grep 命中 → detect true
+    // Multiple lines but not standard grep format; is_grep match → detect true
     assert!(c.detect("matchy line 1\nmatchy line 2\nmatchy line 3", &b));
 }
