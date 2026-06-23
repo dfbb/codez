@@ -140,20 +140,47 @@ These mechanics drive the design and corrected an earlier flawed approach:
   rate. (The earlier draft's "second-to-last message" reasoning was wrong: the last
   message is exactly where the marker belongs.)
 
-### Decision: top-level automatic caching
+### Decision: top-level automatic caching, gated per provider
 
 Enable Anthropic's automatic caching by adding a single top-level field to the
-translated request body:
+translated request body **only when the target provider has opted in**:
 
 ```json
 { "cache_control": { "type": "ephemeral" } }
 ```
 
-Anthropic then places the breakpoint on the last cacheable block and moves it forward
-as the conversation grows — no manual breakpoint bookkeeping, and it is the
-doc's first recommendation for multi-turn conversations. Implementation is a one-line
-addition to the body assembled in `build_anthropic_request` (`anthropic_req.rs:204`),
-after messages/tools/system are set. TTL: default 5 minutes (omit `ttl`).
+When present, Anthropic places the breakpoint on the last cacheable block and moves it
+forward as the conversation grows — no manual breakpoint bookkeeping, and it is the
+doc's first recommendation for multi-turn conversations.
+
+**Why gated, not unconditional (compatibility):** automatic caching is supported only
+on the Claude API, AWS Claude Platform, and Microsoft Foundry — **not Bedrock/Vertex**,
+and there is **no guarantee** a third-party Anthropic-compatible gateway tolerates an
+unknown top-level field. Since llm-switch's anthropic connector targets a
+user-configured arbitrary `base_url`, unconditionally injecting `cache_control` could
+turn a previously-working route into a **400 hard failure** — far worse than a missed
+discount. So it is off by default and enabled per provider.
+
+**Config:** add an optional `prompt_cache` boolean to a provider's table in
+`~/.codex/config-zmod.toml`, default `false` (fail-safe, current behavior unchanged):
+
+```toml
+[llm-switch.providers.claude-sonnet]
+connector     = "anthropic"
+base_url      = "https://api.anthropic.com"
+auth          = "x-api-key"
+key_env       = "ANTHROPIC_API_KEY"
+model         = "claude-sonnet-4-5"
+prompt_cache  = true   # opt in: emit top-level cache_control for this provider
+```
+
+This adds `prompt_cache: bool` (`#[serde(default)]`) to `RawProvider` and `ProviderCfg`
+(`config.rs:24,58`). The field is only meaningful for the anthropic connector; the chat
+connector ignores it (DeepSeek/OpenAI auto-cache without any marker). When
+`prompt_cache == true`, `build_anthropic_request` (`anthropic_req.rs:204`) adds the
+top-level field after messages/tools/system are set. TTL: default 5 minutes (omit
+`ttl`). The user is responsible for only enabling it on endpoints they know support
+automatic caching — the default-off keeps unknown endpoints safe.
 
 ### Automatic-caching traps to honor (from the doc)
 
@@ -168,13 +195,13 @@ after messages/tools/system are set. TTL: default 5 minutes (omit `ttl`).
    breakpoint slots. Since llm-switch emits no explicit `cache_control` elsewhere, there
    is no slot exhaustion and no mixed-TTL 400 risk. Keep it that way: do not add
    explicit breakpoints alongside automatic.
-3. **Platform support is not universal.** Automatic caching works on the Claude API,
-   AWS Claude Platform, and Microsoft Foundry (beta); **Bedrock and Vertex do not
-   support it**. llm-switch targets a user-configured `base_url` that may be a
-   third-party Anthropic-compatible gateway. Treat the top-level field as best-effort:
-   endpoints that don't support it ignore an unknown field (or, at worst, the prefix is
-   simply not cached). This is fail-safe — no error path, no correctness impact, only a
-   missed discount. Document this; do not attempt platform detection.
+3. **Platform support is not universal — handled by the per-provider gate.** Automatic
+   caching works on the Claude API, AWS Claude Platform, and Microsoft Foundry (beta);
+   **Bedrock and Vertex do not support it**, and a third-party Anthropic-compatible
+   gateway behind a user `base_url` may reject an unknown top-level field with a 400.
+   We do NOT assume the field is silently ignored. Instead, `prompt_cache` defaults to
+   `false`; the field is emitted only for providers the user explicitly opted in. No
+   runtime platform detection, no retry logic — the safety comes from default-off.
 4. **Min length still applies** (1024 / 2048 / 4096 tok by model). Below it, Anthropic
    processes without caching and returns no error. No token counting in llm-switch
    (out of scope). Accept and document.
@@ -205,9 +232,10 @@ top-level `cache_control`. No change to `apply_field_downgrade` for this field.
 
 ### Verification
 
-- **Wire-format test**: translate a multi-message request, assert the body has top-level
-  `"cache_control": {"type": "ephemeral"}` and that no per-block `cache_control` markers
-  were added (single-mechanism guarantee).
+- **Gate test**: `prompt_cache = false` (default) → translated body has NO top-level
+  `cache_control` (byte-identical to today's output, zero regression). `prompt_cache =
+  true` → body has top-level `"cache_control": {"type": "ephemeral"}` and no per-block
+  markers (single-mechanism guarantee).
 - **Stability test (the real target)**: simulate a 3-turn conversation through
   `build_anthropic_request` (with Part A determinism applied upstream); assert the
   serialized prefix bytes of turn N+1 up to turn N's last block are byte-identical to
@@ -231,7 +259,10 @@ top-level `cache_control`. No change to `apply_field_downgrade` for this field.
 ## Rollout
 
 Both parts are gated by their existing feature switches
-(`[llm_compress]` / `[llm-switch]` in `~/.codex/config-zmod.toml`); no new config.
-Each part lands as changes to its own zmod crate; `patches/*.patch` are unaffected
-(no new call sites or signatures). Part A and Part B can ship independently, but
-Anthropic caching is only effective once both are in.
+(`[llm_compress]` / `[llm-switch]` in `~/.codex/config-zmod.toml`). Part A adds no
+config. Part B adds one optional per-provider field `prompt_cache: bool` (default
+`false`); with it unset, behavior is byte-identical to today (zero regression for
+existing providers). Each part lands as changes to its own zmod crate; `patches/*.patch`
+are unaffected (no new call sites or signatures). Part A and Part B can ship
+independently, but Anthropic caching is only effective once both are in **and** a
+provider sets `prompt_cache = true`.
