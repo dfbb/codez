@@ -15,7 +15,6 @@ pub struct Config {
     pub log: LogCfg,
     pub preprocess: PreprocessCfg,
     pub search: SearchCfg,
-    pub tabular: TabularCfg,
     pub protect: ProtectCfg,
     pub ccr: CcrCfg,
 }
@@ -31,7 +30,11 @@ pub struct TruncateCfg {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct JsonCfg {
-    pub csv_schema: bool,
+    /// Master switch for TOON encoding (JsonCompressor + TabularCompressor).
+    /// Default true. Container-level `#[serde(default)]` + the Default impl
+    /// below supply the true default — do NOT use a field-level
+    /// `#[serde(default)]`, which would default bool to false.
+    pub use_toon: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -65,12 +68,6 @@ pub struct SearchCfg {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
-pub struct TabularCfg {
-    pub enabled: bool,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
 pub struct ProtectCfg {
     pub error_max_bytes: usize,
 }
@@ -95,7 +92,6 @@ impl Default for Config {
             log: LogCfg::default(),
             preprocess: PreprocessCfg::default(),
             search: SearchCfg::default(),
-            tabular: TabularCfg::default(),
             protect: ProtectCfg::default(),
             ccr: CcrCfg::default(),
         }
@@ -110,7 +106,7 @@ impl Default for TruncateCfg {
 
 impl Default for JsonCfg {
     fn default() -> Self {
-        Self { csv_schema: true }
+        Self { use_toon: true }
     }
 }
 
@@ -140,11 +136,6 @@ impl Default for PreprocessCfg {
 impl Default for SearchCfg {
     fn default() -> Self {
         Self { max_per_file: 5, max_files: 15 }
-    }
-}
-impl Default for TabularCfg {
-    fn default() -> Self {
-        Self { enabled: true }
     }
 }
 impl Default for ProtectCfg {
