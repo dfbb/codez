@@ -45,25 +45,30 @@ fn different_content_yields_different_output() {
 }
 
 #[test]
-fn compression_independent_of_command_hint() {
-    // Per-item independence: a tool output compresses to the same bytes regardless of
-    // whether a command hint accompanies it. The command hint can only *broaden*
-    // detection (force-claim), never change the bytes the search compressor emits for
-    // content it already claims. This is the property that lets a tool output keep its
-    // compressed form across turns no matter what else is in the request.
-    let mut cfg = Config::disabled();
-    cfg.search.max_per_file = 2;
+fn command_hint_broadens_detection_but_content_stays_deterministic() {
+    // The command hint affects DETECTION only: non-grep-shaped content is force-claimed
+    // when a grep hint is present, but not otherwise. Crucially, whatever a tool output
+    // compresses to is still a pure function of its content — the hint cannot make the
+    // same content compress to different bytes. Both halves matter for cache stability.
+    let cfg = Config::disabled();
     let c = SearchCompressor;
-    let item = "x.rs:1:alpha_function\nx.rs:2:beta_function\nx.rs:3:gamma_function\nx.rs:4:delta_function\nx.rs:5:epsilon_function";
+
+    // Content that does NOT parse as grep `path:line:...` lines (no line-number field).
+    let non_grep = "alpha matched here\nbeta matched here\ngamma matched here\ndelta matched here";
 
     let no_hint = Budget { cfg: &cfg, cmd: None };
-    let hint = CommandHint {
-        program: "rg".to_string(),
-        argv: vec![],
-    };
-    let with_hint = Budget { cfg: &cfg, cmd: Some(&hint) };
+    let grep_hint = CommandHint { program: "rg".to_string(), argv: vec![] };
+    let with_hint = Budget { cfg: &cfg, cmd: Some(&grep_hint) };
 
-    let without = compressed_text(c.compress(item, &no_hint));
-    let with = compressed_text(c.compress(item, &with_hint));
-    assert_eq!(without, with, "command hint must not change compressed bytes for already-claimed content");
+    // Detection differs by hint: this is the real, falsifiable effect of cmd.
+    assert!(!c.detect(non_grep, &no_hint), "non-grep content must not be claimed without a hint");
+    assert!(c.detect(non_grep, &with_hint), "grep hint must force-claim the same content");
+
+    // Determinism still holds for genuinely grep-shaped content regardless of runs.
+    let mut cfg2 = Config::disabled();
+    cfg2.search.max_per_file = 2;
+    let grep_shaped = "x.rs:1:alpha_function\nx.rs:2:beta_function\nx.rs:3:gamma_function\nx.rs:4:delta_function\nx.rs:5:epsilon_function";
+    let run1 = compressed_text(c.compress(grep_shaped, &budget(&cfg2)));
+    let run2 = compressed_text(c.compress(grep_shaped, &budget(&cfg2)));
+    assert_eq!(run1, run2, "grep-shaped content compresses deterministically");
 }
