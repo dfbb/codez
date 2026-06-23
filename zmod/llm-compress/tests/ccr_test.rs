@@ -7,7 +7,6 @@ use std::collections::HashMap;
 fn ctx<'a>(queryid: &'a str) -> RequestCtx<'a> {
     RequestCtx {
         queryid,
-        query_terms: Vec::new(),
         cmd_index: HashMap::new(),
         ccr: RefCell::new(CcrRegistry::new()),
     }

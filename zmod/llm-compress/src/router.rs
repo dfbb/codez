@@ -11,11 +11,10 @@ pub enum ContentKind {
     Json,
 }
 
-/// 压缩器从中取配置/命令提示/查询词。
+/// Compressors read config / command hints from this.
 pub struct Budget<'a> {
     pub cfg: &'a Config,
     pub cmd: Option<&'a CommandHint>,
-    pub query: &'a [String],
 }
 
 /// 单个压缩器对一段文本的处理结果。

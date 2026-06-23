@@ -3,7 +3,7 @@ use codez_llm_compress::config::Config;
 use codez_llm_compress::router::{Budget, CompressOutcome, Compressor, ContentKind};
 
 fn budget(cfg: &Config) -> Budget<'_> {
-    Budget { cfg, cmd: None, query: &[] }
+    Budget { cfg, cmd: None }
 }
 
 /// 构造一段真实风格、带时间戳的多行日志(≥8 行)。
@@ -84,7 +84,7 @@ fn detect_true_for_consecutive_repeats() {
 // ========== Task 08 新增 ==========
 
 fn budget_t08(cfg: &Config) -> Budget<'_> {
-    Budget { cfg, cmd: None, query: &[] }
+    Budget { cfg, cmd: None }
 }
 
 #[test]

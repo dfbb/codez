@@ -8,7 +8,7 @@ use serde_json::json;
 #[test]
 fn text_stream_synthesizes_message_and_completed() {
     let events = vec![
-        json!({"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":3,"cache_read_input_tokens":7}}}),
+        json!({"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":3,"cache_read_input_tokens":7,"cache_creation_input_tokens":4}}}),
         json!({"type":"content_block_start","index":0,"content_block":{"type":"text"}}),
         json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}}),
         json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}),
@@ -58,9 +58,9 @@ fn text_stream_synthesizes_message_and_completed() {
     assert_eq!(*end, Some(true)); // end_turn → true
     let u = usage.as_ref().unwrap();
     assert_eq!(u.input_tokens, 3);
-    assert_eq!(u.cached_input_tokens, 7); // cache_read_input_tokens 正确上报
+    assert_eq!(u.cached_input_tokens, 7); // cache_read only (true hits)
     assert_eq!(u.output_tokens, 2);
-    assert_eq!(u.total_tokens, 5);
+    assert_eq!(u.total_tokens, 16); // 7 read + 4 creation + 3 input + 2 output
 }
 
 #[test]
@@ -110,7 +110,10 @@ fn tool_use_aggregates_partial_json_to_arguments_string() {
             ResponseEvent::OutputItemDone(ResponseItem::Message { .. })
         )
     });
-    assert!(!has_msg, "pure tool-call response should not emit Message item");
+    assert!(
+        !has_msg,
+        "pure tool-call response should not emit Message item"
+    );
 }
 
 #[test]
@@ -137,8 +140,7 @@ fn max_tokens_stop_reason_maps_end_turn_to_none() {
 
 #[test]
 fn error_event_fails() {
-    let events =
-        vec![json!({"type":"error","error":{"type":"overloaded_error","message":"x"}})];
+    let events = vec![json!({"type":"error","error":{"type":"overloaded_error","message":"x"}})];
     assert!(run(&events, false).is_err());
 }
 

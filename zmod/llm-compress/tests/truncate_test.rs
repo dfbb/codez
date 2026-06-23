@@ -10,7 +10,7 @@ fn cfg_with(head_lines: usize, tail_lines: usize, max_bytes: usize) -> Config {
 }
 
 fn budget(cfg: &Config) -> Budget<'_> {
-    Budget { cfg, cmd: None, query: &[] }
+    Budget { cfg, cmd: None }
 }
 
 #[test]

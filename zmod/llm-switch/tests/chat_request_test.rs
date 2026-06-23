@@ -101,7 +101,6 @@ fn function_call_and_output_pair_by_call_id() {
             metadata: None,
         },
         ResponseItem::FunctionCallOutput {
-            id: None,
             call_id: "call_1".into(),
             output: FunctionCallOutputPayload {
                 body: FunctionCallOutputBody::Text("sunny".into()),
@@ -137,7 +136,6 @@ fn tool_output_failure_prefixes_marker() {
             metadata: None,
         },
         ResponseItem::FunctionCallOutput {
-            id: None,
             call_id: "c".into(),
             output: FunctionCallOutputPayload {
                 body: FunctionCallOutputBody::Text("boom".into()),
@@ -172,7 +170,6 @@ fn function_call_output_content_items_text_only_maps() {
             metadata: None,
         },
         ResponseItem::FunctionCallOutput {
-            id: None,
             call_id: "c2".into(),
             output: FunctionCallOutputPayload {
                 body: FunctionCallOutputBody::ContentItems(vec![
@@ -224,7 +221,6 @@ fn orphan_tool_call_gets_placeholder_result() {
 fn orphan_tool_result_is_dropped() {
     let mut req = base_req();
     req.input = vec![ResponseItem::FunctionCallOutput {
-        id: None,
         call_id: "ghost".into(),
         output: FunctionCallOutputPayload {
             body: FunctionCallOutputBody::Text("x".into()),
@@ -286,7 +282,7 @@ fn reasoning_item_is_discarded_silently() {
     let mut req = base_req();
     req.input = vec![
         ResponseItem::Reasoning {
-            id: None,
+            id: String::new(),
             summary: vec![],
             content: None,
             encrypted_content: None,
@@ -419,7 +415,7 @@ fn web_search_call_hard_fails() {
 fn image_generation_call_hard_fails() {
     let mut req = base_req();
     req.input = vec![ResponseItem::ImageGenerationCall {
-        id: None,
+        id: String::new(),
         status: "completed".into(),
         revised_prompt: None,
         result: "base64data".into(),
@@ -446,7 +442,6 @@ fn custom_tool_call_hard_fails() {
 fn custom_tool_call_output_hard_fails() {
     let mut req = base_req();
     req.input = vec![ResponseItem::CustomToolCallOutput {
-        id: None,
         call_id: "c".into(),
         name: None,
         output: FunctionCallOutputPayload {
@@ -462,7 +457,6 @@ fn custom_tool_call_output_hard_fails() {
 fn tool_search_output_hard_fails() {
     let mut req = base_req();
     req.input = vec![ResponseItem::ToolSearchOutput {
-        id: None,
         call_id: None,
         status: "done".into(),
         execution: "{}".into(),
@@ -476,7 +470,6 @@ fn tool_search_output_hard_fails() {
 fn compaction_hard_fails() {
     let mut req = base_req();
     req.input = vec![ResponseItem::Compaction {
-        id: None,
         encrypted_content: "enc".into(),
         metadata: None,
     }];
@@ -487,7 +480,6 @@ fn compaction_hard_fails() {
 fn context_compaction_hard_fails() {
     let mut req = base_req();
     req.input = vec![ResponseItem::ContextCompaction {
-        id: None,
         encrypted_content: Some("enc".into()),
         metadata: None,
     }];
@@ -498,7 +490,6 @@ fn context_compaction_hard_fails() {
 fn agent_message_encrypted_content_hard_fails() {
     let mut req = base_req();
     req.input = vec![ResponseItem::AgentMessage {
-        id: None,
         author: "agent".into(),
         recipient: "user".into(),
         content: vec![AgentMessageInputContent::EncryptedContent {
@@ -538,7 +529,6 @@ fn function_call_output_image_content_hard_fails() {
             metadata: None,
         },
         ResponseItem::FunctionCallOutput {
-            id: None,
             call_id: "c3".into(),
             output: FunctionCallOutputPayload {
                 body: FunctionCallOutputBody::ContentItems(vec![
@@ -568,7 +558,6 @@ fn function_call_output_encrypted_content_hard_fails() {
             metadata: None,
         },
         ResponseItem::FunctionCallOutput {
-            id: None,
             call_id: "c4".into(),
             output: FunctionCallOutputPayload {
                 body: FunctionCallOutputBody::ContentItems(vec![
@@ -674,7 +663,6 @@ fn fixture_system_user_tool_roundtrip() {
             metadata: None,
         },
         ResponseItem::FunctionCallOutput {
-            id: None,
             call_id: "call_weather_1".into(),
             output: FunctionCallOutputPayload {
                 body: FunctionCallOutputBody::Text("Sunny, 72°F".into()),
@@ -730,7 +718,6 @@ fn fixture_multi_tool_sequential() {
             metadata: None,
         },
         ResponseItem::FunctionCallOutput {
-            id: None,
             call_id: "call_a".into(),
             output: FunctionCallOutputPayload {
                 body: FunctionCallOutputBody::Text("result_a".into()),
@@ -747,7 +734,6 @@ fn fixture_multi_tool_sequential() {
             metadata: None,
         },
         ResponseItem::FunctionCallOutput {
-            id: None,
             call_id: "call_b".into(),
             output: FunctionCallOutputPayload {
                 body: FunctionCallOutputBody::Text("result_b".into()),

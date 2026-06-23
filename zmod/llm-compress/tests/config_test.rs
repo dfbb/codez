@@ -13,7 +13,6 @@ fn enabled_section_overrides_defaults() {
         r#"
 [llm_compress]
 enabled = true
-min_total_bytes = 2048
 
 [llm_compress.truncate]
 head_lines = 10
@@ -29,7 +28,6 @@ context_lines = 1
     );
     let cfg = load_from(f.path());
     assert!(cfg.enabled);
-    assert_eq!(cfg.min_total_bytes, 2048);
     assert_eq!(cfg.per_item_min_bytes, 1024); // 未给 → 默认
     assert_eq!(cfg.truncate.head_lines, 10);
     assert_eq!(cfg.truncate.max_bytes, 8192);
@@ -42,7 +40,6 @@ fn missing_section_disables() {
     let f = write_tmp("[some_other]\nx = 1\n");
     let cfg = load_from(f.path());
     assert!(!cfg.enabled);
-    assert_eq!(cfg.min_total_bytes, 4096); // 默认
 }
 
 #[test]

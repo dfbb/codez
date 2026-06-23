@@ -154,13 +154,12 @@ fn score_keep(
     head: usize,
     tail: usize,
     keep_levels: &[String],
-    budget: &Budget,
+    _budget: &Budget,
 ) -> (Vec<String>, bool) {
     let n = lines.len();
     if n <= head + tail {
         return (lines.to_vec(), false);
     }
-    let query = budget.query;
     let mut keep = vec![false; n];
     // head/tail 必留
     keep[..head.min(n)].fill(true);
@@ -168,7 +167,7 @@ fn score_keep(
     // 必留:[llm-compress: 开头的占位行 + 高分行 + keep_levels行 + 栈帧
     for (i, line) in lines.iter().enumerate() {
         if line.starts_with("[llm-compress: ")
-            || crate::score::line_score(line, query) >= 1.0
+            || crate::score::line_score(line) >= 1.0
             || line_has_keep_level(line, keep_levels)
             || is_stack_frame(line)
         {

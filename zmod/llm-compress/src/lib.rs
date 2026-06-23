@@ -4,7 +4,6 @@
 pub mod ccr;
 pub mod command;
 pub mod config;
-pub mod query;
 pub mod router;
 pub mod score;
 pub mod compress;
@@ -50,16 +49,12 @@ pub fn transform(request: &mut ResponsesApiRequest, _api_provider: &ApiProvider,
     // 一次性请求上下文
     let ctx = crate::ccr::RequestCtx {
         queryid,
-        query_terms: crate::query::extract(request),
         cmd_index: crate::command::index(request),
         ccr: std::cell::RefCell::new(crate::ccr::CcrRegistry::new()),
     };
     let router = build_router();
 
     let total_before = total_text_bytes(&request.input);
-    if total_before < cfg.min_total_bytes {
-        return;
-    }
     for item in request.input.iter_mut() {
         compress_item(item, &ctx, &router, &cfg);
     }
@@ -115,7 +110,7 @@ fn compress_in_place(
     // ③ 预处理
     let (pre, pre_lossy) = crate::preprocess::run(s, &cfg.preprocess);
     // ④⑤ 路由压缩
-    let budget = Budget { cfg, cmd, query: &ctx.query_terms };
+    let budget = Budget { cfg, cmd };
     let mut candidate_is_json = false;
     let candidate = match router.compress_text(&pre, &budget) {
         Some((new, comp_lossy, kind)) => {
