@@ -11,7 +11,6 @@ use std::path::PathBuf;
 /// 一次请求的上下文(Task 11 编排构造)。含可变 CCR registry。
 pub struct RequestCtx<'a> {
     pub queryid: &'a str,
-    pub query_terms: Vec<String>,
     pub cmd_index: HashMap<String, CommandHint>,
     pub ccr: RefCell<CcrRegistry>,
 }

@@ -4,7 +4,6 @@
 pub mod ccr;
 pub mod command;
 pub mod config;
-pub mod query;
 pub mod router;
 pub mod score;
 pub mod compress;
@@ -50,7 +49,6 @@ pub fn transform(request: &mut ResponsesApiRequest, _api_provider: &ApiProvider,
     // 一次性请求上下文
     let ctx = crate::ccr::RequestCtx {
         queryid,
-        query_terms: crate::query::extract(request),
         cmd_index: crate::command::index(request),
         ccr: std::cell::RefCell::new(crate::ccr::CcrRegistry::new()),
     };
