@@ -251,3 +251,47 @@ fn enabled_compresses_large_plaintext() {
         );
     }
 }
+
+/// End-to-end iron law: a TOON product is written back as BARE TOON, never
+/// decorated with a "[llm-compress: 原文 …]" pointer — even when preprocessing
+/// was lossy (a leading progress line is stripped → pre_lossy=true).
+#[test]
+#[serial]
+fn toon_kind_never_gets_ccr_attached() {
+    let _home = setup_enabled_home();
+
+    // A leading progress line is removed by strip_progress → pre_lossy=true.
+    // The remaining single-line JSON array is parsed by JsonCompressor and
+    // encoded to TOON. Keep the JSON line < 2000 bytes (preprocess
+    // truncate_line_bytes) and the total >= 1024 bytes (per_item_min_bytes).
+    let mut objs = String::from("[");
+    for i in 0..40u32 {
+        if i > 0 {
+            objs.push(',');
+        }
+        objs.push_str(&format!(r#"{{"id":{i},"name":"item_{i}"}}"#));
+    }
+    objs.push(']');
+    assert!(objs.len() < 2000 && objs.len() > 600, "json line len = {}", objs.len());
+    let input_text = format!("Downloading crates.io index\n{objs}");
+    assert!(input_text.len() >= 1024, "input must exceed per_item_min_bytes: {}", input_text.len());
+
+    let mut r = req(vec![fco("call-toon", &input_text)]);
+    transform(&mut r, &provider(), "qid-toon-ccr");
+
+    let out = get_text(&r.input[0]);
+
+    // The output must NOT carry a CCR pointer.
+    assert!(
+        !out.contains("[llm-compress: 原文 "),
+        "TOON product must not carry a CCR pointer!\nout: {:?}",
+        &out[..out.len().min(300)]
+    );
+    // And it must have actually been compressed (smaller than input) and be
+    // valid TOON that round-trips. (If for some reason it wasn't claimed, the
+    // output would equal pre-processed text; assert the compression happened.)
+    assert!(out.len() < input_text.len(), "expected compression: {} vs {}", out.len(), input_text.len());
+    let back: serde_json::Value = toon_format::decode_default(out)
+        .expect("output must be decodable TOON");
+    assert!(back.is_array(), "decoded TOON should be the original array");
+}

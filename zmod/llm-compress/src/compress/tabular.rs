@@ -1,41 +1,20 @@
-//! TabularCompressor —— CSV/TSV/Markdown 表格 → csv-schema(spec §5④)。
-//! 严格前提在 detect 内判定;满足才认领。kind=Json, lossy=false,不挂 CCR。
-//! detect 内同时预判 schema-form 是否比原文小,不小则让位给 Truncate。
+//! TabularCompressor — CSV/TSV/Markdown table → TOON.
+//! Parses a strict table (header, unique non-empty columns, equal column
+//! counts, no quoted cells), builds an array-of-objects Value, and encodes it
+//! to TOON. Product is kind=Toon, lossy=false. Gated by json.use_toon; claims
+//! only when TOON round-trips, is strictly smaller, and fits truncate.max_bytes.
 
-use crate::compress::schema::to_schema_form;
+use crate::compress::toon::encode_checked;
 use crate::router::{Budget, CompressOutcome, Compressor, ContentKind};
 use serde_json::{Map, Value};
 
 pub struct TabularCompressor;
 
-impl Compressor for TabularCompressor {
-    fn name(&self) -> &'static str {
-        "tabular"
+/// Parse + encode + claim pipeline shared by detect and compress.
+fn try_toon(text: &str, budget: &Budget) -> Option<String> {
+    if !budget.cfg.json.use_toon {
+        return None;
     }
-
-    fn detect(&self, text: &str, budget: &Budget) -> bool {
-        if !budget.cfg.tabular.enabled {
-            return false;
-        }
-        matches!(try_build(text), Some(s) if s.len() < text.len())
-    }
-
-    fn compress(&self, text: &str, _budget: &Budget) -> CompressOutcome {
-        match try_build(text) {
-            Some(s) if s.len() < text.len() => CompressOutcome::Compressed {
-                saved_bytes: text.len() - s.len(),
-                text: s,
-                lossy: false,
-                kind: ContentKind::Json,
-            },
-            _ => CompressOutcome::Unchanged,
-        }
-    }
-}
-
-/// 解析表格、构建 schema-form JSON 字符串;任一步骤失败返回 None。
-/// detect 与 compress 共用此函数,保证判定一致。
-fn try_build(text: &str) -> Option<String> {
     let table = parse_table(text)?;
     let header = &table[0];
     let mut arr: Vec<Value> = Vec::with_capacity(table.len() - 1);
@@ -46,13 +25,46 @@ fn try_build(text: &str) -> Option<String> {
         }
         arr.push(Value::Object(m));
     }
-    let snapshot = Value::Array(arr);
-    let schema_form = to_schema_form(&snapshot)?;
-    serde_json::to_string(&schema_form).ok()
+    let value = Value::Array(arr);
+    let toon = encode_checked(&value)?;
+    if toon.len() < text.len() && toon.len() <= budget.cfg.truncate.max_bytes {
+        Some(toon)
+    } else {
+        None
+    }
 }
 
-/// 解析 CSV/TSV/Markdown 表格为 Vec<行>(行 = Vec<单元格>),含 header。
-/// 严格:有 header、列名唯一非空、所有行列数一致、无引号转义/单元格换行;否则 None。
+impl Compressor for TabularCompressor {
+    fn name(&self) -> &'static str {
+        "tabular"
+    }
+
+    fn detect(&self, text: &str, budget: &Budget) -> bool {
+        try_toon(text, budget).is_some()
+    }
+
+    fn compress(&self, text: &str, budget: &Budget) -> CompressOutcome {
+        match try_toon(text, budget) {
+            Some(toon) => {
+                let saved = text.len().saturating_sub(toon.len());
+                if saved == 0 {
+                    return CompressOutcome::Unchanged;
+                }
+                CompressOutcome::Compressed {
+                    text: toon,
+                    saved_bytes: saved,
+                    lossy: false,
+                    kind: ContentKind::Toon,
+                }
+            }
+            None => CompressOutcome::Unchanged,
+        }
+    }
+}
+
+/// Parse CSV/TSV/Markdown table into Vec<row> (row = Vec<cell>), including header.
+/// Strict: requires header, unique non-empty column names, equal column counts
+/// across all rows, no quoted cells or escaped content. Returns None on failure.
 fn parse_table(text: &str) -> Option<Vec<Vec<String>>> {
     let raw_lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
     if raw_lines.len() < 2 {
