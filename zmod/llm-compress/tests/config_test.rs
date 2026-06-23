@@ -19,9 +19,6 @@ head_lines = 10
 tail_lines = 5
 max_bytes = 8192
 
-[llm_compress.json]
-csv_schema = false
-
 [llm_compress.diff]
 context_lines = 1
 "#,
@@ -31,7 +28,6 @@ context_lines = 1
     assert_eq!(cfg.per_item_min_bytes, 1024); // 未给 → 默认
     assert_eq!(cfg.truncate.head_lines, 10);
     assert_eq!(cfg.truncate.max_bytes, 8192);
-    assert!(!cfg.json.csv_schema);
     assert_eq!(cfg.diff.context_lines, 1);
 }
 

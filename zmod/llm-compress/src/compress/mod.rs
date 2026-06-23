@@ -5,7 +5,6 @@ pub mod truncate;
 pub mod json;
 pub mod diff;
 pub mod log;
-pub mod schema;
 pub mod search;
 pub mod tabular;
 pub mod toon;
