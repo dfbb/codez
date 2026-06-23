@@ -805,3 +805,84 @@ fn text_format_json_schema_appends_system_instruction() {
         "system 应保留原始 instructions，实际: {system:?}"
     );
 }
+
+// ============================================================
+// §B2 prompt_cache top-level cache_control
+// ============================================================
+
+#[test]
+fn prompt_cache_off_emits_no_cache_control() {
+    let req = base_req();
+    let v = build(&req, &ctx()).unwrap();
+    assert!(v.get("cache_control").is_none(), "default must not add cache_control");
+}
+
+#[test]
+fn prompt_cache_on_emits_top_level_cache_control() {
+    let req = base_req();
+    let mut c = dummy_ctx_anthropic("claude-opus-4-8", Some(8192));
+    c.prompt_cache = true;
+    let v = build(&req, &c).unwrap();
+    assert_eq!(v["cache_control"]["type"], "ephemeral");
+    // single-mechanism guarantee: no per-block markers anywhere in messages
+    let msgs = v["messages"].as_array().cloned().unwrap_or_default();
+    for m in &msgs {
+        if let Some(blocks) = m["content"].as_array() {
+            for b in blocks {
+                assert!(b.get("cache_control").is_none(), "no per-block cache_control");
+            }
+        }
+    }
+}
+
+#[test]
+fn translated_messages_prefix_is_stable_across_turns() {
+    // Prefix-cache lookback can only hit if turn N+1's serialized messages prefix is
+    // byte-identical to turn N's. build_anthropic_request must be a pure function of the
+    // request, so a growing conversation keeps its earlier message bytes stable.
+    // Use user→assistant alternation so consecutive messages do not coalesce.
+
+    fn user_msg(text: &str) -> ResponseItem {
+        ResponseItem::Message {
+            id: None,
+            role: "user".into(),
+            content: vec![ContentItem::InputText { text: text.into() }],
+            phase: None,
+            metadata: None,
+        }
+    }
+
+    fn assistant_msg(text: &str) -> ResponseItem {
+        ResponseItem::Message {
+            id: None,
+            role: "assistant".into(),
+            content: vec![ContentItem::InputText { text: text.into() }],
+            phase: None,
+            metadata: None,
+        }
+    }
+
+    // Turn N: [user("q1")]
+    let mut turn_n = base_req();
+    turn_n.input = vec![user_msg("first question")];
+
+    // Turn N+1: [user("q1"), assistant("a1"), user("q2")] — realistic conversation growth
+    let mut turn_n1 = base_req();
+    turn_n1.input = vec![
+        user_msg("first question"),
+        assistant_msg("first answer"),
+        user_msg("second question"),
+    ];
+
+    let v_n = build(&turn_n, &ctx()).unwrap();
+    let v_n1 = build(&turn_n1, &ctx()).unwrap();
+
+    // turn N's single message must serialize identically to turn N+1's first message.
+    let msg_n = &v_n["messages"].as_array().unwrap()[0];
+    let msg_n1_first = &v_n1["messages"].as_array().unwrap()[0];
+    assert_eq!(
+        serde_json::to_string(msg_n).unwrap(),
+        serde_json::to_string(msg_n1_first).unwrap(),
+        "earlier message bytes must be stable across turns for cache lookback"
+    );
+}
