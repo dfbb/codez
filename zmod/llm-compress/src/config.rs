@@ -32,6 +32,11 @@ pub struct TruncateCfg {
 #[serde(default)]
 pub struct JsonCfg {
     pub csv_schema: bool,
+    /// Master switch for TOON encoding (JsonCompressor + TabularCompressor).
+    /// Default true. Container-level `#[serde(default)]` + the Default impl
+    /// below supply the true default — do NOT use a field-level
+    /// `#[serde(default)]`, which would default bool to false.
+    pub use_toon: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -110,7 +115,7 @@ impl Default for TruncateCfg {
 
 impl Default for JsonCfg {
     fn default() -> Self {
-        Self { csv_schema: true }
+        Self { csv_schema: true, use_toon: true }
     }
 }
 

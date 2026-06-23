@@ -62,3 +62,17 @@ fn default_config_is_disabled_with_known_thresholds() {
     assert_eq!(cfg.per_item_min_bytes, 1024);
     assert_eq!(cfg.truncate.tail_lines, 50);
 }
+
+#[test]
+fn use_toon_defaults_true_and_parses_false() {
+    // Default (field absent) must be true.
+    let cfg = Config::disabled();
+    assert!(cfg.json.use_toon, "use_toon must default to true");
+
+    // Explicit false in config must parse as false.
+    let f = write_tmp(
+        "[llm_compress]\nenabled = true\n\n[llm_compress.json]\nuse_toon = false\n",
+    );
+    let parsed = load_from(f.path());
+    assert!(!parsed.json.use_toon, "use_toon = false must parse");
+}
