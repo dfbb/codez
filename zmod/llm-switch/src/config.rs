@@ -38,6 +38,7 @@ pub struct ProviderCfg {
 pub struct Config {
     pub enabled: bool,
     pub providers: HashMap<String, ProviderCfg>,
+    pub purpose: HashMap<String, String>,
 }
 
 // ---- 原始 TOML 反序列化层(私有) ----
@@ -53,6 +54,8 @@ struct RawSwitch {
     enabled: bool,
     #[serde(default)]
     providers: HashMap<String, RawProvider>,
+    #[serde(default)]
+    purpose: HashMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -75,7 +78,7 @@ struct RawProvider {
 pub fn load_config_from_str(toml_text: &str, allow_inline_key: bool) -> Result<Config, ConfigError> {
     let root: RawRoot = toml::from_str(toml_text).map_err(|e| ConfigError::Parse(e.to_string()))?;
     let Some(sw) = root.llm_switch else {
-        return Ok(Config { enabled: false, providers: HashMap::new() });
+        return Ok(Config { enabled: false, providers: HashMap::new(), purpose: HashMap::new() });
     };
     let mut providers = HashMap::new();
     for (id, raw) in sw.providers {
@@ -109,5 +112,5 @@ pub fn load_config_from_str(toml_text: &str, allow_inline_key: bool) -> Result<C
             prompt_cache: raw.prompt_cache,
         });
     }
-    Ok(Config { enabled: sw.enabled, providers })
+    Ok(Config { enabled: sw.enabled, providers, purpose: sw.purpose })
 }

@@ -1,6 +1,8 @@
 mod config;
 mod http;
+mod namespace;
 mod pipeline;
+mod purpose;
 mod transform;
 mod connector;
 mod sse;
@@ -133,9 +135,12 @@ pub use config::{
     load_config_from_str, AuthKind, Config, ConfigError, Connector, ProviderCfg,
 };
 pub use http::{build_headers, default_path, egress_url, resolve_key, HttpError};
+pub use namespace::request_has_namespace_tools;
 pub use pipeline::{default_plugins, run_transforms, TransformPlugin};
 pub use connector::{make_connector, ConnError, Connector as ConnectorTrait, EgressCtx, SseTranslator};
+pub use purpose::{purpose_from_source, Purpose};
 
+use codex_protocol::protocol::SessionSource;
 use std::sync::OnceLock;
 
 /// 仅供实跑测试 / 独立运行：从 gitignored testkey.toml 读配置，允许内联 auth_key。
@@ -209,9 +214,9 @@ fn loaded() -> &'static Config {
         match std::fs::read_to_string(&path) {
             Ok(text) => load_config_from_str(&text, false).unwrap_or_else(|e| {
                 tracing::warn!("llm-switch disabled: bad config-zmod.toml: {e}");
-                Config { enabled: false, providers: Default::default() }
+                Config { enabled: false, providers: Default::default(), purpose: Default::default() }
             }),
-            Err(_) => Config { enabled: false, providers: Default::default() }, // 缺文件 = 关闭
+            Err(_) => Config { enabled: false, providers: Default::default(), purpose: Default::default() }, // 缺文件 = 关闭
         }
     })
 }
@@ -230,18 +235,87 @@ pub fn enabled() -> bool {
     loaded().enabled
 }
 
-fn route_in(cfg: &Config, model_provider_id: &str) -> Option<Route> {
-    if !cfg.enabled { return None; }
-    cfg.providers.get(model_provider_id).map(|p| Route {
-        provider_id: model_provider_id.to_string(),
+/// 两级路由纯函数(spec §4):purpose 优先 -> provider-id 回退 -> None。
+/// `has_ns_tools` 由调用方用 request 预检算好(spec §4.1)。
+fn route_in(
+    cfg: &Config,
+    provider_id: &str,
+    purpose: Option<Purpose>,
+    has_ns_tools: bool,
+) -> Option<Route> {
+    if !cfg.enabled {
+        return None;
+    }
+    // 第 3 步:purpose 分支
+    if let Some(p) = purpose {
+        if let Some(target) = cfg.purpose.get(p.as_key()) {
+            match cfg.providers.get(target) {
+                None => {
+                    tracing::warn!(
+                        "llm-switch purpose '{}' -> unknown provider '{}', 回退 provider-id 路由",
+                        p.as_key(),
+                        target
+                    );
+                }
+                Some(_) if has_ns_tools => {
+                    tracing::warn!(
+                        "llm-switch purpose '{}' 命中但请求含不可表达工具,放弃用途路由、回退 provider-id",
+                        p.as_key()
+                    );
+                }
+                Some(pc) => {
+                    return Some(Route { provider_id: target.clone(), cfg: pc.clone() });
+                }
+            }
+        }
+    }
+    // 第 4 步:provider-id 分支(不看 has_ns_tools,保留 v1 硬失败契约)
+    cfg.providers.get(provider_id).map(|p| Route {
+        provider_id: provider_id.to_string(),
         cfg: p.clone(),
     })
 }
 
-/// 按 codex 的 model_provider_id 判定是否接管。
-/// 未启用 / 未命中 / responses → None(走原生 Responses 分支)。
-pub fn route(model_provider_id: &str) -> Option<Route> {
-    route_in(loaded(), model_provider_id)
+/// WS 绕过纯函数(spec §4.2):只看 source/purpose,不做 namespace 预检。
+///
+/// `_provider_id` 入参仅为与 `route_in` / 公开入口签名保持一致而保留;
+/// 绕过判定只看 source/purpose,不消费 provider id。
+fn should_bypass_in(cfg: &Config, _provider_id: &str, purpose: Option<Purpose>) -> bool {
+    if !cfg.enabled {
+        return false;
+    }
+    match purpose {
+        Some(p) => cfg
+            .purpose
+            .get(p.as_key())
+            .map(|target| cfg.providers.contains_key(target))
+            .unwrap_or(false),
+        None => false,
+    }
+}
+
+/// 两级路由入口(Task 5 patch 调用契约,签名逐字固定)。
+/// purpose 由 source 解析;namespace 预检对 purpose 分支生效(spec §4 / §4.1)。
+pub fn route(
+    provider_id: &str,
+    source: Option<&SessionSource>,
+    request: &codex_api::ResponsesApiRequest,
+) -> Option<Route> {
+    let cfg = loaded();
+    let purpose = source.and_then(purpose_from_source);
+    let has_ns_tools = purpose.is_some() && request_has_namespace_tools(request);
+    route_in(cfg, provider_id, purpose, has_ns_tools)
+}
+
+/// 传输层绕过判定(Task 5 patch 调用契约,签名逐字固定)。
+/// purpose 命中且映射目标存在时返回 true,使 stream() 跳过 WebSocket、走 HTTP(spec §4.2)。
+pub fn should_bypass_websocket(
+    provider_id: &str,
+    source: Option<&SessionSource>,
+) -> bool {
+    let cfg = loaded();
+    let purpose = source.and_then(purpose_from_source);
+    should_bypass_in(cfg, provider_id, purpose)
 }
 
 #[cfg(test)]
@@ -250,12 +324,123 @@ mod tests {
     #[test]
     fn disabled_never_routes() {
         let cfg = load_config_from_str("[llm-switch]\nenabled=false\n[llm-switch.providers.x]\nconnector=\"chat\"\nauth=\"bearer\"\n", false).unwrap();
-        assert!(route_in(&cfg, "x").is_none());
+        assert!(route_in(&cfg, "x", None, false).is_none());
     }
     #[test]
     fn enabled_routes_known_provider() {
         let cfg = load_config_from_str("[llm-switch]\nenabled=true\n[llm-switch.providers.x]\nconnector=\"chat\"\nauth=\"bearer\"\n", false).unwrap();
-        assert!(route_in(&cfg, "x").is_some());
-        assert!(route_in(&cfg, "unknown").is_none());
+        assert!(route_in(&cfg, "x", None, false).is_some());
+        assert!(route_in(&cfg, "unknown", None, false).is_none());
+    }
+
+    fn cfg_with_purpose() -> Config {
+        // providers: gpt(主)、cheap(用途目标);purpose: compact->cheap, review->nonexist
+        load_config_from_str(
+            r#"
+[llm-switch]
+enabled = true
+[llm-switch.providers.gpt]
+connector = "chat"
+auth = "bearer"
+[llm-switch.providers.cheap]
+connector = "chat"
+auth = "bearer"
+[llm-switch.purpose]
+compact = "cheap"
+review  = "nonexist"
+"#,
+            false,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn purpose_hit_routes_to_target() {
+        let cfg = cfg_with_purpose();
+        // compact 命中 -> 目标 cheap,无 ns 工具
+        let r = route_in(&cfg, "gpt", Some(Purpose::Compact), false).expect("route some");
+        assert_eq!(r.provider_id, "cheap");
+    }
+
+    #[test]
+    fn purpose_bad_mapping_falls_back_to_provider_id() {
+        let cfg = cfg_with_purpose();
+        // review -> "nonexist" 不存在 -> 回退 provider-id(gpt 存在)
+        let r = route_in(&cfg, "gpt", Some(Purpose::Review), false).expect("route some");
+        assert_eq!(r.provider_id, "gpt");
+    }
+
+    #[test]
+    fn purpose_with_ns_tools_falls_back_to_provider_id() {
+        let cfg = cfg_with_purpose();
+        // compact 命中但含 ns 工具 -> 放弃用途路由,回退 provider-id
+        let r = route_in(&cfg, "gpt", Some(Purpose::Compact), true).expect("route some");
+        assert_eq!(r.provider_id, "gpt");
+    }
+
+    #[test]
+    fn no_purpose_uses_provider_id() {
+        let cfg = cfg_with_purpose();
+        let r = route_in(&cfg, "gpt", None, false).expect("route some");
+        assert_eq!(r.provider_id, "gpt");
+    }
+
+    #[test]
+    fn no_purpose_unknown_provider_is_none() {
+        let cfg = cfg_with_purpose();
+        assert!(route_in(&cfg, "unknown", None, false).is_none());
+    }
+
+    #[test]
+    fn purpose_memory_unmapped_falls_back_to_provider_id() {
+        let cfg = cfg_with_purpose();
+        // cfg_with_purpose 未配 memory 用途 -> 回退 provider-id(gpt 存在)
+        let r = route_in(&cfg, "gpt", Some(Purpose::Memory), false).expect("route some");
+        assert_eq!(r.provider_id, "gpt");
+    }
+
+    #[test]
+    fn purpose_hit_unknown_provider_id_still_routes_to_purpose() {
+        let cfg = cfg_with_purpose();
+        // 主 provider 不存在,但 compact 命中 cheap -> 用途路由仍生效
+        let r = route_in(&cfg, "unknown-main", Some(Purpose::Compact), false).expect("route some");
+        assert_eq!(r.provider_id, "cheap");
+    }
+
+    #[test]
+    fn disabled_never_routes_two_level() {
+        let cfg = load_config_from_str(
+            "[llm-switch]\nenabled=false\n[llm-switch.providers.cheap]\nconnector=\"chat\"\nauth=\"bearer\"\n[llm-switch.purpose]\ncompact=\"cheap\"\n",
+            false,
+        ).unwrap();
+        assert!(route_in(&cfg, "gpt", Some(Purpose::Compact), false).is_none());
+    }
+
+    #[test]
+    fn bypass_ws_true_when_purpose_target_exists() {
+        let cfg = cfg_with_purpose();
+        assert!(should_bypass_in(&cfg, "gpt", Some(Purpose::Compact)));
+    }
+
+    #[test]
+    fn bypass_ws_false_when_no_purpose() {
+        let cfg = cfg_with_purpose();
+        assert!(!should_bypass_in(&cfg, "gpt", None));
+    }
+
+    #[test]
+    fn bypass_ws_false_on_bad_mapping() {
+        let cfg = cfg_with_purpose();
+        // review -> nonexist:目标不存在 -> 不绕 WS(会回退 provider-id,本可走原生 WS)
+        assert!(!should_bypass_in(&cfg, "gpt", Some(Purpose::Review)));
+    }
+
+    #[test]
+    fn bypass_ws_false_when_disabled() {
+        let cfg = load_config_from_str(
+            "[llm-switch]\nenabled=false\n[llm-switch.providers.cheap]\nconnector=\"chat\"\nauth=\"bearer\"\n[llm-switch.purpose]\ncompact=\"cheap\"\n",
+            false,
+        ).unwrap();
+        assert!(!should_bypass_in(&cfg, "gpt", Some(Purpose::Compact)));
     }
 }

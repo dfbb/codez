@@ -83,7 +83,9 @@ review  = "claude-sonnet"
 memory  = "deepseek-cheap"
 ```
 
-For design details see [docs/superpowers/specs/2026-06-20-llm-switch-design.md](docs/superpowers/specs/2026-06-20-llm-switch-design.md) and [the purpose-routing design](docs/superpowers/specs/2026-06-22-llm-switch-purpose-routing-design.md).
+For design details see [docs/superpowers/specs/2026-06-20-llm-switch-design.md](docs/superpowers/specs/2026-06-20-llm-switch-design.md).
+
+For a step-by-step guide to configuring and using purpose routing, see [zmod/llm-switch/MultiModel.md](zmod/llm-switch/MultiModel.md).
 
 ## Feature 2: llm-compress
 
