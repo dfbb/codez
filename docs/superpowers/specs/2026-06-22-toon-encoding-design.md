@@ -69,13 +69,14 @@ elements in tool output are rare; TOON's tabular form is the larger win.
 tool-output JSON string
   → serde_json::from_str → Value           (Err → Unchanged, fail-open)
   → encode_default(&value) → toon: String  (Err → Unchanged)
-  → size check FIRST: toon.len() < original.len() ?
-        (not smaller → Unchanged; this guards the saved subtraction below)
+  → claim checks (see "detect / claim conditions"):
+        toon.len() < original.len()  AND  toon.len() <= truncate.max_bytes ?
+        (either fails → Unchanged; the size check also guards the saved sub)
   → round-trip self-check:
         decode_default::<Value>(&toon) == original Value ?
         (not-equal or Err → Unchanged, fail-open)
   → kind=Toon, lossy=false, saved = original.len() - toon.len()  (> 0 here)
-  → router size gate + write-back
+  → write-back
 ```
 
 The "smaller than original" check happens **before** computing `saved` and
@@ -94,12 +95,29 @@ decode error or inequality → return `Unchanged` (fall back to the original
 text). This is the TOON path's own fail-open gate, equivalent to the JSON
 path's `json_valid` write-back gate.
 
-## detect / yield-to-Truncate (preserved)
+## detect / claim conditions (must be complete — router is first-match)
 
-`JsonCompressor.detect` keeps its current discipline: parses to object/array
-**and** the TOON product is `<= truncate.max_bytes` → claim; otherwise return
-false and let `TruncateCompressor` handle it. `TabularCompressor.detect` is
-analogous (claim only when the TOON product is smaller than the original).
+The router is **first-match**: once a compressor's `detect` returns true, the
+router commits to it. If that compressor's `compress` then returns `Unchanged`
+(or a product still over threshold), the router does **not** fall through to
+`TruncateCompressor`. Therefore `detect` MUST predict the full claim condition,
+and `compress` must produce exactly what `detect` promised.
+
+Both `JsonCompressor` and `TabularCompressor` claim a segment **iff all** hold:
+
+1. `use_toon == true`;
+2. the input parses (`JsonCompressor`: `from_str` to object/array;
+   `TabularCompressor`: `parse_table` succeeds) and re-serializes to a `Value`;
+3. `encode_default(&value)` succeeds **and** the round-trip self-check passes
+   (`decode_default::<Value>(&toon) == value`);
+4. `toon.len() < original.len()` (strictly smaller — otherwise no benefit);
+5. `toon.len() <= truncate.max_bytes` (otherwise yield to `TruncateCompressor`).
+
+`detect` and `compress` share one helper that runs steps 2–5 and returns
+`Option<String>` (the TOON product), so the two can never disagree. When any
+condition fails, `detect` returns false (segment falls through to the next
+compressor, ultimately `TruncateCompressor`) and `compress` returns
+`Unchanged`.
 
 ## Determinism (cache compatibility)
 
@@ -114,8 +132,13 @@ cover the TOON path.
 
 `[llm_compress.json]` table:
 
-- **Add** `use_toon: bool`, `#[serde(default)]`, default `true`. Single master
-  switch for JSON **and** Tabular TOON encoding.
+- **Add** `use_toon: bool` to `JsonCfg`. Default `true`, expressed the same way
+  the current `JsonCfg` does it — **container-level `#[serde(default)]` on the
+  struct plus a `Default` impl returning `true`** — NOT a field-level
+  `#[serde(default)]` (which would default `bool` to `false`, the opposite of
+  intent). Concretely: `JsonCfg { use_toon: true }` in `impl Default for
+  JsonCfg`, and the struct keeps its existing `#[serde(default)]` container
+  attribute. Single master switch for JSON **and** Tabular TOON encoding.
 - **Remove** `csv_schema` (dies with `schema.rs`).
 - **Remove** the entire `[llm_compress.tabular]` table, including
   `tabular.enabled` and the `TabularCfg` struct. Tabular is now gated by
@@ -146,8 +169,9 @@ under the workspace toolchain (Rust 1.95.0).
 
 - **Unit**: homogeneous object array, nested object, scalar array each encode to
   the expected TOON; round-trip self-check rejects a deliberately
-  non-round-trippable / oversized input (falls back to original); TOON larger
-  than original → not claimed (yields to Truncate).
+  non-round-trippable input (falls back to original); TOON not strictly smaller
+  than original → not claimed; TOON over `truncate.max_bytes` → not claimed
+  (both yield to Truncate).
 - **Determinism**: same input encoded multiple times yields byte-identical
   output (reuse the cache-stability test pattern).
 - **Switch**: `use_toon = false` → `JsonCompressor` / `TabularCompressor`
