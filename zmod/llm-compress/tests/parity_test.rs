@@ -74,10 +74,10 @@ fn parity_invariants_hold_for_all_fixtures() {
         // 硬不变量 1:压后 ≤ 压前
         assert!(out.len() <= input.len(), "[{}] 压后体积应 ≤ 压前", fx.file);
         // 硬不变量 2:UTF-8 合法(out 是 String,天然合法)
-        // 硬不变量 3:JSON 压缩器产物可 parse
+        // Hard invariant 3: json/tabular compressors emit round-trippable TOON.
         if fx.compressor == "json" || fx.compressor == "tabular" {
-            serde_json::from_str::<serde_json::Value>(&out)
-                .unwrap_or_else(|_| panic!("[{}] JSON 产物必须可 parse", fx.file));
+            toon_format::decode_default::<serde_json::Value>(&out)
+                .unwrap_or_else(|_| panic!("[{}] TOON product must decode", fx.file));
         }
         // 对比 4:体积不劣于参考(若有 ref_output)。
         // 仅当我方产物本身有损时才与参考比比例——headroom/rtk 的参考输出多为有损

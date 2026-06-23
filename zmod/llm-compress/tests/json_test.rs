@@ -1,162 +1,100 @@
 use codez_llm_compress::compress::json::JsonCompressor;
 use codez_llm_compress::config::Config;
-use codez_llm_compress::router::{Budget, CompressOutcome, Compressor};
+use codez_llm_compress::router::{Budget, CompressOutcome, Compressor, ContentKind};
 use serde_json::Value;
 
 fn budget(cfg: &Config) -> Budget<'_> {
     Budget { cfg, cmd: None }
 }
 
-// ===== 保留 Task 01 迁移的 detect 基础用例(更新为 v2 语义:需 max_bytes 足够) =====
-
 #[test]
-fn detect_accepts_valid_json_rejects_garbage() {
-    let c = JsonCompressor;
+fn detect_accepts_object_and_array_rejects_scalar_and_garbage() {
     let mut cfg = Config::disabled();
-    cfg.truncate.max_bytes = 100_000; // 足够大,不触发让位
+    cfg.truncate.max_bytes = 100_000; // large enough, no yield to Truncate
+    let c = JsonCompressor;
     let b = budget(&cfg);
-    assert!(c.detect(r#"{"a":1,"b":[1,2,3]}"#, &b));
-    assert!(c.detect("[1, 2, 3]", &b));
-    // 新 detect:仅认领 object/array,scalar 不再认领
-    assert!(!c.detect("\"a quoted string is valid json\"", &b));
+    // Object/array that shrink under TOON are claimed.
+    assert!(c.detect(r#"[{"id":1,"name":"alice"},{"id":2,"name":"bob"}]"#, &b));
+    // Scalars are never claimed.
+    assert!(!c.detect("\"a quoted string\"", &b));
     assert!(!c.detect("123", &b));
-    // 非 JSON
+    // Non-JSON.
     assert!(!c.detect("not json {", &b));
     assert!(!c.detect("{unquoted: key}", &b));
     assert!(!c.detect("", &b));
 }
 
 #[test]
-fn output_is_always_valid_json() {
+fn compress_emits_round_trippable_toon_for_homogeneous_array() {
     let mut cfg = Config::disabled();
     cfg.truncate.max_bytes = 100_000;
-    cfg.json.csv_schema = true;
-    let c = JsonCompressor;
-    // 混合:对象 + 嵌套
-    let text = r#"{
-        "list": [1,2,3,4,5,6,7,8,9,10,11,12],
-        "nested": {"a": {"b": {"c": {"d": 1}}}},
-        "name": "keep me"
-    }"#;
-    if let CompressOutcome::Compressed { text: new, .. } = c.compress(text, &budget(&cfg)) {
-        // 关键断言:无论压成什么,产物都能被重新解析。
-        serde_json::from_str::<Value>(&new).expect("compressed output must be valid JSON");
-        // 键必须全保留
-        let v: Value = serde_json::from_str(&new).unwrap();
-        let obj = v.as_object().unwrap();
-        assert!(obj.contains_key("list"));
-        assert!(obj.contains_key("nested"));
-        assert!(obj.contains_key("name"));
-    }
-    // 即便未压缩(Unchanged)也无破坏可言,测试主旨是"压了就必须合法"。
-}
-
-// ===== Task 05 新增 ==========
-use codez_llm_compress::router::ContentKind;
-
-fn budget_t05(cfg: &Config) -> Budget<'_> {
-    Budget { cfg, cmd: None }
-}
-
-#[test]
-fn consecutive_rle_folds_adjacent_duplicates() {
-    let mut cfg = Config::disabled();
-    cfg.truncate.max_bytes = 100_000; // 不让位
-    let c = JsonCompressor;
-    // 4 个相邻相同对象
-    let text = r#"[{"a":1},{"a":1},{"a":1},{"a":1},{"b":2}]"#;
-    let b = budget_t05(&cfg);
-    assert!(c.detect(text, &b));
-    if let CompressOutcome::Compressed { text: new, lossy, kind, .. } = c.compress(text, &b) {
-        assert!(!lossy, "RLE 不删内容");
-        assert_eq!(kind, ContentKind::Json);
-        let v: serde_json::Value = serde_json::from_str(&new).expect("valid json");
-        // 首项保留 + 计数占位,首项 {"a":1} 仍在
-        assert_eq!(v[0], serde_json::json!({"a":1}));
-        assert!(new.contains("_llm_dup_prev"));
-    } else {
-        panic!("expected compressed");
-    }
-}
-
-#[test]
-fn csv_schema_applied_to_homogeneous_array() {
-    let mut cfg = Config::disabled();
-    cfg.truncate.max_bytes = 100_000;
-    cfg.json.csv_schema = true;
     let c = JsonCompressor;
     let text = r#"[{"id":1,"name":"alice"},{"id":2,"name":"bob"},{"id":3,"name":"carol"}]"#;
-    let b = budget_t05(&cfg);
-    if let CompressOutcome::Compressed { text: new, lossy, .. } = c.compress(text, &b) {
-        assert!(!lossy);
-        let v: serde_json::Value = serde_json::from_str(&new).unwrap();
-        assert_eq!(v["_schema"], serde_json::json!(["id","name"]));
-    } else {
-        panic!("expected compressed");
-    }
-}
-
-#[test]
-fn detect_yields_to_truncate_when_lossless_insufficient() {
-    let mut cfg = Config::disabled();
-    cfg.truncate.max_bytes = 50; // 很小
-    let c = JsonCompressor;
-    // 大数组、无相邻重复、非同构 → 无损压不下来 → 超 50 字节 → detect false
-    let text = r#"[{"a":1,"x":"aaaa"},{"b":2,"y":"bbbb"},{"c":3,"z":"cccc"}]"#;
-    let b = budget_t05(&cfg);
-    assert!(!c.detect(text, &b), "无损压不到 50 字节 → 让位 Truncate");
-}
-
-#[test]
-fn detect_accepts_when_small_enough() {
-    let mut cfg = Config::disabled();
-    cfg.truncate.max_bytes = 100_000;
-    let c = JsonCompressor;
-    let text = r#"{"a":1}"#;
-    let b = budget_t05(&cfg);
-    assert!(c.detect(text, &b), "小 JSON 未超阈 → 认领");
-}
-
-#[test]
-fn rle_folds_run_but_skips_existing_marker_objects() {
-    // 输入: 6 个相同对象({"a":1}) + 已存在的 marker({"_llm_dup_prev":3}) + 再一个 {"a":1}
-    // 预期:
-    //   (a) 6 个相同对象折叠为 [{"a":1}, {"_llm_dup_prev":5}](extra=5)
-    //   (b) 已有 marker {"_llm_dup_prev":3} 原样保留(value=3,未被改写)
-    //   (c) marker 后的最后一个 {"a":1} 不跨越 marker 与前面合并
-    // 输入 77 字节,折叠后 57 字节,saved=20 → 必然 Compressed
-    let mut cfg = Config::disabled();
-    cfg.truncate.max_bytes = 100_000;
-    let c = JsonCompressor;
-    let text =
-        r#"[{"a":1},{"a":1},{"a":1},{"a":1},{"a":1},{"a":1},{"_llm_dup_prev":3},{"a":1}]"#;
-    let b = budget_t05(&cfg);
-    let CompressOutcome::Compressed { text: new, lossy, .. } = c.compress(text, &b) else {
-        panic!("expected Compressed: 6 连续重复应触发 RLE 折叠以节省字节");
+    let CompressOutcome::Compressed { text: new, lossy, kind, saved_bytes } =
+        c.compress(text, &budget(&cfg))
+    else {
+        panic!("expected Compressed");
     };
-    assert!(!lossy, "RLE 不删内容,lossy 必须为 false");
+    assert!(!lossy, "TOON is lossless");
+    assert_eq!(kind, ContentKind::Toon);
+    assert_eq!(saved_bytes, text.len() - new.len());
+    // Round-trips back to the original value.
+    let back: Value = toon_format::decode_default(&new).unwrap();
+    assert_eq!(back, serde_json::from_str::<Value>(text).unwrap());
+    // Tabular header present (uniform object array).
+    assert!(new.contains("{id,name}:"), "got: {new:?}");
+}
 
-    let v: serde_json::Value = serde_json::from_str(&new).expect("压缩产物必须是合法 JSON");
-    let arr = v.as_array().expect("压缩产物必须是数组");
+#[test]
+fn detect_yields_to_truncate_when_toon_exceeds_max_bytes() {
+    let mut cfg = Config::disabled();
+    cfg.truncate.max_bytes = 20; // tiny
+    let c = JsonCompressor;
+    let text = r#"[{"id":1,"name":"alice"},{"id":2,"name":"bob"},{"id":3,"name":"carol"}]"#;
+    assert!(!c.detect(text, &budget(&cfg)), "TOON over max_bytes → yield to Truncate");
+    assert!(matches!(c.compress(text, &budget(&cfg)), CompressOutcome::Unchanged));
+}
 
-    // (a) 前两项:首项 {"a":1} + 折叠计数对象 {"_llm_dup_prev":5}
-    assert_eq!(arr[0], serde_json::json!({"a": 1}), "首项必须是 {{\"a\":1}}");
-    assert_eq!(
-        arr[1],
-        serde_json::json!({"_llm_dup_prev": 5}),
-        "折叠 6 个重复应产生 extra=5 的 marker"
-    );
+#[test]
+fn detect_false_when_toon_not_smaller() {
+    let mut cfg = Config::disabled();
+    cfg.truncate.max_bytes = 100_000;
+    let c = JsonCompressor;
+    // A heterogeneous nested array whose TOON form (indented) is not strictly
+    // smaller than the input (toon-format 0.5 produces 86 bytes for 77-byte input).
+    let text = r#"[{"id":1,"name":"alice","tags":["x","y"]},{"id":2,"name":"bob","tags":["z"]}]"#;
+    assert!(!c.detect(text, &budget(&cfg)), "no size benefit → not claimed");
+}
 
-    // (b) 已有 marker 原样保留:value 仍为 3(非 5、非其他)
-    assert_eq!(
-        arr[2],
-        serde_json::json!({"_llm_dup_prev": 3}),
-        "原输入中的 marker(value=3)必须原样保留,不得被改写"
-    );
+#[test]
+fn use_toon_false_disables_claim() {
+    let mut cfg = Config::disabled();
+    cfg.truncate.max_bytes = 100_000;
+    cfg.json.use_toon = false;
+    let c = JsonCompressor;
+    let text = r#"[{"id":1,"name":"alice"},{"id":2,"name":"bob"}]"#;
+    assert!(!c.detect(text, &budget(&cfg)), "use_toon=false → detect false");
+    assert!(matches!(c.compress(text, &budget(&cfg)), CompressOutcome::Unchanged));
+}
 
-    // (c) marker 之后的孤立 {"a":1} 未被合并进前面的折叠
-    assert_eq!(arr[3], serde_json::json!({"a": 1}), "marker 后的 {{\"a\":1}} 应独立保留");
-
-    // 结果恰好是这 4 项
-    assert_eq!(arr.len(), 4, "输出数组长度应为 4");
+#[test]
+fn toon_output_is_deterministic_across_runs() {
+    // Cache stability: compression must be a pure function of content.
+    // Encoding the same input many times must yield byte-identical TOON.
+    let mut cfg = Config::disabled();
+    cfg.truncate.max_bytes = 100_000;
+    let c = JsonCompressor;
+    // Homogeneous array that compresses well under TOON (71 → 41 bytes).
+    let text = r#"[{"id":1,"name":"alice"},{"id":2,"name":"bob"},{"id":3,"name":"carol"}]"#;
+    let first = match c.compress(text, &budget(&cfg)) {
+        CompressOutcome::Compressed { text, .. } => text,
+        CompressOutcome::Unchanged => panic!("expected Compressed"),
+    };
+    for _ in 0..20 {
+        let CompressOutcome::Compressed { text: again, .. } = c.compress(text, &budget(&cfg))
+        else {
+            panic!("expected Compressed");
+        };
+        assert_eq!(again, first, "TOON output must be byte-identical across runs");
+    }
 }
