@@ -8,7 +8,6 @@ use std::path::PathBuf;
 #[serde(default)]
 pub struct Config {
     pub enabled: bool,
-    pub min_total_bytes: usize,
     pub per_item_min_bytes: usize,
     pub truncate: TruncateCfg,
     pub json: JsonCfg,
@@ -89,7 +88,6 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             enabled: false,
-            min_total_bytes: 4096,
             per_item_min_bytes: 1024,
             truncate: TruncateCfg::default(),
             json: JsonCfg::default(),

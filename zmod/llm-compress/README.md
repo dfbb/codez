@@ -56,7 +56,6 @@ CCR 可通过 `[llm_compress.ccr].enabled = false` 关闭。
 ```toml
 [llm_compress]
 enabled = true
-min_total_bytes = 4096     # 请求可压缩文本总量低于此值 → 整体跳过
 per_item_min_bytes = 512   # 低于此字节数的 item 跳过
 
 [llm_compress.truncate]

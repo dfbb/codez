@@ -55,9 +55,6 @@ pub fn transform(request: &mut ResponsesApiRequest, _api_provider: &ApiProvider,
     let router = build_router();
 
     let total_before = total_text_bytes(&request.input);
-    if total_before < cfg.min_total_bytes {
-        return;
-    }
     for item in request.input.iter_mut() {
         compress_item(item, &ctx, &router, &cfg);
     }
